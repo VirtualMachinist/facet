@@ -2803,7 +2803,7 @@ impl ProbeApp {
                     });
                 }
             })
-            .child(components::compact_menu_button(
+            .child(components::menu_button(
                 theme,
                 "tab-context-close",
                 "Close Tab",
@@ -2814,7 +2814,7 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::compact_menu_button(
+            .child(components::menu_button(
                 theme,
                 "tab-context-close-other",
                 "Close Other Tabs",
@@ -2879,7 +2879,7 @@ impl ProbeApp {
                     });
                 }
             })
-            .child(components::compact_menu_button(
+            .child(components::menu_button(
                 theme,
                 rename_id,
                 "Rename",
@@ -2893,7 +2893,7 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::compact_menu_button(
+            .child(components::destructive_menu_button(
                 theme,
                 delete_id,
                 "Delete",
@@ -3228,7 +3228,7 @@ impl ProbeApp {
             .bg(theme.colors.surfaces.overlay)
             .border_1()
             .border_color(theme.colors.borders.standard)
-            .child(components::compact_menu_button(
+            .child(components::menu_button(
                 theme,
                 "tree-new-request",
                 "Add Request",
@@ -3240,7 +3240,7 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::compact_menu_button(
+            .child(components::menu_button(
                 theme,
                 "tree-new-folder",
                 "Add Folder",

@@ -2574,39 +2574,54 @@ pub(crate) fn menu_button(
     shortcut: Option<String>,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    menu_button_with_padding(
+    menu_button_with_style(
         theme,
         id,
         label,
         shortcut,
-        theme.metrics.spacing_3,
+        MenuButtonStyle {
+            padding_x: theme.metrics.spacing_2,
+            text_color: theme.colors.text.primary,
+            shortcut_color: theme.colors.text.muted,
+        },
         on_activate,
     )
 }
 
-pub(crate) fn compact_menu_button(
+pub(crate) fn destructive_menu_button(
     theme: Theme,
     id: impl Into<ElementId>,
     label: impl Into<String>,
     shortcut: Option<String>,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    menu_button_with_padding(
+    menu_button_with_style(
         theme,
         id,
         label,
         shortcut,
-        theme.metrics.spacing_2,
+        MenuButtonStyle {
+            padding_x: theme.metrics.spacing_2,
+            text_color: theme.colors.status.error,
+            shortcut_color: theme.colors.status.error,
+        },
         on_activate,
     )
 }
 
-fn menu_button_with_padding(
+#[derive(Clone, Copy)]
+struct MenuButtonStyle {
+    padding_x: f32,
+    text_color: gpui::Rgba,
+    shortcut_color: gpui::Rgba,
+}
+
+fn menu_button_with_style(
     theme: Theme,
     id: impl Into<ElementId>,
     label: impl Into<String>,
     shortcut: Option<String>,
-    padding_x: f32,
+    style: MenuButtonStyle,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let label = label.into();
@@ -2628,7 +2643,7 @@ fn menu_button_with_padding(
             Button::new(id)
                 .w_full()
                 .h(px(theme.metrics.control_height + 4.0))
-                .px(px(padding_x))
+                .px(px(style.padding_x))
                 .flex()
                 .items_center()
                 .justify_start()
@@ -2636,7 +2651,7 @@ fn menu_button_with_padding(
                 .rounded(px(theme.metrics.radius_small))
                 .font_family(theme.typography.interface_family)
                 .text_size(px(theme.typography.body_size))
-                .text_color(theme.colors.text.primary)
+                .text_color(style.text_color)
                 .cursor_pointer()
                 .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
                 .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
@@ -2657,7 +2672,7 @@ fn menu_button_with_padding(
                                 div()
                                     .flex_none()
                                     .text_size(px(theme.typography.caption_size))
-                                    .text_color(theme.colors.text.muted)
+                                    .text_color(style.shortcut_color)
                                     .child(shortcut),
                             )
                         }),
