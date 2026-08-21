@@ -8,12 +8,12 @@ use std::{
 
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point,
-    PromptButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
-    StatefulInteractiveElement as _, Styled as _, Task, TitlebarOptions, UniformListScrollHandle,
-    Window, WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
-    prelude::FluentBuilder as _, px, relative, size, uniform_list,
+    FontWeight, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, PromptButton,
+    PromptLevel, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
+    Styled as _, Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
+    WindowControlArea, WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px,
+    relative, size, uniform_list,
 };
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -3763,8 +3763,8 @@ impl ProbeApp {
                     .styles(move |styles| {
                         styles.disabled(move |button| {
                             button
-                                .bg(theme.colors.actions.disabled)
-                                .border_color(theme.colors.actions.disabled)
+                                .bg(theme.colors.selection.inactive_background)
+                                .border_color(theme.colors.selection.inactive_background)
                                 .text_color(theme.colors.actions.disabled_foreground)
                         })
                     })
@@ -6058,8 +6058,6 @@ impl Render for ProbeApp {
         let theme = Theme::for_window_appearance(window.appearance());
         let sidebar_view = cx.weak_entity();
         let status_message = self.message.clone();
-        let mut status_message_hover: Hsla = theme.colors.status.error.into();
-        status_message_hover.l = (status_message_hover.l * 0.88).max(0.0);
 
         div()
             .size_full()
@@ -6176,7 +6174,9 @@ impl Render for ProbeApp {
                                 .justify_center()
                                 .rounded(px(theme.metrics.radius_small))
                                 .text_color(theme.colors.text.inverse)
-                                .hover(move |button| button.bg(status_message_hover))
+                                .hover(move |button| {
+                                    button.bg(components::hover_fill(theme.colors.status.error))
+                                })
                                 .on_click({
                                     let dismiss_view = cx.weak_entity();
                                     move |_, _, cx| {

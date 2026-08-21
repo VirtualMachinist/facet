@@ -140,6 +140,16 @@ fn plus_icon(theme: Theme) -> gpui::Div {
     library_icon("lucide-plus", &PLUS_SVG, theme.metrics.icon_small)
 }
 
+pub(crate) fn hover_fill(color: gpui::Rgba) -> gpui::Rgba {
+    let mut hover: Hsla = color.into();
+    hover.l = if hover.l < 0.5 {
+        (hover.l + 0.08).min(1.0)
+    } else {
+        (hover.l * 0.92).max(0.0)
+    };
+    hover.into()
+}
+
 pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button {
     let disabled_background = theme.colors.actions.disabled;
     let disabled_border = theme.colors.actions.disabled;
@@ -164,10 +174,10 @@ pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button
 
     if enabled {
         button = button
-            .hover(move |button| button.bg(theme.colors.surfaces.window))
+            .hover(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
             .focus(move |button| button.border_color(theme.colors.borders.focused))
             .styles(move |styles| {
-                styles.selected(move |button| button.bg(theme.colors.surfaces.window))
+                styles.selected(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
             });
     }
 
