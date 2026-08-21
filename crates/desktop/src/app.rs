@@ -3847,7 +3847,7 @@ impl ProbeApp {
                             .w_full()
                             .flex()
                             .items_center()
-                            .child(div().w(px(108.0)).mr(px(theme.metrics.spacing_2)).child(
+                            .child(div().w(px(108.0)).mr(px(theme.metrics.spacing_1)).child(
                                 components::dropdown_with_option_colors(
                                     theme,
                                     "request-method",
@@ -3893,7 +3893,7 @@ impl ProbeApp {
                                         },
                                     )),
                             )
-                            .child(div().ml(px(theme.metrics.spacing_2)).flex_none().child(
+                            .child(div().ml(px(theme.metrics.spacing_1)).flex_none().child(
                                 components::primary_button(
                                     theme,
                                     "request-execution",
