@@ -2179,11 +2179,28 @@ impl ProbeApp {
                         view.persistence.enqueue(keys);
                         view.start_next_request_save(window, cx);
                     }
-                    1 => view.finish_pending_close(pending, window, cx),
+                    1 => {
+                        view.discard_dirty_requests(&keys);
+                        view.finish_pending_close(pending, window, cx);
+                    }
                     _ => {}
                 });
             })
             .detach();
+    }
+
+    fn discard_dirty_requests(&mut self, keys: &[RequestKey]) {
+        let Some(loaded) = self.loaded_workspace.as_mut() else {
+            return;
+        };
+        for key in keys {
+            let Some(saved) = self.persistence.saved_request(*key).cloned() else {
+                continue;
+            };
+            if let Some(request) = loaded.request_mut(*key) {
+                *request = saved;
+            }
+        }
     }
 
     fn save_active_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -7027,6 +7044,51 @@ mod tests {
             Some("https://saved.example/pets")
         );
         fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn discarding_a_dirty_tab_restores_the_workspace_request(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = bundled_fixture()
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace =
+            probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+        let key = workspace.requests()[0].key();
+        let original_url = workspace
+            .workspace()
+            .request(key)
+            .and_then(|request| request.url.clone());
+
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.select_request(key, cx);
+                view.edit_request(
+                    key,
+                    |request| request.url = Some("https://discarded.example".to_owned()),
+                    cx,
+                );
+                assert_eq!(view.dirty_keys(), vec![key]);
+
+                view.discard_dirty_requests(&[key]);
+                view.close_tab_now(key, cx);
+
+                let request = view
+                    .loaded_workspace
+                    .as_ref()
+                    .unwrap()
+                    .workspace()
+                    .request(key)
+                    .unwrap();
+                assert_eq!(request.url, original_url);
+                assert!(view.dirty_keys().is_empty());
+            })
+            .unwrap();
     }
 
     #[gpui::test]
