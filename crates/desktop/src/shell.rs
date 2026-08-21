@@ -104,6 +104,10 @@ impl ShellState {
         self.collapsed_folders.insert(key);
     }
 
+    pub(crate) fn expand_folder(&mut self, key: FolderKey) {
+        self.collapsed_folders.remove(&key);
+    }
+
     pub(crate) fn selected_environment(&self) -> Option<&str> {
         self.selected_environment.as_deref()
     }
@@ -215,6 +219,10 @@ mod tests {
         let mut state = ShellState::default();
         assert!(state.folder_is_expanded(folder));
         state.toggle_folder(folder);
+        assert!(!state.folder_is_expanded(folder));
+        state.expand_folder(folder);
+        assert!(state.folder_is_expanded(folder));
+        state.collapse_folder(folder);
         assert!(!state.folder_is_expanded(folder));
 
         state.resize_sidebar(20.0);

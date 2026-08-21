@@ -1099,6 +1099,34 @@ pub(crate) fn dialog_text_input(
     .into_any_element()
 }
 
+pub(crate) fn sidebar_search_input(
+    theme: Theme,
+    value: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    ProbeTextInput {
+        theme,
+        id: "tree-search-input".into(),
+        value: single_line(value),
+        placeholder: placeholder.into(),
+        variables: VariableContext::default(),
+        highlight_path_variables: false,
+        variable_overlay: false,
+        font_family: theme.typography.interface_family,
+        text_size: theme.typography.caption_size,
+        height: theme.metrics.control_height - 4.0,
+        width: None,
+        debug_selector: Some("tree-search"),
+        on_change: Some(Rc::new(on_value_change)),
+        on_enter: None,
+        on_focus: None,
+        autofocus: false,
+        readonly: false,
+        shared_input: None,
+    }
+}
+
 pub(crate) fn search_input(
     theme: Theme,
     id: impl Into<ElementId>,

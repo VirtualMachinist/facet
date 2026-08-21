@@ -61,6 +61,7 @@ use crate::{
         LocalRequestState, ReconcileResult, ReconciledWorkspace, SynchronizationConflict, reconcile,
     },
     theme::Theme,
+    tree_search::{TreeSearchMatches, matching_tree_items},
 };
 
 const APPLICATION_ID: &str = "dev.probe.desktop";
@@ -292,6 +293,7 @@ pub(crate) struct ProbeApp {
     tab_context_menu: Option<RequestKey>,
     tab_context_menu_position: Option<Point<Pixels>>,
     visible_tree_rows: Vec<TreeRow>,
+    tree_search: String,
     selected_tree_item: Option<WorkspaceItemRef>,
     tree_drag_source: Option<WorkspaceItemRef>,
     tree_drop_target: Option<TreeDropIntent>,
@@ -374,6 +376,7 @@ impl ProbeApp {
             tab_context_menu: None,
             tab_context_menu_position: None,
             visible_tree_rows: Vec::new(),
+            tree_search: String::new(),
             selected_tree_item: None,
             tree_drag_source: None,
             tree_drop_target: None,
@@ -1281,6 +1284,7 @@ impl ProbeApp {
         self.tab_context_menu = None;
         self.tab_context_menu_position = None;
         self.clear_tree_drag();
+        self.tree_search.clear();
         self.request_editor.clear();
     }
 
@@ -2430,14 +2434,59 @@ impl ProbeApp {
         cx.notify();
     }
 
+    fn set_tree_search(&mut self, query: String, cx: &mut Context<Self>) {
+        if self.tree_search == query {
+            return;
+        }
+        self.tree_search = query;
+        let expanded = self.expand_folders_for_tree_search();
+        self.rebuild_visible_tree_rows();
+        if expanded {
+            self.persist_session(cx);
+        }
+        cx.notify();
+    }
+
+    fn expand_folders_for_tree_search(&mut self) -> bool {
+        let query = self.tree_search.trim();
+        if query.is_empty() {
+            return false;
+        }
+        let Some(loaded) = &self.loaded_workspace else {
+            return false;
+        };
+        let hits = matching_tree_items(loaded.workspace(), query);
+        let mut expanded = false;
+        for folder in hits.folders() {
+            if !self.shell.folder_is_expanded(folder) {
+                self.shell.expand_folder(folder);
+                expanded = true;
+            }
+        }
+        expanded
+    }
+
     fn rebuild_visible_tree_rows(&mut self) {
         let Some(loaded) = &self.loaded_workspace else {
             self.visible_tree_rows.clear();
             return;
         };
         let workspace = loaded.workspace();
+        let query = self.tree_search.trim();
+        let filter = if query.is_empty() {
+            None
+        } else {
+            Some(matching_tree_items(workspace, query))
+        };
         let mut rows = Vec::with_capacity(workspace.request_count());
-        flatten_visible_tree_rows(workspace, workspace.root_items(), 0, &self.shell, &mut rows);
+        flatten_visible_tree_rows(
+            workspace,
+            workspace.root_items(),
+            0,
+            &self.shell,
+            filter.as_ref(),
+            &mut rows,
+        );
         self.visible_tree_rows = rows;
     }
 
@@ -3203,6 +3252,7 @@ impl ProbeApp {
         } else {
             add_trigger.into_any_element()
         };
+        let search_view = cx.weak_entity();
         let tree = if self.loaded_workspace.is_some() {
             let row_count = self.visible_tree_rows.len() + 1;
             let drag_view = cx.weak_entity();
@@ -3375,18 +3425,20 @@ impl ProbeApp {
                             .px(px(theme.metrics.spacing_2))
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child("Collection"))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(theme.metrics.spacing_1))
-                                    .text_size(px(theme.typography.caption_size))
-                                    .text_color(theme.colors.text.muted)
-                                    .child(self.request_count_label())
-                                    .child(add_menu),
-                            ),
+                            .gap(px(theme.metrics.spacing_1))
+                            .child(div().flex_1().min_w(px(0.0)).child(
+                                components::sidebar_search_input(
+                                    theme,
+                                    self.tree_search.clone(),
+                                    self.tree_search_placeholder(),
+                                    move |value, _, input_cx| {
+                                        let _ = search_view.update(input_cx, |view, cx| {
+                                            view.set_tree_search(value.to_string(), cx);
+                                        });
+                                    },
+                                ),
+                            ))
+                            .child(add_menu),
                     ),
             )
             .child(tree)
@@ -5943,11 +5995,16 @@ impl ProbeApp {
         cx.notify();
     }
 
-    fn request_count_label(&self) -> String {
-        self.loaded_workspace.as_ref().map_or_else(
-            || "No workspace".to_owned(),
-            |loaded| format!("{} requests", loaded.workspace().request_count()),
-        )
+    fn tree_search_placeholder(&self) -> String {
+        let count = self
+            .loaded_workspace
+            .as_ref()
+            .map_or(0, |loaded| loaded.workspace().request_count());
+        if count == 1 {
+            "Search in 1 request".to_owned()
+        } else {
+            format!("Search in {count} requests")
+        }
     }
 
     fn workspace_name(&self) -> String {
@@ -6203,15 +6260,19 @@ fn flatten_visible_tree_rows(
     items: &[WorkspaceItemRef],
     depth: usize,
     shell: &ShellState,
+    filter: Option<&TreeSearchMatches>,
     rows: &mut Vec<TreeRow>,
 ) {
     for item in items {
+        if filter.is_some_and(|hits| !hits.contains(*item)) {
+            continue;
+        }
         rows.push(TreeRow { item: *item, depth });
         if let WorkspaceItemRef::Folder(key) = item
             && shell.folder_is_expanded(*key)
             && let Some(folder) = workspace.folder(*key)
         {
-            flatten_visible_tree_rows(workspace, &folder.children, depth + 1, shell, rows);
+            flatten_visible_tree_rows(workspace, &folder.children, depth + 1, shell, filter, rows);
         }
     }
 }
@@ -6428,6 +6489,30 @@ mod tests {
     fn large_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase2-large-workspace.yml")
+    }
+
+    fn nested_fixture() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/opencollection/phase16-bundled.yml")
+    }
+
+    fn visible_tree_names(view: &ProbeApp) -> Vec<String> {
+        let Some(loaded) = &view.loaded_workspace else {
+            return Vec::new();
+        };
+        view.visible_tree_rows
+            .iter()
+            .filter_map(|row| match row.item {
+                WorkspaceItemRef::Request(key) => loaded
+                    .workspace()
+                    .request(key)
+                    .and_then(|request| request.metadata.name.clone()),
+                WorkspaceItemRef::Folder(key) => loaded
+                    .workspace()
+                    .folder(key)
+                    .and_then(|folder| folder.metadata.name.clone()),
+            })
+            .collect()
     }
 
     #[test]
@@ -7163,6 +7248,72 @@ mod tests {
             rendered_rows < total_rows,
             "virtualized sidebar rendered all {total_rows} rows"
         );
+    }
+
+    #[gpui::test]
+    fn sidebar_search_filters_tree_and_expands_collapsed_match_folders(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = nested_fixture()
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace =
+            probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+        let folder = workspace
+            .folder_key("items/1")
+            .expect("folder should exist");
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.shell.collapse_folder(folder);
+                view.rebuild_visible_tree_rows();
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("tree-search")
+            .expect("sidebar search input should render");
+
+        let collapsed_names = window
+            .update(cx, |view, _, _| visible_tree_names(view))
+            .expect("test window should remain open");
+        assert_eq!(collapsed_names, ["Alpha", "Folder"]);
+
+        window
+            .update(cx, |view, _, cx| {
+                view.set_tree_search("nstd".to_owned(), cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        let (names, folder_expanded) = window
+            .update(cx, |view, _, _| {
+                (
+                    visible_tree_names(view),
+                    view.shell.folder_is_expanded(folder),
+                )
+            })
+            .expect("test window should remain open");
+        assert!(folder_expanded, "matching request should expand its folder");
+        assert_eq!(names, ["Folder", "Nested"]);
+
+        window
+            .update(cx, |view, _, cx| {
+                view.set_tree_search("fldr".to_owned(), cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        let folder_only = window
+            .update(cx, |view, _, _| visible_tree_names(view))
+            .expect("test window should remain open");
+        assert_eq!(folder_only, ["Folder"]);
     }
 
     #[gpui::test]
