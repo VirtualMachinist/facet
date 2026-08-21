@@ -8,12 +8,12 @@ use std::{
 
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
-    FontWeight, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, PromptButton,
-    PromptLevel, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
-    Styled as _, Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
-    WindowControlArea, WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px,
-    relative, size, uniform_list,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point,
+    PromptButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
+    StatefulInteractiveElement as _, Styled as _, Task, TitlebarOptions, UniformListScrollHandle,
+    Window, WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
+    prelude::FluentBuilder as _, px, relative, size, uniform_list,
 };
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -6058,6 +6058,8 @@ impl Render for ProbeApp {
         let theme = Theme::for_window_appearance(window.appearance());
         let sidebar_view = cx.weak_entity();
         let status_message = self.message.clone();
+        let mut status_message_hover: Hsla = theme.colors.status.error.into();
+        status_message_hover.l = (status_message_hover.l * 0.88).max(0.0);
 
         div()
             .size_full()
@@ -6155,9 +6157,40 @@ impl Render for ProbeApp {
                     div()
                         .px(px(theme.metrics.spacing_3))
                         .py(px(theme.metrics.spacing_2))
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(theme.metrics.spacing_2))
                         .bg(theme.colors.status.error)
                         .text_color(theme.colors.text.inverse)
-                        .child(message),
+                        .child(div().flex_1().min_w(px(0.0)).child(message))
+                        .child(
+                            Button::new("status-message-dismiss")
+                                .focusable(true)
+                                .tab_stop(true)
+                                .flex_none()
+                                .w(px(theme.metrics.control_height - 4.0))
+                                .h(px(theme.metrics.control_height - 4.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(theme.metrics.radius_small))
+                                .text_color(theme.colors.text.inverse)
+                                .hover(move |button| button.bg(status_message_hover))
+                                .on_click({
+                                    let dismiss_view = cx.weak_entity();
+                                    move |_, _, cx| {
+                                        let _ = dismiss_view.update(cx, |view, cx| {
+                                            view.message = None;
+                                            cx.notify();
+                                        });
+                                    }
+                                })
+                                .child(
+                                    components::close_icon(theme)
+                                        .text_color(theme.colors.text.inverse),
+                                ),
+                        ),
                 )
             })
             .child(
