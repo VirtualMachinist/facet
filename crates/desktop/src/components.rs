@@ -572,6 +572,7 @@ pub(crate) fn primary_button(
     Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
+        .min_w(px(72.0))
         .px(px(theme.metrics.spacing_3))
         .flex()
         .items_center()
@@ -617,6 +618,7 @@ pub(crate) fn secondary_button(
     Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
+        .min_w(px(72.0))
         .px(px(theme.metrics.spacing_3))
         .flex()
         .items_center()
@@ -2541,7 +2543,42 @@ pub(crate) fn menu_button(
     theme: Theme,
     id: impl Into<ElementId>,
     label: impl Into<String>,
-    shortcut: Option<&'static str>,
+    shortcut: Option<String>,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    menu_button_with_padding(
+        theme,
+        id,
+        label,
+        shortcut,
+        theme.metrics.spacing_3,
+        on_activate,
+    )
+}
+
+pub(crate) fn compact_menu_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    shortcut: Option<String>,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    menu_button_with_padding(
+        theme,
+        id,
+        label,
+        shortcut,
+        theme.metrics.spacing_2,
+        on_activate,
+    )
+}
+
+fn menu_button_with_padding(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    shortcut: Option<String>,
+    padding_x: f32,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let label = label.into();
@@ -2563,7 +2600,7 @@ pub(crate) fn menu_button(
             Button::new(id)
                 .w_full()
                 .h(px(theme.metrics.control_height + 4.0))
-                .px(px(theme.metrics.spacing_3))
+                .px(px(padding_x))
                 .flex()
                 .items_center()
                 .justify_start()
@@ -2572,11 +2609,9 @@ pub(crate) fn menu_button(
                 .font_family(theme.typography.interface_family)
                 .text_size(px(theme.typography.body_size))
                 .text_color(theme.colors.text.primary)
-                .border_1()
-                .border_color(theme.colors.surfaces.overlay)
                 .cursor_pointer()
                 .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-                .focus(move |button| button.border_color(theme.colors.borders.focused))
+                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
                 .on_click(move |event, window, cx| {
                     if !matches!(event, ClickEvent::Mouse(_)) {
                         keyboard_activate(window, cx);

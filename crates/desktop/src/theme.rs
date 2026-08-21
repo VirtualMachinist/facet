@@ -330,7 +330,7 @@ fn porcelain_honey() -> Colors {
             sidebar: rgba(0xebedeacc), // cool stone navigation
             editor: rgba(0xf0e7d7e8),  // warm ivory paper
             raised: rgba(0xfffcf4b8),  // bright raised control
-            overlay: rgba(0xfffcf6de), // ivory overlay
+            overlay: rgba(0xfffcf6ff), // ivory overlay
             scrim: rgba(0x00000059),   // black @ ~35%
         },
         text: TextColors {
@@ -400,7 +400,7 @@ fn graphite_honey() -> Colors {
             sidebar: rgba(0x101113cc), // charcoal navigation
             editor: rgba(0x1d1d1ee8),  // graphite editor
             raised: rgba(0x27282db8),  // lifted graphite
-            overlay: rgba(0x2b2c31de), // dark metal overlay
+            overlay: rgba(0x2b2c31ff), // dark metal overlay
             scrim: rgba(0x00000070),   // black @ ~44%
         },
         text: TextColors {
