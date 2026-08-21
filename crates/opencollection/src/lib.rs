@@ -24,7 +24,8 @@ mod structure;
 pub use repository::{
     CompletedEnvironmentSave, CompletedRequestSave, CreateError, LoadError, LoadedWorkspace,
     LocatedFolder, LocatedRequest, PreparedEnvironmentSave, PreparedRequestSave, SaveError,
-    create_bundled_workspace, load_workspace, load_workspace_from_str,
+    create_bundled_workspace, create_bundled_workspace_from_collection, load_workspace,
+    load_workspace_from_str,
 };
 pub use structure::{ItemKind, StructureError, StructureOperation, StructureResult};
 

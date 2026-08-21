@@ -16,6 +16,12 @@ fn fixture(path: &str) -> PathBuf {
         .join(path)
 }
 
+fn yaak_fixture(path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/yaak")
+        .join(path)
+}
+
 fn probe() -> Command {
     Command::new(env!("CARGO_BIN_EXE_probe"))
 }
@@ -189,6 +195,123 @@ fn create_refuses_to_overwrite_an_existing_file() {
     assert_eq!(value["error"]["category"], "invalid_arguments");
     assert_eq!(fs::read_to_string(&path).unwrap(), "keep me\n");
     fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn imports_a_yaak_export_as_bundled_opencollection_json() {
+    let destination = temporary_path("yaak-import.yml");
+    let output = probe()
+        .args(["collection", "import", "yaak"])
+        .arg(yaak_fixture("export-v4.json"))
+        .arg(&destination)
+        .arg("--json")
+        .output()
+        .expect("Yaak import should run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["imported"], true);
+    assert_eq!(value["partial"], false);
+    assert_eq!(value["sourceFormat"], "yaak_export");
+    assert_eq!(value["workspace"]["id"], "wk_1");
+    assert_eq!(value["counts"]["requests"], 1);
+    assert_eq!(value["counts"]["folders"], 1);
+    assert_eq!(value["counts"]["environments"], 1);
+    assert!(destination.is_file());
+
+    let validate = probe()
+        .args(["collection", "validate"])
+        .arg(&destination)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(validate.status.success());
+    fs::remove_file(destination).unwrap();
+}
+
+#[test]
+fn yaak_import_is_strict_by_default_and_partial_mode_is_explicit() {
+    let source = temporary_path("yaak-lossy.json");
+    let destination = temporary_path("yaak-lossy.yml");
+    fs::write(
+        &source,
+        r#"{"yaakSchema":4,"resources":{"workspaces":[{"model":"workspace","id":"wk_1","name":"Mixed"}],"grpcRequests":[{"model":"grpc_request","id":"gr_1","workspaceId":"wk_1"}]}}"#,
+    )
+    .unwrap();
+
+    let strict = probe()
+        .args(["collection", "import", "yaak"])
+        .arg(&source)
+        .arg(&destination)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(strict.status.code(), Some(8));
+    let strict_json: Value = serde_json::from_slice(&strict.stdout).unwrap();
+    assert_eq!(strict_json["error"]["category"], "unsupported_import");
+    assert_eq!(
+        strict_json["error"]["details"]["diagnostics"][0]["code"],
+        "unsupported_resource"
+    );
+    assert!(!destination.exists());
+
+    let partial = probe()
+        .args(["collection", "import", "yaak"])
+        .arg(&source)
+        .arg(&destination)
+        .args(["--allow-partial", "--json"])
+        .output()
+        .unwrap();
+    assert!(partial.status.success());
+    let partial_json: Value = serde_json::from_slice(&partial.stdout).unwrap();
+    assert_eq!(partial_json["partial"], true);
+    assert_eq!(partial_json["warnings"][0]["severity"], "lossy");
+
+    fs::remove_file(source).unwrap();
+    fs::remove_file(destination).unwrap();
+}
+
+#[test]
+fn yaak_import_lists_multiple_workspaces_and_never_overwrites() {
+    let source = temporary_path("yaak-multi.json");
+    let destination = temporary_path("yaak-existing.yml");
+    fs::write(
+        &source,
+        r#"{"yaakSchema":4,"resources":{"workspaces":[{"model":"workspace","id":"wk_a","name":"A"},{"model":"workspace","id":"wk_b","name":"B"}]}}"#,
+    )
+    .unwrap();
+
+    let ambiguous = probe()
+        .args(["collection", "import", "yaak"])
+        .arg(&source)
+        .arg(&destination)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(ambiguous.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&ambiguous.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "workspace_selection_required");
+    assert_eq!(value["error"]["details"]["workspaces"][1]["id"], "wk_b");
+
+    fs::write(&destination, "keep me\n").unwrap();
+    let conflict = probe()
+        .args(["collection", "import", "yaak"])
+        .arg(&source)
+        .arg(&destination)
+        .args(["--workspace", "wk_b", "--json"])
+        .output()
+        .unwrap();
+    assert!(!conflict.status.success());
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "keep me\n");
+
+    fs::remove_file(source).unwrap();
+    fs::remove_file(destination).unwrap();
 }
 
 #[test]

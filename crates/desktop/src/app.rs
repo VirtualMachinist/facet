@@ -9,11 +9,11 @@ use std::{
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
     FontWeight, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, PromptLevel, Render,
-    ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Task,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
-    WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
-    uniform_list,
+    MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, PromptButton,
+    PromptLevel, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
+    Styled as _, Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
+    WindowControlArea, WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px,
+    relative, size, uniform_list,
 };
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -25,7 +25,10 @@ use probe_core::{
 use probe_http::{ExecutionOptions, HttpError, HttpResponse};
 use probe_opencollection::{
     ItemKind, LoadedWorkspace, StructureOperation, StructureResult, create_bundled_workspace,
-    load_workspace,
+    create_bundled_workspace_from_collection, load_workspace,
+};
+use probe_yaak::{
+    ImportDiagnostic, ImportDiagnosticSeverity, YaakImportError, inspect_yaak_source,
 };
 
 use crate::{
@@ -62,6 +65,81 @@ use crate::{
 
 const APPLICATION_ID: &str = "dev.probe.desktop";
 const APPLICATION_NAME: &str = "Probe";
+const IMPORT_DIAGNOSTIC_GROUP_LIMIT: usize = 8;
+
+fn suggested_collection_filename(name: &str) -> String {
+    let stem = name
+        .trim()
+        .chars()
+        .map(|character| {
+            if matches!(character, '/' | '\\' | ':' | '\0') {
+                '-'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let stem = stem.trim_matches([' ', '.', '-']);
+    format!("{}.yml", if stem.is_empty() { "Imported" } else { stem })
+}
+
+fn format_import_diagnostics(diagnostics: &[ImportDiagnostic]) -> String {
+    if diagnostics.is_empty() {
+        return "No compatibility issues found.".to_owned();
+    }
+
+    let lossy_count = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy)
+        .count();
+    let warning_count = diagnostics.len() - lossy_count;
+    let mut groups = BTreeMap::new();
+    for diagnostic in diagnostics {
+        *groups
+            .entry((
+                diagnostic.severity,
+                diagnostic.resource_type.as_str(),
+                diagnostic.field.as_deref(),
+                diagnostic.code,
+                diagnostic.message.as_str(),
+            ))
+            .or_insert(0_usize) += 1;
+    }
+
+    let mut lines = vec![format!(
+        "Found {} compatibility issue(s): {lossy_count} lossy, {warning_count} warning(s).",
+        diagnostics.len()
+    )];
+    lines.push(String::new());
+    for ((severity, resource_type, field, _, message), count) in
+        groups.iter().take(IMPORT_DIAGNOSTIC_GROUP_LIMIT)
+    {
+        let resource = field
+            .map(|field| format!("{resource_type}.{field}"))
+            .unwrap_or_else(|| (*resource_type).to_owned());
+        lines.push(format!(
+            "• {count} {} — {resource}: {message}",
+            severity.as_str()
+        ));
+    }
+    if groups.len() > IMPORT_DIAGNOSTIC_GROUP_LIMIT {
+        let hidden_group_count = groups.len() - IMPORT_DIAGNOSTIC_GROUP_LIMIT;
+        let hidden_issue_count = groups
+            .values()
+            .skip(IMPORT_DIAGNOSTIC_GROUP_LIMIT)
+            .sum::<usize>();
+        lines.push(format!(
+            "• {hidden_issue_count} more issue(s) across {hidden_group_count} additional type(s)"
+        ));
+    }
+    if lossy_count > 0 {
+        lines.push(String::new());
+        lines.push(
+            "Import Supported Data will omit or change the lossy fields listed above.".to_owned(),
+        );
+    }
+    lines.join("\n")
+}
 
 #[cfg(test)]
 use crate::filesystem::{WATCH_POLL, drain_watch_events};
@@ -105,6 +183,7 @@ enum PendingClose {
     Create {
         path: PathBuf,
     },
+    ImportYaak,
 }
 
 const TREE_LIST_PADDING_Y: f32 = 2.0;
@@ -425,6 +504,228 @@ impl ProbeApp {
             .detach();
     }
 
+    fn request_import_yaak(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty = self.dirty_keys();
+        if !dirty.is_empty() {
+            self.prompt_unsaved(dirty, PendingClose::ImportYaak, window, cx);
+            return;
+        }
+        if self.has_pending_environment_work() {
+            self.pending_close = Some(PendingClose::ImportYaak);
+            self.start_next_environment_save(window, cx);
+            return;
+        }
+        self.choose_yaak_import(window, cx);
+    }
+
+    fn choose_yaak_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: true,
+            multiple: false,
+            prompt: Some("Import from Yaak".into()),
+        });
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let paths = match receiver.await {
+                    Ok(Ok(Some(paths))) => paths,
+                    Ok(Ok(None)) | Err(_) => return,
+                    Ok(Err(error)) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.message =
+                                Some(format!("Could not open the Yaak source picker: {error}"));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let Some(source) = paths.into_iter().next() else {
+                    return;
+                };
+                let _ = view.update_in(cx, |view, _, cx| {
+                    view.loading = true;
+                    view.message = None;
+                    cx.notify();
+                });
+                let preview = match cx
+                    .background_spawn(async move { inspect_yaak_source(source) })
+                    .await
+                {
+                    Ok(preview) => preview,
+                    Err(error) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            view.message = Some(format!("Could not inspect Yaak data: {error}"));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+
+                let summaries = preview.workspaces();
+                let selected_id = if summaries.len() == 1 {
+                    summaries[0].id.clone()
+                } else {
+                    let detail = summaries
+                        .iter()
+                        .map(|workspace| format!("{} — {}", workspace.name, workspace.id))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let mut buttons = summaries
+                        .iter()
+                        .map(|workspace| {
+                            PromptButton::new(format!("{} — {}", workspace.name, workspace.id))
+                        })
+                        .collect::<Vec<_>>();
+                    buttons.push(PromptButton::cancel("Cancel"));
+                    let prompt = match view.update_in(cx, |_, window, cx| {
+                        window.prompt(
+                            PromptLevel::Info,
+                            "Select a Yaak workspace",
+                            Some(&detail),
+                            &buttons,
+                            cx,
+                        )
+                    }) {
+                        Ok(prompt) => prompt,
+                        Err(_) => return,
+                    };
+                    let Ok(answer) = prompt.await else {
+                        return;
+                    };
+                    let Some(workspace) = summaries.get(answer) else {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            cx.notify();
+                        });
+                        return;
+                    };
+                    workspace.id.clone()
+                };
+
+                let imported = match preview.convert(Some(&selected_id), false) {
+                    Ok(imported) => imported,
+                    Err(YaakImportError::Unsupported(diagnostics)) => {
+                        let detail = format_import_diagnostics(&diagnostics);
+                        let prompt = match view.update_in(cx, |_, window, cx| {
+                            window.prompt(
+                                PromptLevel::Warning,
+                                "Some Yaak data cannot be represented",
+                                Some(&detail),
+                                &[
+                                    PromptButton::cancel("Cancel"),
+                                    PromptButton::ok("Import Supported Data"),
+                                ],
+                                cx,
+                            )
+                        }) {
+                            Ok(prompt) => prompt,
+                            Err(_) => return,
+                        };
+                        let Ok(answer) = prompt.await else {
+                            return;
+                        };
+                        if answer != 1 {
+                            let _ = view.update_in(cx, |view, _, cx| {
+                                view.loading = false;
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        match preview.convert(Some(&selected_id), true) {
+                            Ok(imported) => imported,
+                            Err(error) => {
+                                let _ = view.update_in(cx, |view, _, cx| {
+                                    view.loading = false;
+                                    view.message =
+                                        Some(format!("Could not convert Yaak data: {error}"));
+                                    cx.notify();
+                                });
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            view.message = Some(format!("Could not convert Yaak data: {error}"));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+
+                let filename = suggested_collection_filename(&imported.workspace.name);
+                let destination_receiver = match view.update_in(cx, |view, _, cx| {
+                    cx.prompt_for_new_path(&view.new_collection_directory(), Some(&filename))
+                }) {
+                    Ok(receiver) => receiver,
+                    Err(_) => return,
+                };
+                let destination = match destination_receiver.await {
+                    Ok(Ok(Some(path))) => path,
+                    Ok(Ok(None)) | Err(_) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(Err(error)) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            view.message = Some(format!(
+                                "Could not open the import destination picker: {error}"
+                            ));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let warning_count = imported.diagnostics.len();
+                let result = cx
+                    .background_spawn(async move {
+                        let workspace = create_bundled_workspace_from_collection(
+                            &destination,
+                            &imported.collection,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let canonical_path = workspace
+                            .source_path()
+                            .ok_or_else(|| {
+                                format!(
+                                    "imported collection at {} has no filesystem path",
+                                    destination.display()
+                                )
+                            })?
+                            .to_owned();
+                        Ok::<_, String>((canonical_path, workspace))
+                    })
+                    .await;
+                let _ = view.update_in(cx, |view, window, cx| {
+                    view.loading = false;
+                    match result {
+                        Ok((path, workspace)) => {
+                            view.set_workspace(path, workspace);
+                            view.start_workspace_watcher(window, cx);
+                            view.persist_session(cx);
+                            if warning_count > 0 {
+                                view.message = Some(format!(
+                                    "Imported Yaak workspace with {warning_count} warning(s)."
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            view.message = Some(format!("Could not import Yaak data: {error}"));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+    }
+
     fn new_collection_directory(&self) -> PathBuf {
         if let Some(base) = self
             .workspace_path
@@ -699,7 +1000,8 @@ impl ProbeApp {
                 | PendingClose::Window
                 | PendingClose::Quit
                 | PendingClose::Open { .. }
-                | PendingClose::Create { .. } => self.dirty_keys(),
+                | PendingClose::Create { .. }
+                | PendingClose::ImportYaak => self.dirty_keys(),
             };
             if dirty.is_empty() {
                 self.finish_pending_close(pending, window, cx);
@@ -1916,6 +2218,7 @@ impl ProbeApp {
                 restored_state,
             } => self.load_workspace_path(path, restored_state, window, cx),
             PendingClose::Create { path } => self.create_workspace_path(path, window, cx),
+            PendingClose::ImportYaak => self.choose_yaak_import(window, cx),
         }
     }
 
@@ -2691,6 +2994,7 @@ impl ProbeApp {
         let new_folder_view = cx.weak_entity();
         let new_collection_view = cx.weak_entity();
         let open_collection_view = cx.weak_entity();
+        let import_yaak_view = cx.weak_entity();
         let can_edit = self.loaded_workspace.is_some() && self.structure_task.is_none();
         let add_menu_state_view = cx.weak_entity();
         let add_popup = div()
@@ -2827,6 +3131,18 @@ impl ProbeApp {
                                 let _ = open_collection_view.update(cx, |view, cx| {
                                     if !view.loading {
                                         view.choose_workspace(window, cx);
+                                    }
+                                });
+                            },
+                        ))
+                        .child(components::secondary_button(
+                            theme,
+                            "sidebar-import-yaak",
+                            "Import from Yaak…",
+                            move |_, window, cx| {
+                                let _ = import_yaak_view.update(cx, |view, cx| {
+                                    if !view.loading {
+                                        view.request_import_yaak(window, cx);
                                     }
                                 });
                             },
@@ -4934,6 +5250,7 @@ impl ProbeApp {
         let home_view = cx.weak_entity();
         let new_view = cx.weak_entity();
         let open_view = cx.weak_entity();
+        let import_yaak_view = cx.weak_entity();
         let layout_view = cx.weak_entity();
         let collection_open = self.loaded_workspace.is_some();
         let mut popup = div()
@@ -5026,6 +5343,25 @@ impl ProbeApp {
                                 view.workspace_switcher_open = false;
                                 if !view.loading {
                                     view.choose_workspace(window, cx);
+                                }
+                            });
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .debug_selector(|| "workspace-switcher-import-yaak".into())
+                    .child(components::menu_button(
+                        theme,
+                        "workspace-switcher-import-yaak",
+                        "Import from Yaak…",
+                        None,
+                        move |window, cx| {
+                            let _ = import_yaak_view.update(cx, |view, cx| {
+                                view.workspace_switcher_open = false;
+                                if !view.loading {
+                                    view.request_import_yaak(window, cx);
                                 }
                             });
                         },
@@ -5935,8 +6271,11 @@ mod tests {
     use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
     use probe_core::WorkspaceItemRef;
     use probe_http::{HttpResponse, ResponseHeader};
+    use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 
-    use super::{ProbeApp, bind_platform_hotkeys};
+    use super::{
+        IMPORT_DIAGNOSTIC_GROUP_LIMIT, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
+    };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
         response_viewer::ResponseViewerTab,
@@ -5951,6 +6290,56 @@ mod tests {
     fn large_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase2-large-workspace.yml")
+    }
+
+    #[test]
+    fn import_diagnostics_aggregate_repeated_issues() {
+        let diagnostics = (0..889)
+            .map(|index| ImportDiagnostic {
+                code: "unsupported_field",
+                severity: ImportDiagnosticSeverity::Lossy,
+                resource_type: "http_request".to_owned(),
+                resource_id: Some(format!("rq_{index}")),
+                field: Some("description".to_owned()),
+                message: "request descriptions cannot be represented by the current Probe domain"
+                    .to_owned(),
+            })
+            .collect::<Vec<_>>();
+
+        let detail = format_import_diagnostics(&diagnostics);
+
+        assert!(detail.contains("Found 889 compatibility issue(s): 889 lossy, 0 warning(s)."));
+        assert!(detail.contains("• 889 lossy — http_request.description"));
+        assert_eq!(
+            detail
+                .matches("request descriptions cannot be represented")
+                .count(),
+            1
+        );
+        assert!(!detail.contains("rq_0"));
+        assert!(detail.lines().count() <= 5);
+    }
+
+    #[test]
+    fn import_diagnostics_bound_the_number_of_issue_groups() {
+        let diagnostics = (0..IMPORT_DIAGNOSTIC_GROUP_LIMIT + 2)
+            .map(|index| ImportDiagnostic {
+                code: "unsupported_field",
+                severity: ImportDiagnosticSeverity::Lossy,
+                resource_type: "http_request".to_owned(),
+                resource_id: Some(format!("rq_{index}")),
+                field: Some(format!("field_{index}")),
+                message: "field cannot be represented".to_owned(),
+            })
+            .collect::<Vec<_>>();
+
+        let detail = format_import_diagnostics(&diagnostics);
+
+        assert!(detail.contains("• 2 more issue(s) across 2 additional type(s)"));
+        assert_eq!(
+            detail.lines().filter(|line| line.starts_with('•')).count(),
+            IMPORT_DIAGNOSTIC_GROUP_LIMIT + 1
+        );
     }
 
     fn environment_fixture() -> PathBuf {
@@ -6570,6 +6959,39 @@ mod tests {
         assert_eq!(name.as_deref(), Some("pets"));
         assert_eq!(requests, Some(0));
         fs::remove_dir_all(destination_dir).unwrap();
+    }
+
+    #[gpui::test]
+    fn workspace_switcher_includes_new_collection(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let trigger = visual
+            .debug_bounds("workspace-switcher-trigger")
+            .expect("workspace switcher trigger should render");
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        visual
+            .debug_bounds("workspace-switcher-new")
+            .expect("workspace switcher should include New Collection");
+        visual
+            .debug_bounds("workspace-switcher-open")
+            .expect("workspace switcher should include Open Collection");
+        visual
+            .debug_bounds("workspace-switcher-import-yaak")
+            .expect("workspace switcher should include Import from Yaak");
     }
 
     #[gpui::test]

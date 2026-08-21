@@ -112,6 +112,11 @@ probe request move ./api list-admins.yml --parent admin --index 0 --json
 probe folder rename ./api admin --name Administration --json
 
 probe collection validate ./api --quiet
+
+probe collection import yaak ./yaak-export.json ./imported.yml --json
+
+probe collection import yaak ./yaak-sync ./imported.yml \
+  --workspace wk_01 --allow-partial --json
 ```
 
 `--environment <name>` selects an OpenCollection environment, applies its `extends`
@@ -121,10 +126,23 @@ environment.
 
 ## Development
 
+Install [rustup](https://rustup.rs/) and enter the repository. The checked-in
+`rust-toolchain.toml` automatically selects Rust 1.95.0 and installs the `rustfmt`
+and `clippy` components. Verify the environment with:
+
+```bash
+rustc --version
+cargo --version
+cargo fmt --check
+```
+
+On macOS, desktop builds also require the full Xcode developer tools (not only the
+standalone Command Line Tools), because pinned GPUI compiles Metal shaders.
+
 The repository is a Cargo workspace. It currently includes OpenCollection parsing,
 bundled and unbundled filesystem loading, an indexed in-memory workspace, shared
 environment resolution, asynchronous HTTP execution, a versioned automation-safe CLI
-contract, and a native GPUI desktop shell with semantic light/dark themes,
+contract, Yaak export/directory-sync import, and a native GPUI desktop shell with semantic light/dark themes,
 OpenCollection-backed browsing, request tabs, resizable editor/response panes, and
 a title-bar workspace switcher. Empty workspaces can create a new bundled collection
 or open an existing one. The request editor updates method, URL, query and

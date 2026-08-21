@@ -5,12 +5,13 @@ use std::{
 };
 
 use probe_core::{
-    Authentication, AuthenticationKind, AuthenticationValue, Body, EnvironmentResolutionError,
-    FormField, Header, QueryParameter, RequestBody, RequestUpdate, resolve_environment,
+    Authentication, AuthenticationKind, AuthenticationValue, Body, Collection, CollectionItem,
+    CollectionMetadata, EnvironmentResolutionError, FormField, Header, HttpRequest, ItemMetadata,
+    QueryParameter, RequestBody, RequestUpdate, resolve_environment,
 };
 use probe_opencollection::{
     CreateError, SaveError, StructureError, StructureOperation, create_bundled_workspace,
-    load_workspace, load_workspace_from_str,
+    create_bundled_workspace_from_collection, load_workspace, load_workspace_from_str,
 };
 
 fn fixture(path: &str) -> PathBuf {
@@ -41,6 +42,41 @@ fn copy_directory(source: &std::path::Path, destination: &std::path::Path) {
             fs::copy(entry.path(), target).unwrap();
         }
     }
+}
+
+#[test]
+fn creates_a_bundled_workspace_from_a_domain_collection_without_overwriting() {
+    let path = temporary_path("domain-import.yml");
+    let collection = Collection {
+        metadata: CollectionMetadata {
+            name: Some("Imported Pets".to_owned()),
+            ..CollectionMetadata::default()
+        },
+        items: vec![CollectionItem::HttpRequest(HttpRequest {
+            metadata: ItemMetadata {
+                name: Some("List pets".to_owned()),
+                ..ItemMetadata::default()
+            },
+            method: Some("GET".to_owned()),
+            url: Some("https://example.com/pets".to_owned()),
+            ..HttpRequest::default()
+        })],
+        ..Collection::default()
+    };
+
+    let loaded = create_bundled_workspace_from_collection(&path, &collection).unwrap();
+    assert_eq!(loaded.workspace().request_count(), 1);
+    assert_eq!(
+        loaded.workspace().metadata().name.as_deref(),
+        Some("Imported Pets")
+    );
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("opencollection: 1.0.0"));
+    assert!(saved.contains("name: List pets"));
+
+    let error = create_bundled_workspace_from_collection(&path, &collection).unwrap_err();
+    assert!(matches!(error, CreateError::AlreadyExists(_)));
+    fs::remove_file(path).unwrap();
 }
 
 #[test]

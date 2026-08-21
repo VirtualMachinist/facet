@@ -40,6 +40,23 @@ over a shared core.
           ▼                  ▼                  ▼
         YAML              Network           Files/DB
 
+Portable import formats are inbound adapters. The Yaak adapter reads official export
+JSON or directory-sync models and produces the same domain `Collection` used by every
+interface. OpenCollection remains the only canonical persistence representation:
+
+    Yaak export / sync directory
+                ↓
+       Yaak import adapter
+                ↓
+       Domain Collection
+                ↓
+    OpenCollection repository
+                ↓
+       Bundled YAML file
+
+The adapter does not own CLI prompts, GPUI state, or filesystem persistence. Both
+frontends invoke it and pass the converted domain value to the shared atomic writer.
+
 
 ## Fundamental Rule
 
@@ -198,6 +215,7 @@ Examples:
 - resolve environment
 - save request
 - validate collection
+- inspect and convert an imported collection
 
 These operations should be usable from both CLI and GPUI without
 knowledge of either frontend.

@@ -7,6 +7,7 @@ diagnostics on stderr. Add `--json` to commands that return data or structured e
 
 ```text
 probe collection create <path> [--name <name>] [--json]
+probe collection import yaak <source> <destination> [--workspace <id>] [--allow-partial] [--json]
 probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--json]
@@ -32,6 +33,20 @@ directory containing `opencollection.yml` or `opencollection.yaml`.
 `collection create` always writes a new bundled YAML file and refuses to overwrite
 an existing path. A missing `.yml` extension is added. `--name` sets `info.name`;
 otherwise the file stem is used. Stdin (`-`) is not accepted.
+
+`collection import yaak` accepts either an official Yaak export JSON file (schemas
+1–4) or a Yaak Directory/Git Sync directory. It converts one Yaak workspace through
+the shared import adapter and writes a new bundled OpenCollection YAML file atomically.
+The destination is never overwritten and stdin is not accepted. If a source contains
+multiple workspaces, pass the exact Yaak workspace ID with `--workspace`; JSON errors
+include the selectable IDs and names.
+
+Import is strict by default. Unsupported or unknown data returns
+`unsupported_import` without creating the destination. `--allow-partial` explicitly
+permits those omissions and returns every deterministic compatibility diagnostic in
+`warnings`. Authentication kinds that OpenCollection can store are preserved even if
+Probe's current HTTP engine cannot execute them; those appear as warning diagnostics,
+not silent data loss.
 
 For `request get` and `request run`, `--environment <name>` selects an environment,
 applies parent environments from `extends`, and interpolates variables in supported
@@ -138,6 +153,21 @@ change type without incrementing the version.
 }
 ```
 
+`collection import yaak --json` returns:
+
+```json
+{
+  "schemaVersion": 1,
+  "counts": { "environments": 1, "folders": 1, "requests": 1 },
+  "imported": true,
+  "partial": false,
+  "path": "/tmp/imported.yml",
+  "sourceFormat": "yaak_export",
+  "warnings": [],
+  "workspace": { "id": "wk_1", "name": "Pets" }
+}
+```
+
 `request list --json` returns a `requests` array. Each entry has nullable `method`,
 `name`, and `url` fields plus a string `selector`.
 
@@ -238,6 +268,11 @@ Structural validation uses stable categories `folder_not_found`, `destination_no
 `duplicate_destination`, `invalid_destination`, `invalid_name`, and `invalid_index`.
 Missing request/folder selectors use exit code 4; invalid destinations, names, duplicates, and
 indices use exit code 2.
+
+Yaak compatibility failures use exit code 8 and category `unsupported_import`.
+Malformed sources use `invalid_import` and exit code 3; missing or ambiguous workspace
+selection and an existing destination use exit code 2. Other destination write failures
+use the existing persistence categories and exit code 7.
 
 `collection validate` requires the OpenCollection `1.0.0` marker, explicit collection
 metadata, and a `bundled` flag matching whether the source is a bundled file/stdin document or

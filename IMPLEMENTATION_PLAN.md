@@ -707,3 +707,21 @@ Conceptually:
                 ┌──────┼──────┐
                 │      │      │
                CLI    GPUI    MCP
+
+
+## Phase 25 — Yaak Import
+
+Add a shared inbound adapter for official Yaak export JSON and Directory/Git Sync
+models. Convert the selected Yaak workspace into the domain model, then persist it as
+a new bundled OpenCollection document through the shared repository.
+
+Requirements:
+
+- CLI and GPUI use the same import conversion and persistence path
+- schemas 1–4 are migrated before conversion
+- multiple workspaces require explicit selection
+- strict mode rejects lossy conversion before creating a destination
+- partial mode requires explicit user intent and reports deterministic diagnostics
+- supported authentication remains stored even when current execution is unavailable
+- destination writes are atomic and never overwrite an existing path
+- fixture tests cover export, sync, strict/partial behavior, persistence, CLI JSON, and exit codes

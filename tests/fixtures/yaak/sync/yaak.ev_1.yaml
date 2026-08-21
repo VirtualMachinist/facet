@@ -1,0 +1,9 @@
+model: environment
+id: ev_1
+workspaceId: wk_1
+name: Global Variables
+parentModel: workspace
+variables:
+  - name: API_URL
+    value: https://api.example.com
+    enabled: true

@@ -4774,6 +4774,7 @@ dependencies = [
  "probe-core",
  "probe-http",
  "probe-opencollection",
+ "probe-yaak",
  "serde_json",
  "tokio",
 ]
@@ -4796,6 +4797,7 @@ dependencies = [
  "probe-core",
  "probe-http",
  "probe-opencollection",
+ "probe-yaak",
  "serde",
  "serde_json",
  "syntect",
@@ -4820,6 +4822,16 @@ dependencies = [
  "fs4",
  "probe-core",
  "serde",
+ "serde_yaml_ng",
+]
+
+[[package]]
+name = "probe-yaak"
+version = "0.1.0"
+dependencies = [
+ "probe-core",
+ "serde",
+ "serde_json",
  "serde_yaml_ng",
 ]
 

@@ -53,10 +53,10 @@ impl ExecutionState {
         generation: u64,
         result: Result<HttpResponse, HttpError>,
     ) {
-        if !self
+        if self
             .active
             .get(&key)
-            .is_some_and(|active| active.generation == generation)
+            .is_none_or(|active| active.generation != generation)
         {
             return;
         }

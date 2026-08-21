@@ -15,8 +15,10 @@ use probe_core::{
 use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse};
 use probe_opencollection::{
     CreateError, LoadedWorkspace, SaveError, StructureError, StructureOperation, StructureResult,
-    create_bundled_workspace, load_workspace, load_workspace_from_str,
+    create_bundled_workspace, create_bundled_workspace_from_collection, load_workspace,
+    load_workspace_from_str,
 };
+use probe_yaak::{ImportDiagnostic, YaakImportError, inspect_yaak_source};
 use serde_json::json;
 
 mod presentation;
@@ -35,6 +37,8 @@ pub const CONFIGURATION_EXIT_CODE: u8 = 5;
 pub const EXECUTION_EXIT_CODE: u8 = 6;
 /// Exit code used for persistence failures and external-modification conflicts.
 pub const PERSISTENCE_EXIT_CODE: u8 = 7;
+/// Exit code used when a source requires an explicitly lossy import.
+pub const IMPORT_EXIT_CODE: u8 = 8;
 /// Version of the documented machine-readable JSON contracts.
 pub const JSON_SCHEMA_VERSION: u64 = 1;
 
@@ -60,15 +64,19 @@ impl RunOutput {
 
     fn failure(error: CliError, json_output: bool) -> Self {
         if json_output {
+            let mut value = json!({
+                "schemaVersion": JSON_SCHEMA_VERSION,
+                "error": {
+                    "category": error.category,
+                    "exitCode": error.exit_code,
+                    "message": error.message,
+                }
+            });
+            if let Some(details) = error.details {
+                value["error"]["details"] = details;
+            }
             Self {
-                stdout: pretty_json(&json!({
-                    "schemaVersion": JSON_SCHEMA_VERSION,
-                    "error": {
-                        "category": error.category,
-                        "exitCode": error.exit_code,
-                        "message": error.message,
-                    }
-                })),
+                stdout: pretty_json(&value),
                 stderr: String::new(),
                 exit_code: error.exit_code,
             }
@@ -92,6 +100,7 @@ pub const fn help() -> &'static str {
         "\n",
         "Commands:\n",
         "  collection create <path>            Create an empty bundled collection\n",
+        "  collection import yaak <source> <destination>  Import a Yaak workspace\n",
         "  collection validate <path>          Validate an OpenCollection workspace\n",
         "  request list <path>                 List HTTP requests\n",
         "  request get <path> <selector>       Inspect an HTTP request\n",
@@ -112,6 +121,8 @@ pub const fn help() -> &'static str {
         "      --value <value>        Set an environment variable value\n",
         "      --parent <selector>    Destination folder (omit for collection root)\n",
         "      --index <index>        Zero-based insertion position (omit to append)\n",
+        "      --workspace <id>       Select a workspace from a multi-workspace import\n",
+        "      --allow-partial        Explicitly allow lossy Yaak conversion\n",
         "      --json                Emit versioned deterministic JSON\n",
         "  -q, --quiet               Suppress successful command output\n",
         "  -h, --help                Print help\n",
@@ -123,11 +134,14 @@ const COLLECTION_HELP: &str = concat!(
     "\n",
     "Commands:\n",
     "  create <path> [--name <name>]  Create an empty bundled OpenCollection YAML file\n",
+    "  import yaak <source> <destination> [--workspace <id>] [--allow-partial]\n",
     "  validate <path|->              Validate a bundled file, stdin (-), or unbundled directory\n",
     "\n",
     "create writes a new bundled collection and refuses to overwrite an existing path.\n",
     "When --name is omitted, the collection title is the file stem. A missing .yml\n",
     "extension is added. validate accepts a bundled YAML file, stdin (-), or an unbundled directory.\n",
+    "Yaak import accepts an official export JSON file or Directory Sync folder and never\n",
+    "overwrites an existing destination. Multi-workspace exports require --workspace.\n",
 );
 
 const REQUEST_HELP: &str = concat!(
@@ -242,17 +256,7 @@ where
         Ok(options) => options,
         Err(error) => return RunOutput::failure(error, json_output),
     };
-    match parse_command(
-        &args,
-        options.environment,
-        options.output,
-        options.update,
-        options.parent,
-        options.index,
-        options.value,
-    )
-    .and_then(|command| execute(command, stdin))
-    {
+    match parse_command(&args, options).and_then(|command| execute(command, stdin)) {
         Ok(output) => RunOutput::success(output.render(json_output, quiet)),
         Err(error) => RunOutput::failure(error, json_output),
     }
@@ -263,6 +267,12 @@ enum Command {
     CreateCollection {
         path: PathBuf,
         name: Option<String>,
+    },
+    ImportYaak {
+        source: PathBuf,
+        destination: PathBuf,
+        workspace: Option<String>,
+        allow_partial: bool,
     },
     Validate {
         input: WorkspaceInput,
@@ -354,6 +364,7 @@ struct CliError {
     category: &'static str,
     message: String,
     exit_code: u8,
+    details: Option<serde_json::Value>,
 }
 
 impl CliError {
@@ -362,6 +373,7 @@ impl CliError {
             category: "invalid_arguments",
             message: message.into(),
             exit_code: INVALID_ARGUMENTS_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -370,6 +382,7 @@ impl CliError {
             category: "invalid_workspace",
             message: message.into(),
             exit_code: INVALID_WORKSPACE_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -378,6 +391,7 @@ impl CliError {
             category: "request_not_found",
             message: format!("request selector not found: {selector}"),
             exit_code: REQUEST_NOT_FOUND_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -398,6 +412,7 @@ impl CliError {
             category,
             message: error.to_string(),
             exit_code: CONFIGURATION_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -420,6 +435,7 @@ impl CliError {
             } else {
                 EXECUTION_EXIT_CODE
             },
+            details: None,
         }
     }
 
@@ -428,6 +444,7 @@ impl CliError {
             category: "runtime_error",
             message: format!("cannot start asynchronous HTTP runtime: {error}"),
             exit_code: EXECUTION_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -436,6 +453,7 @@ impl CliError {
             category: "stdin_error",
             message: format!("cannot read OpenCollection YAML from stdin: {error}"),
             exit_code: INVALID_WORKSPACE_EXIT_CODE,
+            details: None,
         }
     }
 
@@ -454,6 +472,7 @@ impl CliError {
             category,
             message: error.to_string(),
             exit_code,
+            details: None,
         }
     }
 
@@ -467,6 +486,7 @@ impl CliError {
                 category: "persistence_error",
                 message: error.to_string(),
                 exit_code: PERSISTENCE_EXIT_CODE,
+                details: None,
             },
         }
     }
@@ -492,6 +512,58 @@ impl CliError {
             category,
             message: error.to_string(),
             exit_code,
+            details: None,
+        }
+    }
+
+    fn yaak(error: YaakImportError) -> Self {
+        match error {
+            YaakImportError::WorkspaceSelectionRequired(workspaces) => Self {
+                category: "workspace_selection_required",
+                message: format!(
+                    "Yaak source contains {} workspaces; select one with --workspace <id>",
+                    workspaces.len()
+                ),
+                exit_code: INVALID_ARGUMENTS_EXIT_CODE,
+                details: Some(json!({
+                    "workspaces": workspaces.into_iter().map(|workspace| json!({
+                        "id": workspace.id,
+                        "name": workspace.name,
+                    })).collect::<Vec<_>>()
+                })),
+            },
+            YaakImportError::WorkspaceNotFound(id) => Self {
+                category: "workspace_not_found",
+                message: format!("Yaak workspace not found: {id}"),
+                exit_code: INVALID_ARGUMENTS_EXIT_CODE,
+                details: None,
+            },
+            YaakImportError::Unsupported(diagnostics) => Self {
+                category: "unsupported_import",
+                message: format!(
+                    "Yaak workspace contains {} lossy item(s); inspect diagnostics or pass --allow-partial",
+                    diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity.as_str() == "lossy")
+                        .count()
+                ),
+                exit_code: IMPORT_EXIT_CODE,
+                details: Some(json!({
+                    "diagnostics": diagnostics.iter().map(import_diagnostic_json).collect::<Vec<_>>()
+                })),
+            },
+            YaakImportError::Invalid(message) => Self {
+                category: "invalid_import",
+                message,
+                exit_code: INVALID_WORKSPACE_EXIT_CODE,
+                details: None,
+            },
+            YaakImportError::Io { path, source } => Self {
+                category: "invalid_import",
+                message: format!("cannot read {}: {source}", path.display()),
+                exit_code: INVALID_WORKSPACE_EXIT_CODE,
+                details: None,
+            },
         }
     }
 }
@@ -503,6 +575,8 @@ struct ParsedOptions {
     parent: Option<String>,
     index: Option<usize>,
     value: Option<String>,
+    workspace: Option<String>,
+    allow_partial: bool,
 }
 
 fn extract_options(args: &mut Vec<String>) -> Result<ParsedOptions, CliError> {
@@ -513,7 +587,23 @@ fn extract_options(args: &mut Vec<String>) -> Result<ParsedOptions, CliError> {
         parent: extract_string_option(args, "--parent")?,
         index: extract_index(args)?,
         value: extract_string_option(args, "--value")?,
+        workspace: extract_string_option(args, "--workspace")?,
+        allow_partial: extract_flag(args, "--allow-partial")?,
     })
+}
+
+fn extract_flag(args: &mut Vec<String>, option: &'static str) -> Result<bool, CliError> {
+    let count = args
+        .iter()
+        .filter(|argument| argument.as_str() == option)
+        .count();
+    if count > 1 {
+        return Err(CliError::invalid_arguments(format!(
+            "{option} may only be specified once"
+        )));
+    }
+    args.retain(|argument| argument != option);
+    Ok(count == 1)
 }
 
 fn extract_request_update(args: &mut Vec<String>) -> Result<RequestUpdate, CliError> {
@@ -566,15 +656,17 @@ fn extract_index(args: &mut Vec<String>) -> Result<Option<usize>, CliError> {
         .transpose()
 }
 
-fn parse_command(
-    args: &[String],
-    environment: Option<String>,
-    output: Option<PathBuf>,
-    update: RequestUpdate,
-    parent: Option<String>,
-    index: Option<usize>,
-    value: Option<String>,
-) -> Result<Command, CliError> {
+fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, CliError> {
+    let ParsedOptions {
+        environment,
+        output,
+        update,
+        parent,
+        index,
+        value,
+        workspace,
+        allow_partial,
+    } = options;
     let is_environment_set = matches!(
         args,
         [group, action, _] if group == "environment" && action == "set"
@@ -582,6 +674,16 @@ fn parse_command(
     if value.is_some() && !is_environment_set {
         return Err(CliError::invalid_arguments(
             "invalid command; run 'probe --help' for usage",
+        ));
+    }
+    let is_yaak_import = matches!(
+        args,
+        [group, action, format, _, _]
+            if group == "collection" && action == "import" && format == "yaak"
+    );
+    if (workspace.is_some() || allow_partial) && !is_yaak_import {
+        return Err(CliError::invalid_arguments(
+            "--workspace and --allow-partial are only valid for Yaak import",
         ));
     }
     match args {
@@ -599,6 +701,26 @@ fn parse_command(
             Ok(Command::CreateCollection {
                 path: PathBuf::from(path),
                 name: update.name,
+            })
+        }
+        [group, action, format, source, destination]
+            if group == "collection"
+                && action == "import"
+                && format == "yaak"
+                && source != "-"
+                && destination != "-"
+                && environment.is_none()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.is_empty()
+                && value.is_none() =>
+        {
+            Ok(Command::ImportYaak {
+                source: PathBuf::from(source),
+                destination: PathBuf::from(destination),
+                workspace,
+                allow_partial,
             })
         }
         [group, action, path]
@@ -872,6 +994,12 @@ fn parse_command(
 fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, CliError> {
     match command {
         Command::CreateCollection { path, name } => create_collection(path, name),
+        Command::ImportYaak {
+            source,
+            destination,
+            workspace,
+            allow_partial,
+        } => import_yaak(source, destination, workspace.as_deref(), allow_partial),
         Command::Validate { input } => validate(&input, stdin),
         Command::ListRequests { input } => list_requests(&input, stdin),
         Command::ListFolders { input } => list_folders(&input, stdin),
@@ -1114,6 +1242,68 @@ fn create_collection(path: PathBuf, name: Option<String>) -> Result<CommandOutpu
             "created": true,
             "path": created_path,
         }),
+    })
+}
+
+fn import_yaak(
+    source: PathBuf,
+    destination: PathBuf,
+    workspace_id: Option<&str>,
+    allow_partial: bool,
+) -> Result<CommandOutput, CliError> {
+    let preview = inspect_yaak_source(&source).map_err(CliError::yaak)?;
+    let source_format = preview.format();
+    let imported = preview
+        .convert(workspace_id, allow_partial)
+        .map_err(CliError::yaak)?;
+    let loaded = create_bundled_workspace_from_collection(&destination, &imported.collection)
+        .map_err(CliError::create)?;
+    let path = loaded
+        .source_path()
+        .map(PathBuf::from)
+        .unwrap_or(destination);
+    let workspace = loaded.workspace();
+    let warning_count = imported.diagnostics.len();
+    Ok(CommandOutput {
+        human: format!(
+            "Imported Yaak workspace\nName: {}\nPath: {}\nRequests: {}\nFolders: {}\nEnvironments: {}\nWarnings: {warning_count}\n",
+            imported.workspace.name,
+            path.display(),
+            workspace.request_count(),
+            workspace.folder_count(),
+            workspace.environments().len(),
+        ),
+        json: json!({
+            "imported": true,
+            "partial": imported.partial,
+            "sourceFormat": source_format.as_str(),
+            "workspace": {
+                "id": imported.workspace.id,
+                "name": imported.workspace.name,
+            },
+            "path": path,
+            "counts": {
+                "environments": workspace.environments().len(),
+                "folders": workspace.folder_count(),
+                "requests": workspace.request_count(),
+            },
+            "warnings": imported
+                .diagnostics
+                .iter()
+                .map(import_diagnostic_json)
+                .collect::<Vec<_>>(),
+        }),
+    })
+}
+
+fn import_diagnostic_json(diagnostic: &ImportDiagnostic) -> serde_json::Value {
+    json!({
+        "code": diagnostic.code,
+        "severity": diagnostic.severity.as_str(),
+        "resourceType": diagnostic.resource_type,
+        "resourceId": diagnostic.resource_id,
+        "field": diagnostic.field,
+        "message": diagnostic.message,
     })
 }
 

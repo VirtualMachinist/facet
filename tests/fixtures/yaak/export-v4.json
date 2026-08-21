@@ -1,0 +1,62 @@
+{
+  "yaakVersion": "2026.5.0",
+  "yaakSchema": 4,
+  "resources": {
+    "workspaces": [
+      {
+        "model": "workspace",
+        "id": "wk_1",
+        "name": "Pets",
+        "headers": [
+          { "name": "X-Base", "value": "${[TOKEN]}", "enabled": true }
+        ],
+        "settingFollowRedirects": true,
+        "settingRequestTimeout": 2500
+      }
+    ],
+    "environments": [
+      {
+        "model": "environment",
+        "id": "ev_1",
+        "workspaceId": "wk_1",
+        "name": "Global Variables",
+        "parentModel": "workspace",
+        "variables": [
+          { "name": "TOKEN", "value": "secret", "enabled": true }
+        ]
+      }
+    ],
+    "folders": [
+      {
+        "model": "folder",
+        "id": "fl_1",
+        "workspaceId": "wk_1",
+        "name": "Users",
+        "sortPriority": 0
+      }
+    ],
+    "httpRequests": [
+      {
+        "model": "http_request",
+        "id": "rq_1",
+        "workspaceId": "wk_1",
+        "folderId": "fl_1",
+        "name": "List",
+        "method": "POST",
+        "url": "https://example.com/users/:id",
+        "sortPriority": 1,
+        "urlParameters": [
+          { "name": ":id", "value": "42" },
+          { "name": "page", "value": "1" }
+        ],
+        "headers": [
+          { "name": "Content-Type", "value": "application/json" }
+        ],
+        "bodyType": "application/json",
+        "body": { "text": "{\"token\":\"${[env.TOKEN]}\"}" },
+        "authenticationType": "bearer",
+        "authentication": { "token": "${[TOKEN]}" }
+      }
+    ]
+  }
+}

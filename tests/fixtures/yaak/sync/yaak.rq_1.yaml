@@ -1,0 +1,8 @@
+model: http_request
+id: rq_1
+workspaceId: wk_1
+folderId: fl_1
+name: Check
+method: GET
+url: ${[API_URL]}/health
+sortPriority: 0
