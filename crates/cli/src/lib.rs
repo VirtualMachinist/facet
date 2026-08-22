@@ -109,13 +109,16 @@ pub const fn help() -> &'static str {
         "  request create|rename|delete|move|reorder   Edit request structure\n",
         "  folder list <path>                  List folders\n",
         "  folder create|rename|delete|move|reorder    Edit folder structure\n",
+        "  environment create <path>           Create a new environment\n",
+        "  environment list <path>             List environments\n",
         "  environment set <path>              Set and persist an environment variable\n",
         "  environment unset <path>            Remove an environment variable override\n",
         "\n",
         "Options:\n",
         "      --environment <name>  Environment used to resolve or mutate variables\n",
+        "      --extends <name>       Parent environment for environment create\n",
         "      --output <file>        Write the response body to a file\n",
-        "      --name <name>          Set a request, folder, collection, or variable name\n",
+        "      --name <name>          Set a request, folder, collection, environment, or variable name\n",
         "      --method <method>      Set an HTTP method\n",
         "      --url <url>            Set a request URL\n",
         "      --value <value>        Set an environment variable value\n",
@@ -175,12 +178,15 @@ const ENVIRONMENT_HELP: &str = concat!(
     "Usage: probe environment <COMMAND>\n",
     "\n",
     "Commands:\n",
+    "  list <path|->                 List environments\n",
+    "  create <path> --name <name> [--extends <parent>]\n",
     "  set <path> --environment <name> --name <var> --value <value>\n",
     "  unset <path> --environment <name> --name <var>\n",
     "\n",
-    "Set writes a plain variable on the named environment. A parent-only variable is\n",
-    "overridden on the selected environment. Unset removes that environment's entry so\n",
-    "a parent value can show through. Stdin workspaces cannot be persisted.\n",
+    "Create adds a new environment with an optional parent. Set writes a plain variable on\n",
+    "the named environment. A parent-only variable is overridden on the selected environment.\n",
+    "Unset removes that environment's entry so a parent value can show through. Stdin\n",
+    "workspaces cannot be persisted.\n",
 );
 
 /// Runs the CLI adapter for arguments that exclude the executable name.
@@ -283,6 +289,9 @@ enum Command {
     ListFolders {
         input: WorkspaceInput,
     },
+    ListEnvironments {
+        input: WorkspaceInput,
+    },
     Get {
         input: WorkspaceInput,
         selector: String,
@@ -314,6 +323,11 @@ enum Command {
         input: WorkspaceInput,
         environment: String,
         name: String,
+    },
+    EnvironmentCreate {
+        input: WorkspaceInput,
+        name: String,
+        extends: Option<String>,
     },
 }
 
@@ -396,11 +410,22 @@ impl CliError {
     }
 
     fn configuration(error: EnvironmentResolutionError) -> Self {
-        if matches!(error, EnvironmentResolutionError::InvalidVariableName) {
+        if matches!(
+            error,
+            EnvironmentResolutionError::InvalidVariableName
+                | EnvironmentResolutionError::InvalidEnvironmentName
+        ) {
             return Self::invalid_arguments(error.to_string());
         }
         let category = match error {
             EnvironmentResolutionError::EnvironmentNotFound(_) => "environment_not_found",
+            EnvironmentResolutionError::DuplicateEnvironment(_) => "duplicate_environment",
+            EnvironmentResolutionError::ParentEnvironmentNotFound { .. } => {
+                "parent_environment_not_found"
+            }
+            EnvironmentResolutionError::EnvironmentInheritanceCycle(_) => {
+                "environment_inheritance_cycle"
+            }
             EnvironmentResolutionError::MissingVariable(_) => "missing_variable",
             EnvironmentResolutionError::VariableNotFound { .. } => "variable_not_found",
             EnvironmentResolutionError::SecretVariableUnavailable(_) => {
@@ -575,6 +600,7 @@ struct ParsedOptions {
     parent: Option<String>,
     index: Option<usize>,
     value: Option<String>,
+    extends: Option<String>,
     workspace: Option<String>,
     allow_partial: bool,
 }
@@ -587,6 +613,7 @@ fn extract_options(args: &mut Vec<String>) -> Result<ParsedOptions, CliError> {
         parent: extract_string_option(args, "--parent")?,
         index: extract_index(args)?,
         value: extract_string_option(args, "--value")?,
+        extends: extract_string_option(args, "--extends")?,
         workspace: extract_string_option(args, "--workspace")?,
         allow_partial: extract_flag(args, "--allow-partial")?,
     })
@@ -664,6 +691,7 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
         parent,
         index,
         value,
+        extends,
         workspace,
         allow_partial,
     } = options;
@@ -671,9 +699,18 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
         args,
         [group, action, _] if group == "environment" && action == "set"
     );
+    let is_environment_create = matches!(
+        args,
+        [group, action, _] if group == "environment" && action == "create"
+    );
     if value.is_some() && !is_environment_set {
         return Err(CliError::invalid_arguments(
             "invalid command; run 'probe --help' for usage",
+        ));
+    }
+    if extends.is_some() && !is_environment_create {
+        return Err(CliError::invalid_arguments(
+            "--extends is only valid for environment create",
         ));
     }
     let is_yaak_import = matches!(
@@ -950,6 +987,39 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
         }
         [group, action, path]
             if group == "environment"
+                && action == "list"
+                && environment.is_none()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.is_empty()
+                && value.is_none()
+                && extends.is_none() =>
+        {
+            Ok(Command::ListEnvironments {
+                input: WorkspaceInput::from_argument(path),
+            })
+        }
+        [group, action, path]
+            if group == "environment"
+                && action == "create"
+                && environment.is_none()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.name.is_some()
+                && update.method.is_none()
+                && update.url.is_none()
+                && value.is_none() =>
+        {
+            Ok(Command::EnvironmentCreate {
+                input: WorkspaceInput::from_argument(path),
+                name: update.name.expect("guarded environment name"),
+                extends,
+            })
+        }
+        [group, action, path]
+            if group == "environment"
                 && action == "set"
                 && environment.is_some()
                 && output.is_none()
@@ -1003,6 +1073,7 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
         Command::Validate { input } => validate(&input, stdin),
         Command::ListRequests { input } => list_requests(&input, stdin),
         Command::ListFolders { input } => list_folders(&input, stdin),
+        Command::ListEnvironments { input } => list_environments(&input, stdin),
         Command::Get {
             input,
             selector,
@@ -1041,7 +1112,62 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             environment,
             name,
         } => unset_environment_variable(&input, &environment, &name, stdin),
+        Command::EnvironmentCreate {
+            input,
+            name,
+            extends,
+        } => create_environment(&input, &name, extends, stdin),
     }
+}
+
+fn create_environment(
+    input: &WorkspaceInput,
+    name: &str,
+    extends: Option<String>,
+    stdin: &mut impl Read,
+) -> Result<CommandOutput, CliError> {
+    let mut loaded = load(input, stdin)?;
+    loaded
+        .create_environment(name.to_owned(), extends.clone())
+        .map_err(CliError::persistence)?;
+    Ok(environment_create_output(name, extends.as_deref()))
+}
+
+fn environment_create_output(name: &str, extends: Option<&str>) -> CommandOutput {
+    let mut json = json!({
+        "environment": name,
+        "operation": "create",
+    });
+    if let Some(extends) = extends {
+        json.as_object_mut()
+            .expect("environment JSON output must be an object")
+            .insert("extends".to_owned(), json!(extends));
+    }
+    CommandOutput {
+        human: format!("Created environment {name}\n"),
+        json,
+    }
+}
+
+fn list_environments(
+    input: &WorkspaceInput,
+    stdin: &mut impl Read,
+) -> Result<CommandOutput, CliError> {
+    let loaded = load(input, stdin)?;
+    let mut lines = vec!["NAME\tEXTENDS".to_owned()];
+    let mut environments = Vec::with_capacity(loaded.workspace().environments().len());
+    for environment in loaded.workspace().environments() {
+        let parent = environment.extends.as_deref().unwrap_or("");
+        lines.push(format!("{}\t{parent}", environment.name));
+        environments.push(json!({
+            "extends": environment.extends,
+            "name": environment.name,
+        }));
+    }
+    Ok(CommandOutput {
+        human: format!("{}\n", lines.join("\n")),
+        json: json!({ "environments": environments }),
+    })
 }
 
 fn set_environment_variable(

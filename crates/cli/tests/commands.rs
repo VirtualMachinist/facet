@@ -1058,3 +1058,107 @@ fn environment_set_rejects_stdin_as_read_only() {
     assert_eq!(value["error"]["exitCode"], 7);
     assert_eq!(value["error"]["category"], "persistence_read_only");
 }
+
+#[test]
+fn lists_environments_as_json() {
+    let output = probe()
+        .args(["environment", "list"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["environments"].as_array().unwrap().len(), 2);
+    assert_eq!(value["environments"][0]["name"], "base");
+    assert_eq!(value["environments"][1]["name"], "development");
+    assert_eq!(value["environments"][1]["extends"], "base");
+}
+
+#[test]
+fn creates_environment_as_json() {
+    let workspace = temporary_path("phase-env-create.yml");
+    fs::copy(fixture("phase4-environments.yml"), &workspace).unwrap();
+
+    let output = probe()
+        .args(["environment", "create"])
+        .arg(&workspace)
+        .args(["--name", "staging", "--extends", "base", "--json"])
+        .output()
+        .expect("environment create should run");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["environment"], "staging");
+    assert_eq!(value["extends"], "base");
+    assert_eq!(value["operation"], "create");
+
+    let list = probe()
+        .args(["environment", "list"])
+        .arg(&workspace)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let listed: Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(listed["environments"].as_array().unwrap().len(), 3);
+    assert_eq!(listed["environments"][2]["name"], "staging");
+    assert_eq!(listed["environments"][2]["extends"], "base");
+
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn environment_create_has_stable_errors() {
+    let duplicate = probe()
+        .args(["environment", "create"])
+        .arg(fixture("phase4-environments.yml"))
+        .args(["--name", "development", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(duplicate.status.code(), Some(5));
+    let value: Value = serde_json::from_slice(&duplicate.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "duplicate_environment");
+
+    let missing_parent = probe()
+        .args(["environment", "create"])
+        .arg(fixture("phase4-environments.yml"))
+        .args(["--name", "staging", "--extends", "missing", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(missing_parent.status.code(), Some(5));
+    let value: Value = serde_json::from_slice(&missing_parent.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "parent_environment_not_found");
+
+    let invalid = probe()
+        .args(["environment", "create"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&invalid.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "invalid_arguments");
+}
+
+#[test]
+fn environment_create_rejects_stdin_as_read_only() {
+    let source = fs::read(fixture("phase4-environments.yml")).unwrap();
+    let mut child = probe()
+        .args(["environment", "create", "-", "--name", "staging", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("environment create should start");
+    child.stdin.take().unwrap().write_all(&source).unwrap();
+    let output = child
+        .wait_with_output()
+        .expect("environment create should finish");
+
+    assert_eq!(output.status.code(), Some(7));
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "persistence_read_only");
+}
