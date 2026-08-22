@@ -32,6 +32,9 @@ use gpui_base::{
 };
 use probe_core::path_variable_ranges;
 
+/// Fixed width for compact primary actions such as Send.
+pub(crate) const COMPACT_ACTION_BUTTON_WIDTH: f32 = 72.0;
+
 /// Single-line label that shows an ellipsis when the available width is too small.
 pub(crate) fn truncated_label(text: impl Into<String>) -> gpui::Div {
     div().min_w(px(0.0)).truncate().child(text.into())
@@ -44,6 +47,7 @@ static FOLDER_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata:
 static FOLDER_OPEN_SVG: LazyLock<Vec<u8>> =
     LazyLock::new(|| icon_svg_bytes(icondata::LuFolderOpen));
 static PLUS_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuPlus));
+static SEARCH_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuSearch));
 static SAVE_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuSave));
 static CLOSE_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuX));
 static TRASH_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuTrash2));
@@ -152,7 +156,6 @@ pub(crate) fn hover_fill(color: gpui::Rgba) -> gpui::Rgba {
 
 pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button {
     let disabled_background = theme.colors.actions.disabled;
-    let disabled_border = theme.colors.actions.disabled;
     let disabled_foreground = theme.colors.actions.disabled_foreground;
     let mut button = Button::new("tree-add-menu-trigger")
         .accessibility_label("Add request or folder")
@@ -164,18 +167,12 @@ pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button
         .items_center()
         .justify_center()
         .rounded(px(theme.metrics.radius_small))
-        .border_1()
-        .border_color(if enabled {
-            theme.colors.borders.subtle
-        } else {
-            disabled_border
-        })
         .when(!enabled, |button| button.bg(disabled_background));
 
     if enabled {
         button = button
             .hover(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
-            .focus(move |button| button.border_color(theme.colors.borders.focused))
+            .focus(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
             .styles(move |styles| {
                 styles.selected(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
             });
@@ -565,6 +562,8 @@ fn variable_value_input(
         readonly: !editable,
         on_focus: None,
         shared_input: Some(state),
+        flat: false,
+        leading_icon: None,
     }
     .into_any_element()
 }
@@ -581,12 +580,12 @@ pub(crate) fn primary_button(
     id: &'static str,
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     let label = label.into();
     Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
-        .min_w(px(72.0))
+        .min_w(px(COMPACT_ACTION_BUTTON_WIDTH))
         .px(px(theme.metrics.spacing_3))
         .flex()
         .items_center()
@@ -627,12 +626,12 @@ pub(crate) fn secondary_button(
     id: &'static str,
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     let label = label.into();
     Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
-        .min_w(px(72.0))
+        .min_w(px(COMPACT_ACTION_BUTTON_WIDTH))
         .px(px(theme.metrics.spacing_3))
         .flex()
         .items_center()
@@ -906,6 +905,8 @@ struct ProbeTextInput {
     autofocus: bool,
     readonly: bool,
     shared_input: Option<Entity<InputState>>,
+    flat: bool,
+    leading_icon: Option<gpui::Div>,
 }
 
 impl RenderOnce for ProbeTextInput {
@@ -969,6 +970,7 @@ impl RenderOnce for ProbeTextInput {
             .px(px(theme.metrics.spacing_2))
             .flex()
             .items_center()
+            .gap(px(theme.metrics.spacing_1))
             .rounded(px(theme.metrics.radius_small))
             .font_family(self.font_family)
             .text_size(px(self.text_size))
@@ -981,16 +983,27 @@ impl RenderOnce for ProbeTextInput {
             } else {
                 theme.colors.text.primary.into()
             })
-            .bg(theme.colors.surfaces.raised)
-            .border_1()
-            .border_color(if focused {
-                theme.colors.borders.focused
+            .bg(if self.flat {
+                theme.colors.surfaces.sidebar
             } else {
-                theme.colors.borders.standard
+                theme.colors.surfaces.raised
+            })
+            .when(!self.flat, |input| {
+                input.border_1().border_color(if focused {
+                    theme.colors.borders.focused
+                } else {
+                    theme.colors.borders.standard
+                })
             })
             .focused(focused)
             .styles(move |styles| {
-                styles.focused(move |input| input.border_color(theme.colors.borders.focused))
+                styles.focused(move |input| {
+                    if self.flat {
+                        input.bg(hover_fill(theme.colors.surfaces.sidebar))
+                    } else {
+                        input.border_color(theme.colors.borders.focused)
+                    }
+                })
             })
             .when_some(self.debug_selector, |input, selector| {
                 input.debug_selector(move || selector.into())
@@ -1001,6 +1014,7 @@ impl RenderOnce for ProbeTextInput {
                     state.update(cx, |input, cx| input.focus(window, cx));
                 }
             })
+            .when_some(self.leading_icon, |input, icon| input.child(icon))
             .child(Input::new(&state));
         if !self.variable_overlay {
             return input.into_any_element();
@@ -1046,6 +1060,8 @@ pub(crate) fn variable_text_input(
         autofocus: false,
         readonly: false,
         shared_input: None,
+        flat: false,
+        leading_icon: None,
     }
     .into_any_element()
 }
@@ -1077,6 +1093,8 @@ pub(crate) fn url_text_input(
         autofocus: false,
         readonly: false,
         shared_input: None,
+        flat: false,
+        leading_icon: None,
     }
     .into_any_element()
 }
@@ -1109,6 +1127,8 @@ pub(crate) fn dialog_text_input(
         autofocus,
         readonly: false,
         shared_input: None,
+        flat: false,
+        leading_icon: None,
     }
     .into_any_element()
 }
@@ -1138,6 +1158,11 @@ pub(crate) fn sidebar_search_input(
         autofocus: false,
         readonly: false,
         shared_input: None,
+        flat: true,
+        leading_icon: Some(
+            library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
+                .text_color(theme.colors.text.muted),
+        ),
     }
 }
 
@@ -1168,6 +1193,8 @@ pub(crate) fn search_input(
         autofocus: false,
         readonly: false,
         shared_input: None,
+        flat: false,
+        leading_icon: None,
     }
 }
 

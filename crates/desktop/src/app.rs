@@ -3442,7 +3442,7 @@ impl ProbeApp {
                     .child(
                         div()
                             .h(px(theme.metrics.tab_bar_height))
-                            .px(px(theme.metrics.spacing_2))
+                            .px(px(theme.metrics.spacing_1))
                             .flex()
                             .items_center()
                             .gap(px(theme.metrics.spacing_1))
@@ -3450,7 +3450,7 @@ impl ProbeApp {
                                 components::sidebar_search_input(
                                     theme,
                                     self.tree_search.clone(),
-                                    self.tree_search_placeholder(),
+                                    "Search requests...",
                                     move |value, _, input_cx| {
                                         let _ = search_view.update(input_cx, |view, cx| {
                                             view.set_tree_search(value.to_string(), cx);
@@ -5869,28 +5869,35 @@ impl ProbeApp {
                 .flex()
                 .justify_end()
                 .gap(px(theme.metrics.spacing_2))
-                .child(components::secondary_button(
-                    theme,
-                    "structure-cancel",
-                    "Cancel",
-                    move |_, window, cx| {
-                        let _ = cancel_view.update(cx, |view, cx| {
-                            view.structure_dialog = None;
-                            view.focus_handle.focus(window, cx);
-                            cx.notify();
-                        });
-                    },
-                ))
-                .child(components::primary_button(
-                    theme,
-                    "structure-submit",
-                    submit_label,
-                    move |_, window, cx| {
-                        let _ = submit_view.update(cx, |view, cx| {
-                            view.submit_structure_dialog(window, cx);
-                        });
-                    },
-                )),
+                .child(
+                    components::secondary_button(
+                        theme,
+                        "structure-cancel",
+                        "Cancel",
+                        move |_, window, cx| {
+                            let _ = cancel_view.update(cx, |view, cx| {
+                                view.structure_dialog = None;
+                                view.focus_handle.focus(window, cx);
+                                cx.notify();
+                            });
+                        },
+                    )
+                    .h(px(theme.metrics.control_height + 2.0))
+                    .w(px(components::COMPACT_ACTION_BUTTON_WIDTH)),
+                )
+                .child(
+                    components::primary_button(
+                        theme,
+                        "structure-submit",
+                        submit_label,
+                        move |_, window, cx| {
+                            let _ = submit_view.update(cx, |view, cx| {
+                                view.submit_structure_dialog(window, cx);
+                            });
+                        },
+                    )
+                    .w(px(components::COMPACT_ACTION_BUTTON_WIDTH)),
+                ),
         );
 
         div()
@@ -6044,18 +6051,6 @@ impl ProbeApp {
             });
         }));
         cx.notify();
-    }
-
-    fn tree_search_placeholder(&self) -> String {
-        let count = self
-            .loaded_workspace
-            .as_ref()
-            .map_or(0, |loaded| loaded.workspace().request_count());
-        if count == 1 {
-            "Search in 1 request".to_owned()
-        } else {
-            format!("Search in {count} requests")
-        }
     }
 
     fn workspace_name(&self) -> String {
