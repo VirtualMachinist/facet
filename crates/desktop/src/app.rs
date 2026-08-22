@@ -5181,6 +5181,14 @@ impl ProbeApp {
             .flex()
             .items_center()
             .gap(px(theme.metrics.spacing_1))
+            .child(
+                div()
+                    .id("response-search-count")
+                    .debug_selector(|| "response-search-count".into())
+                    .text_size(px(theme.typography.caption_size))
+                    .text_color(theme.colors.text.muted)
+                    .child(search_label),
+            )
             .child(components::search_input(
                 theme,
                 "response-search-input",
@@ -5199,19 +5207,11 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(
-                div()
-                    .id("response-search-count")
-                    .debug_selector(|| "response-search-count".into())
-                    .text_size(px(theme.typography.caption_size))
-                    .text_color(theme.colors.text.muted)
-                    .child(search_label),
-            )
-            .child(components::editor_button(
+            .child(components::icon_button(
                 theme,
                 "response-search-previous",
-                "↑",
-                false,
+                "Previous search result",
+                components::chevron_icon(theme, true),
                 move |_, _, cx| {
                     let _ = previous_view.update(cx, |view, cx| {
                         view.step_response_match(key, -1);
@@ -5219,11 +5219,11 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::editor_button(
+            .child(components::icon_button(
                 theme,
                 "response-search-next",
-                "↓",
-                false,
+                "Next search result",
+                components::chevron_icon(theme, false),
                 move |_, _, cx| {
                     let _ = next_view.update(cx, |view, cx| {
                         view.step_response_match(key, 1);

@@ -18,8 +18,8 @@ use gpui::{
     InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, MouseButton,
     ParentElement as _, Pixels, Point, Render, RenderOnce, Role, ShapedLine, SharedString,
     StatefulInteractiveElement as _, Style, Styled as _, Subscription, Task, TextAlign, TextRun,
-    TransformationMatrix, Window, canvas, deferred, div, font, point, prelude::FluentBuilder as _,
-    px, relative, size, transparent_black,
+    TransformationMatrix, Window, canvas, deferred, div, fill, font, point,
+    prelude::FluentBuilder as _, px, relative, size, transparent_black,
 };
 use gpui_base::{
     Align, Button, Editor, ElementExt as _, Input, InputBase, POPUP_PRIORITY, Placement, Popup,
@@ -935,6 +935,7 @@ struct ProbeTextInput {
     shared_input: Option<Entity<InputState>>,
     flat: bool,
     leading_icon: Option<gpui::Div>,
+    content_gap: f32,
 }
 
 impl RenderOnce for ProbeTextInput {
@@ -998,7 +999,7 @@ impl RenderOnce for ProbeTextInput {
             .px(px(theme.metrics.spacing_2))
             .flex()
             .items_center()
-            .gap(px(theme.metrics.spacing_1))
+            .gap(px(self.content_gap))
             .rounded(px(theme.metrics.radius_small))
             .font_family(self.font_family)
             .text_size(px(self.text_size))
@@ -1088,6 +1089,7 @@ fn text_input_base(
         shared_input: None,
         flat: false,
         leading_icon: None,
+        content_gap: theme.metrics.spacing_1,
     }
 }
 
@@ -1151,6 +1153,7 @@ pub(crate) fn sidebar_search_input(
     input.debug_selector = Some("tree-search");
     input.on_change = Some(Rc::new(on_value_change));
     input.flat = true;
+    input.content_gap = theme.metrics.spacing_2;
     input.leading_icon = Some(
         library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
             .text_color(theme.colors.text.muted),
@@ -1331,8 +1334,13 @@ pub(crate) fn remove_row_button(
     aria_label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    row_icon_button_base(theme, id, aria_label, on_click)
-        .child(trash_icon(theme.colors.text.secondary))
+    icon_button(
+        theme,
+        id,
+        aria_label,
+        trash_icon(theme.colors.text.secondary),
+        on_click,
+    )
 }
 
 pub(crate) fn browse_file_button(
@@ -1341,14 +1349,20 @@ pub(crate) fn browse_file_button(
     aria_label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    row_icon_button_base(theme, id, aria_label, on_click)
-        .child(folder_open_icon(theme.colors.text.secondary))
+    icon_button(
+        theme,
+        id,
+        aria_label,
+        folder_open_icon(theme.colors.text.secondary),
+        on_click,
+    )
 }
 
-fn row_icon_button_base(
+pub(crate) fn icon_button(
     theme: Theme,
     id: impl Into<ElementId>,
     aria_label: impl Into<SharedString>,
+    icon: impl IntoElement,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     Button::new(id)
@@ -1366,6 +1380,7 @@ fn row_icon_button_base(
         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
         .focus(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
+        .child(icon)
 }
 
 fn folder_open_icon(color: gpui::Rgba) -> gpui::Div {
@@ -1649,6 +1664,7 @@ pub(crate) fn body_text_input(
         soft_wrap: true,
         text_color: theme.colors.text.primary,
         scroll_to_offset: None,
+        search_matches: Vec::new(),
         on_change: Some(Rc::new(on_value_change)),
         on_visible_range: None,
         debug_selector: None,
@@ -1676,6 +1692,7 @@ pub(crate) fn response_body_input(
             language: language.into(),
             text_color: theme.colors.syntax.plain,
             scroll_to_offset,
+            search_matches: search_highlights(matches, active_match),
         },
         on_visible_range,
     )
@@ -1710,6 +1727,7 @@ pub(crate) fn response_headers_input(
             language: SharedString::default(),
             text_color: theme.colors.text.primary,
             scroll_to_offset,
+            search_matches: search_highlights(matches, active_match),
         },
         on_visible_range,
     )
@@ -1732,12 +1750,21 @@ fn response_search_decorations(
     (decorations, scroll_to_offset)
 }
 
+fn search_highlights(matches: &[SearchMatch], active_match: usize) -> Vec<(Range<usize>, bool)> {
+    matches
+        .iter()
+        .enumerate()
+        .map(|(index, found)| (found.range.clone(), index == active_match))
+        .collect()
+}
+
 struct ResponseEditorPresentation {
     value: SharedString,
     decorations: Vec<TextDecoration>,
     language: SharedString,
     text_color: gpui::Rgba,
     scroll_to_offset: Option<usize>,
+    search_matches: Vec<(Range<usize>, bool)>,
 }
 
 fn response_editor(
@@ -1759,6 +1786,7 @@ fn response_editor(
         soft_wrap: false,
         text_color: presentation.text_color,
         scroll_to_offset: presentation.scroll_to_offset,
+        search_matches: presentation.search_matches,
         on_change: None,
         on_visible_range: Some(Rc::new(on_visible_range)),
         debug_selector: None,
@@ -1822,6 +1850,7 @@ struct ProbeEditor {
     soft_wrap: bool,
     text_color: gpui::Rgba,
     scroll_to_offset: Option<usize>,
+    search_matches: Vec<(Range<usize>, bool)>,
     on_change: Option<InputChangeHandler>,
     on_visible_range: Option<VisibleRangeHandler>,
     debug_selector: Option<&'static str>,
@@ -1938,8 +1967,14 @@ impl RenderOnce for ProbeEditor {
                 }
             })
             .child(div().size_full().child(Editor::new(&state)));
+        let editor = response_search_highlight_overlay(
+            self.theme,
+            state.clone(),
+            editor,
+            self.search_matches,
+        );
         let Some(variables) = self.variables else {
-            return editor.into_any_element();
+            return editor;
         };
         variable_editor_overlay(
             theme,
@@ -1954,6 +1989,54 @@ impl RenderOnce for ProbeEditor {
     }
 }
 
+fn response_search_highlight_overlay(
+    theme: Theme,
+    state: Entity<EditorState>,
+    editor: impl IntoElement,
+    matches: Vec<(Range<usize>, bool)>,
+) -> gpui::AnyElement {
+    if matches.is_empty() {
+        return editor.into_any_element();
+    }
+
+    let mut active_color: Hsla = theme.colors.selection.active_background.into();
+    active_color.a = 0.42;
+    let mut inactive_color: Hsla = theme.colors.selection.active_background.into();
+    inactive_color.a = 0.22;
+    div()
+        .relative()
+        .size_full()
+        .min_h(px(0.0))
+        .child(editor)
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    let editor = state.read(cx);
+                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                        for (range, active) in &matches {
+                            let Some(match_bounds) = editor.range_to_bounds(range) else {
+                                continue;
+                            };
+                            let color = if *active {
+                                active_color
+                            } else {
+                                inactive_color
+                            };
+                            window.paint_quad(fill(match_bounds, color));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .top(px(0.0))
+            .right(px(0.0))
+            .bottom(px(0.0))
+            .left(px(0.0)),
+        )
+        .into_any_element()
+}
+
 fn body_text_highlights(theme: Theme, variables: &[(Range<usize>, String)]) -> Vec<TextDecoration> {
     variables
         .iter()
@@ -1966,7 +2049,7 @@ fn body_text_highlights(theme: Theme, variables: &[(Range<usize>, String)]) -> V
 fn search_match_decoration(theme: Theme, range: Range<usize>, active: bool) -> TextDecoration {
     text_decoration(
         range,
-        active.then(|| theme.colors.selection.active_foreground.into()),
+        None,
         Some(if active {
             theme.colors.selection.active_background.into()
         } else {
