@@ -151,6 +151,14 @@ Example:
 
 Tests must cover resolution behavior independently of CLI parsing.
 
+Environment creation, deletion, and rename are out of scope for this phase. They belong to
+Phase 18.
+
+Exit criteria:
+
+- environments resolve with inheritance and interpolation
+- missing-variable and invalid-environment errors are stable and testable without CLI parsing
+
 
 ## Phase 5 — HTTP Execution
 
@@ -255,6 +263,9 @@ Required:
 Add CLI operations only where useful.
 
 Do not turn the CLI into a full interactive request editor.
+
+Include environment-variable set and unset persistence for bundled `config.environments`
+and unbundled `environments/*.yml` documents. Environment creation belongs to Phase 18.
 
 Exit criteria:
 
@@ -409,6 +420,9 @@ Implement:
 - body
 - authentication
 - environment selection
+
+Environment creation belongs to Phase 18. Desktop UI for creating environments may follow
+after the shared repository operations exist.
 
 Changes update the in-memory model immediately.
 
@@ -587,7 +601,75 @@ Exit criteria:
   external-modification conflicts are distinguishable programmatically
 
 
-## Phase 18 — Desktop Workspace Structure Editing
+## Phase 18 — Environment Management Operations
+
+Implement shared domain and repository operations for creating environments.
+
+Environment edits are not structural item-tree operations. They follow the same
+environment-mutation path as variable set and unset rather than `StructureOperation`.
+
+Implement in this order:
+
+1. **Core** — in-memory environment creation and validation
+2. **OpenCollection repository** — YAML mutation and persistence
+3. **Frontend adapters** — CLI first, then desktop
+
+Required core behavior:
+
+- create an environment with a unique name
+- optional `extends` parent
+- duplicate-name, missing-parent, and inheritance-cycle protection
+- reuse `validate_environments` after mutation
+
+Required repository behavior:
+
+- bundled collections append to `config.environments`
+- unbundled collections write a new `environments/<name>.yml` document
+- update `environment_persistence` after creation
+- exact-source conflict checks and atomic writes
+- fixture-based load, create, save, and reload tests for bundled and unbundled collections
+
+Frontend adapters must invoke these operations rather than edit YAML directly.
+
+Exit criteria:
+
+- environments can be created in memory with stable validation errors
+- created environments survive save and reload in bundled and unbundled workspaces
+- runtime environment state is never serialized as a persistent identity outside OpenCollection
+
+
+## Phase 19 — CLI Environment Management
+
+Expose Phase 18 operations through automation-safe CLI commands where each operation
+is meaningful.
+
+Initial commands:
+
+<app> environment create <path> --name <name> [--extends <parent>]
+<app> environment set <path> --environment <name> --name <var> --value <value>
+<app> environment unset <path> --environment <name> --name <var>
+
+Required:
+
+- non-interactive arguments for environment name and optional parent
+- deterministic JSON output
+- stable error categories and exit codes
+- no YAML serialization or filesystem logic in the CLI
+
+Consider `environment list` when it helps agents discover available environments without
+parsing the collection file.
+
+Exit criteria:
+
+- an external program can create environments and manage variables without parsing
+  human-readable output
+- CLI operations produce the same persisted domain and repository results as direct
+  Phase 18 operations
+- duplicate names, missing parents, inheritance cycles, read-only sources, and
+  external-modification conflicts are distinguishable programmatically
+
+
+## Phase 20 — Desktop Workspace Structure Editing
 
 Expose the Phase 16 operations through keyboard-accessible desktop interactions.
 
@@ -613,7 +695,7 @@ Exit criteria:
 - save and filesystem-watch events caused by Probe reconcile as no-ops
 
 
-## Phase 19 — Desktop Tree Drag and Drop
+## Phase 21 — Desktop Tree Drag and Drop
 
 Add drag-and-drop movement and reordering to the desktop request tree using the same
 Phase 16 operations as the CLI and keyboard workflows.
@@ -624,7 +706,7 @@ Required:
 - valid folder and sibling drop targets
 - rejection of self, descendant, duplicate-path, and otherwise invalid destinations
 - autoscroll where needed for large virtualized trees
-- equivalent keyboard-accessible operations from Phase 18
+- equivalent keyboard-accessible operations from Phase 20
 
 Exit criteria:
 
@@ -635,7 +717,7 @@ Exit criteria:
   recoverable
 
 
-## Phase 20 — Streaming Protocol Architecture
+## Phase 22 — Streaming Protocol Architecture
 
 Design a shared event/session abstraction suitable for:
 
@@ -655,7 +737,7 @@ Session/Event Stream
  CLI      GPUI
 
 
-## Phase 21 — WebSocket
+## Phase 23 — WebSocket
 
 Implement shared WebSocket support.
 
@@ -666,7 +748,7 @@ Interactive terminal mode may be added but is not the architectural
 foundation.
 
 
-## Phase 22 — gRPC
+## Phase 24 — gRPC
 
 Implement:
 
@@ -678,7 +760,7 @@ Implement:
 The shared protocol implementation must work for both CLI and GPUI.
 
 
-## Phase 23 — Git Integration
+## Phase 25 — Git Integration
 
 Filesystem remains the primary Git integration boundary.
 
@@ -695,7 +777,7 @@ Optional built-in functionality:
 Keep basic Git behavior provider-independent.
 
 
-## Phase 24 — MCP
+## Phase 26 — MCP
 
 Consider exposing the shared application layer through an MCP server.
 
@@ -709,7 +791,7 @@ Conceptually:
                CLI    GPUI    MCP
 
 
-## Phase 25 — Yaak Import
+## Phase 27 — Yaak Import
 
 Add a shared inbound adapter for official Yaak export JSON and Directory/Git Sync
 models. Convert the selected Yaak workspace into the domain model, then persist it as
