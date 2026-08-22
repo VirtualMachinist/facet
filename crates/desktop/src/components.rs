@@ -159,7 +159,7 @@ pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button
         .debug_selector(|| "tree-add-menu-trigger".into())
         .selected(open && enabled)
         .disabled(!enabled)
-        .size(px(theme.metrics.control_height - 4.0))
+        .size(px(theme.metrics.control_height))
         .flex()
         .items_center()
         .justify_center()
@@ -181,11 +181,15 @@ pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button
             });
     }
 
-    button.child(plus_icon(theme).text_color(if enabled {
-        theme.colors.text.secondary
-    } else {
-        disabled_foreground
-    }))
+    button.child(
+        library_icon("lucide-plus", &PLUS_SVG, theme.metrics.icon_standard).text_color(
+            if enabled {
+                theme.colors.text.primary
+            } else {
+                disabled_foreground
+            },
+        ),
+    )
 }
 
 pub(crate) fn save_icon(theme: Theme) -> gpui::Div {
@@ -1125,7 +1129,7 @@ pub(crate) fn sidebar_search_input(
         variable_overlay: false,
         font_family: theme.typography.interface_family,
         text_size: theme.typography.caption_size,
-        height: theme.metrics.control_height - 4.0,
+        height: theme.metrics.control_height,
         width: None,
         debug_selector: Some("tree-search"),
         on_change: Some(Rc::new(on_value_change)),
@@ -1218,6 +1222,46 @@ pub(crate) fn editor_button(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     editor_button_base(theme, id, selected, on_click).child(label.into())
+}
+
+pub(crate) fn editor_subtab(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    selected: bool,
+    position: usize,
+    size: usize,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .role(Role::Tab)
+        .selected(selected)
+        .aria_selected(selected)
+        .aria_position_in_set(position)
+        .aria_size_of_set(size)
+        .h(px(theme.metrics.control_height))
+        .px(px(theme.metrics.spacing_2))
+        .flex()
+        .items_center()
+        .border_b_1()
+        .border_color(if selected {
+            theme.colors.actions.accent.into()
+        } else {
+            transparent_black()
+        })
+        .text_size(px(theme.typography.caption_size))
+        .text_color(if selected {
+            theme.colors.actions.accent
+        } else {
+            theme.colors.text.secondary
+        })
+        .when(!selected, |tab| {
+            tab.hover(move |tab| tab.bg(theme.colors.surfaces.raised))
+        })
+        .focus(move |tab| tab.border_color(theme.colors.borders.focused))
+        .cursor_pointer()
+        .on_click(on_click)
+        .child(label.into())
 }
 
 pub(crate) fn editor_add_button(

@@ -8,12 +8,12 @@ use std::{
 
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
-    FontWeight, InteractiveElement as _, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, PromptButton,
-    PromptLevel, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
-    Styled as _, Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds,
-    WindowControlArea, WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px,
-    relative, size, uniform_list,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point,
+    PromptButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
+    StatefulInteractiveElement as _, Styled as _, Task, TitlebarOptions, UniformListScrollHandle,
+    Window, WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
+    prelude::FluentBuilder as _, px, relative, size, uniform_list,
 };
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -3423,12 +3423,15 @@ impl ProbeApp {
             tree.into_any_element()
         };
 
-        div()
-            .w(px(self.shell.sidebar_width))
+        let sidebar = div()
+            .w_full()
             .h_full()
-            .flex_none()
             .flex()
             .flex_col()
+            .rounded(px(theme.metrics.radius_medium))
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme.colors.borders.subtle)
             .bg(theme.colors.surfaces.sidebar)
             .child(
                 div()
@@ -3458,11 +3461,24 @@ impl ProbeApp {
                             .child(add_menu),
                     ),
             )
-            .child(tree)
+            .child(tree);
+
+        div()
+            .w(px(self.shell.sidebar_width))
+            .h_full()
+            .pl(px(theme.metrics.spacing_1))
+            .pb(px(theme.metrics.spacing_1))
+            .flex_none()
+            .child(sidebar)
     }
 
     fn render_tabs(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let tab_count = self.shell.tabs().len();
+        let mut active_tab_background: Hsla = theme.colors.actions.accent.into();
+        active_tab_background.a = 0.12;
+        let mut active_tab_close_hover: Hsla = theme.colors.actions.accent.into();
+        active_tab_close_hover.a = 0.18;
+        let request_tab_bar_height = theme.metrics.tab_bar_height + 2.0;
         let mut tab_strip = Tabs::new("request-tabs-scroll")
             .flex_1()
             .min_w(px(0.0))
@@ -3470,13 +3486,12 @@ impl ProbeApp {
             .px(px(theme.metrics.spacing_1))
             .flex()
             .items_center()
-            .gap(px(theme.metrics.spacing_1))
             .overflow_x_scroll()
             .track_scroll(&self.tab_bar_scroll);
         let Some(loaded) = &self.loaded_workspace else {
             return div()
                 .id("request-tabs")
-                .h(px(theme.metrics.tab_bar_height))
+                .h(px(request_tab_bar_height))
                 .w_full()
                 .bg(theme.colors.surfaces.raised)
                 .border_b_1()
@@ -3497,6 +3512,11 @@ impl ProbeApp {
             let close_view = cx.weak_entity();
             let context_menu_view = cx.weak_entity();
             let middle_close_view = close_view.clone();
+            let close_hover = if active {
+                active_tab_close_hover
+            } else {
+                theme.colors.actions.disabled.into()
+            };
             let tab_key = *key;
             let tab_index = self
                 .shell
@@ -3508,22 +3528,26 @@ impl ProbeApp {
                 Tab::new(("request-tab", key.slot()))
                     .selected(active)
                     .set_position(tab_index + 1, tab_count)
-                    .h(px(theme.metrics.control_height - 2.0))
-                    .min_w(px(96.0))
+                    .h(px(request_tab_bar_height))
+                    .min_w(px(80.0))
                     .max_w(px(176.0))
-                    .px(px(theme.metrics.spacing_2))
+                    .pl(px(theme.metrics.spacing_3))
+                    .pr(px(theme.metrics.spacing_1))
                     .flex()
                     .items_center()
                     .gap(px(theme.metrics.spacing_1))
                     .overflow_hidden()
-                    .rounded(px(theme.metrics.radius_small))
+                    .rounded_tl(px(theme.metrics.radius_small))
+                    .rounded_tr(px(theme.metrics.radius_small))
                     .when(active, |tab| {
-                        tab.bg(theme.colors.surfaces.editor)
-                            .font_weight(FontWeight::SEMIBOLD)
+                        tab.bg(active_tab_background)
+                            .border_b_1()
+                            .border_color(theme.colors.actions.accent)
+                            .text_color(theme.colors.actions.accent)
                     })
                     .when(!active, |tab| {
                         tab.text_color(theme.colors.text.secondary)
-                            .hover(move |tab| tab.bg(theme.colors.surfaces.window))
+                            .hover(move |tab| tab.bg(theme.colors.surfaces.sidebar))
                     })
                     .cursor_pointer()
                     .on_click(move |_, _, cx| {
@@ -3572,7 +3596,7 @@ impl ProbeApp {
                             .items_center()
                             .justify_center()
                             .rounded(px(theme.metrics.radius_small))
-                            .hover(move |close| close.bg(theme.colors.actions.disabled))
+                            .hover(move |close| close.bg(close_hover))
                             .child(components::close_icon(theme))
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
@@ -3586,7 +3610,7 @@ impl ProbeApp {
 
         let mut tabs = div()
             .id("request-tabs")
-            .h(px(theme.metrics.tab_bar_height))
+            .h(px(request_tab_bar_height))
             .w_full()
             .flex()
             .items_center()
@@ -4262,14 +4286,17 @@ impl ProbeApp {
             ("Multipart", BodyEditorKind::Multipart),
             ("File", BodyEditorKind::File),
         ];
+        let choice_count = choices.len();
         let mut kind_buttons = div().flex().flex_wrap().gap(px(theme.metrics.spacing_1));
         for (index, (label, kind)) in choices.into_iter().enumerate() {
             let kind_view = cx.weak_entity();
-            kind_buttons = kind_buttons.child(components::editor_button(
+            kind_buttons = kind_buttons.child(components::editor_subtab(
                 theme,
                 ("body-kind", index),
                 label,
                 active_kind == label,
+                index + 1,
+                choice_count,
                 move |_, _, cx| {
                     let _ = kind_view.update(cx, |view, cx| {
                         view.change_body_kind(key, kind, cx);
@@ -4915,14 +4942,17 @@ impl ProbeApp {
             ("Digest", Some(AuthenticationKind::Digest)),
             ("NTLM", Some(AuthenticationKind::Ntlm)),
         ];
+        let choice_count = choices.len();
         let mut kind_buttons = div().flex().flex_wrap().gap(px(theme.metrics.spacing_1));
         for (index, (label, kind)) in choices.into_iter().enumerate() {
             let kind_view = cx.weak_entity();
-            kind_buttons = kind_buttons.child(components::editor_button(
+            kind_buttons = kind_buttons.child(components::editor_subtab(
                 theme,
                 ("authentication-kind", index),
                 label,
                 active == Some(label) || (active.is_none() && label == "None"),
+                index + 1,
+                choice_count,
                 move |_, _, cx| {
                     let kind = kind.clone();
                     let _ = kind_view.update(cx, |view, cx| {
@@ -5139,7 +5169,7 @@ impl ProbeApp {
             .flex_none()
             .flex()
             .flex_col()
-            .bg(theme.colors.surfaces.window)
+            .bg(theme.colors.surfaces.raised)
             .child(
                 div()
                     .h(px(theme.metrics.tab_bar_height))
@@ -5444,17 +5474,23 @@ impl ProbeApp {
         let handle = div()
             .id("response-resize-handle")
             .flex_none()
-            .bg(theme.colors.borders.subtle)
             .when(horizontal, |handle| {
                 handle
                     .w(px(5.0))
                     .h_full()
+                    .border_l_1()
+                    .border_color(theme.colors.borders.subtle)
                     .cursor(CursorStyle::ResizeLeftRight)
             })
             .when(!horizontal, |handle| {
-                handle.h(px(5.0)).w_full().cursor(CursorStyle::ResizeUpDown)
+                handle
+                    .h(px(5.0))
+                    .w_full()
+                    .border_t_1()
+                    .border_color(theme.colors.borders.subtle)
+                    .cursor(CursorStyle::ResizeUpDown)
             })
-            .hover(move |handle| handle.bg(theme.colors.borders.focused))
+            .hover(move |handle| handle.bg(theme.colors.borders.subtle))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 let _ = response_view.update(cx, |view, cx| {
                     view.shell.resizing = Some(ResizePane::Response);
@@ -5647,8 +5683,6 @@ impl ProbeApp {
             .items_center()
             .gap(px(theme.metrics.spacing_1))
             .bg(theme.colors.surfaces.raised)
-            .border_b_1()
-            .border_color(theme.colors.borders.subtle)
             .child(components::sidebar_toggle(
                 theme,
                 self.shell.sidebar_collapsed,
@@ -6198,16 +6232,16 @@ impl Render for ProbeApp {
                     .flex_1()
                     .min_h(px(0.0))
                     .flex()
+                    .bg(theme.colors.surfaces.raised)
                     .when(!self.shell.sidebar_collapsed, |row| {
                         row.child(self.render_sidebar(theme, cx)).child(
                             div()
                                 .id("sidebar-resize-handle")
                                 .w(px(5.0))
                                 .h_full()
+                                .ml(px(-5.0))
                                 .flex_none()
                                 .cursor(CursorStyle::ResizeLeftRight)
-                                .bg(theme.colors.borders.subtle)
-                                .hover(move |handle| handle.bg(theme.colors.borders.focused))
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     let _ = sidebar_view.update(cx, |view, cx| {
                                         view.shell.resizing = Some(ResizePane::Sidebar);
