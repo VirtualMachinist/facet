@@ -292,7 +292,10 @@ into the retained YAML, compare source bytes, and atomically write. Secrets rema
 read-only. After a successful save, the value survives collection reload.
 Environment selection lives at the fixed right edge of the request tab bar and is
 workspace-scoped presentation state, so every
-open request shares the same selected environment. The last selection for each
+open request shares the same selected environment. The switcher can create a new
+environment: Probe prompts for a name, updates the in-memory workspace, then persists
+through the same OpenCollection repository create used by the CLI, off the UI thread.
+The last selection for each
 collection is restored from the desktop session. Unsaved body representations are
 retained as local editor drafts per request, allowing users to switch body types without
 losing work.

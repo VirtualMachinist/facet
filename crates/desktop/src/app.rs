@@ -170,6 +170,7 @@ gpui::actions!(
         ExpandTreeItem,
         ActivateTreeItem,
         CancelStructureDialog,
+        CancelCreateEnvironmentDialog,
         CancelApplicationDialog
     ]
 );
@@ -451,6 +452,7 @@ impl Render for TreeDrag {
 pub(crate) struct ProbeApp {
     focus_handle: FocusHandle,
     structure_dialog_focus: FocusHandle,
+    create_environment_dialog_focus: FocusHandle,
     application_dialog_focus: FocusHandle,
     loaded_workspace: Option<LoadedWorkspace>,
     workspace_path: Option<PathBuf>,
@@ -484,6 +486,7 @@ pub(crate) struct ProbeApp {
     tree_row_height: f32,
     tree_auto_scroll: AutoScroll,
     structure_dialog: Option<StructureDialog>,
+    create_environment_dialog: Option<String>,
     application_dialog: Option<ApplicationDialog>,
     pending_application_dialogs: VecDeque<ApplicationDialog>,
     request_editor: RequestEditorState,
@@ -533,11 +536,13 @@ impl ProbeApp {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let structure_dialog_focus = cx.focus_handle();
+        let create_environment_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
 
         Self {
             focus_handle,
             structure_dialog_focus,
+            create_environment_dialog_focus,
             application_dialog_focus,
             loaded_workspace: None,
             workspace_path: None,
@@ -571,6 +576,7 @@ impl ProbeApp {
             tree_row_height: 28.0,
             tree_auto_scroll: AutoScroll::default(),
             structure_dialog: None,
+            create_environment_dialog: None,
             application_dialog: None,
             pending_application_dialogs: VecDeque::new(),
             request_editor: RequestEditorState::default(),
@@ -1376,6 +1382,7 @@ impl ProbeApp {
             return;
         }
         self.structure_dialog = None;
+        self.create_environment_dialog = None;
         self.dismiss_transient_surfaces();
         self.application_dialog = Some(dialog);
         self.application_dialog_focus.focus(window, cx);
@@ -1581,6 +1588,7 @@ impl ProbeApp {
     fn reset_collection_ui(&mut self) {
         self.selected_tree_item = None;
         self.structure_dialog = None;
+        self.create_environment_dialog = None;
         self.application_dialog = None;
         self.pending_application_dialogs.clear();
         self.dismiss_transient_surfaces();
@@ -1703,6 +1711,7 @@ impl ProbeApp {
         self.install_reloaded_workspace(reconciled.workspace, baselines, &key_remaps);
         self.restore_shell_selectors(&reconciled.selector_remaps, selectors);
         self.structure_dialog = None;
+        self.create_environment_dialog = None;
         if self.shell.selected_environment().is_some_and(|name| {
             !self
                 .loaded_workspace
@@ -1875,6 +1884,108 @@ impl ProbeApp {
         cx.notify();
     }
 
+    fn open_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loaded_workspace.is_none()
+            || self.structure_task.is_some()
+            || self.environment_save_task.is_some()
+            || self.request_save_task.is_some()
+        {
+            return;
+        }
+        self.structure_dialog = None;
+        self.create_environment_dialog = Some(String::new());
+        self.create_environment_dialog_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn close_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.create_environment_dialog = None;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn submit_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.create_environment_dialog.as_ref() else {
+            return;
+        };
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            self.message = Some("Environment name is required.".to_owned());
+            cx.notify();
+            return;
+        }
+        self.create_environment_dialog = None;
+        self.focus_handle.focus(window, cx);
+        self.create_named_environment(name, window, cx);
+    }
+
+    fn create_named_environment(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_save_task.is_some()
+            || self.request_save_task.is_some()
+            || self.structure_task.is_some()
+        {
+            self.message =
+                Some("Wait for the current save before creating an environment.".to_owned());
+            cx.notify();
+            return;
+        }
+        let Some(loaded) = self.loaded_workspace.as_mut() else {
+            return;
+        };
+        let prepared = match loaded.prepare_environment_create(name.clone(), None) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.message = Some(format!("Could not create environment: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.environment_save_workspace_path = self.workspace_path.clone();
+        self.message = None;
+        self.environment_save_task = Some(cx.spawn_in(window, async move |view, window| {
+            let result = window
+                .background_spawn(async move { prepared.execute() })
+                .await;
+            let _ = view.update_in(window, |view, window, cx| {
+                view.environment_save_task = None;
+                match result {
+                    Ok(saved) => {
+                        if view.environment_save_workspace_path == view.workspace_path
+                            && let Some(loaded) = view.loaded_workspace.as_mut()
+                        {
+                            loaded.complete_environment_create(saved);
+                            view.select_environment(Some(name), cx);
+                        }
+                        view.environment_save_workspace_path = None;
+                        view.message = None;
+                        view.start_next_request_save(window, cx);
+                        view.start_next_environment_save(window, cx);
+                    }
+                    Err(error) => {
+                        if view.environment_save_workspace_path == view.workspace_path
+                            && let Some(loaded) = view.loaded_workspace.as_mut()
+                        {
+                            loaded.revert_created_environment(&name);
+                            if view.shell.selected_environment() == Some(name.as_str()) {
+                                view.select_environment(None, cx);
+                            }
+                        }
+                        view.environment_save_workspace_path = None;
+                        view.pending_close = None;
+                        view.message = Some(format!("Could not create environment: {error}"));
+                    }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn select_request(&mut self, key: RequestKey, cx: &mut Context<Self>) {
         if self
             .loaded_workspace
@@ -1916,6 +2027,7 @@ impl ProbeApp {
         if self.loaded_workspace.is_none() || self.structure_task.is_some() {
             return;
         }
+        self.create_environment_dialog = None;
         self.structure_dialog = Some(StructureDialog::create_request(
             self.selected_parent_selector(),
         ));
@@ -1927,6 +2039,7 @@ impl ProbeApp {
         if self.loaded_workspace.is_none() || self.structure_task.is_some() {
             return;
         }
+        self.create_environment_dialog = None;
         self.structure_dialog = Some(StructureDialog::create_folder(
             self.selected_parent_selector(),
         ));
@@ -3809,22 +3922,30 @@ impl ProbeApp {
                 .map(|environment| (environment.name.clone(), environment.name.clone())),
         );
         let environment_view = cx.weak_entity();
-        tabs = tabs.child(div().flex_none().px(px(theme.metrics.spacing_2)).child(
-            components::dropdown(
-                theme,
-                "request-environment",
-                "Request environment",
-                Some(selected),
-                options,
-                170.0,
-                move |value, _, cx| {
-                    let value = value.cloned().unwrap_or_default();
-                    let _ = environment_view.update(cx, |view, cx| {
-                        view.select_environment((!value.is_empty()).then_some(value), cx);
+        let create_environment_view = cx.weak_entity();
+        tabs = tabs.child(
+            div().flex_none().px(px(theme.metrics.spacing_2)).child(
+                components::dropdown(
+                    theme,
+                    "request-environment",
+                    "Request environment",
+                    Some(selected),
+                    options,
+                    190.0,
+                    move |value, _, cx| {
+                        let value = value.cloned().unwrap_or_default();
+                        let _ = environment_view.update(cx, |view, cx| {
+                            view.select_environment((!value.is_empty()).then_some(value), cx);
+                        });
+                    },
+                )
+                .with_action("Create environment...", move |window, cx| {
+                    let _ = create_environment_view.update(cx, |view, cx| {
+                        view.open_create_environment_dialog(window, cx);
                     });
-                },
+                }),
             ),
-        ));
+        );
         tabs
     }
 
@@ -6128,6 +6249,93 @@ impl ProbeApp {
         .into_any_element()
     }
 
+    fn render_create_environment_dialog(
+        &self,
+        theme: Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(name) = self.create_environment_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let name_view = cx.weak_entity();
+        let name_enter_view = cx.weak_entity();
+        let cancel_view = cx.weak_entity();
+        let submit_view = cx.weak_entity();
+        let content = components::dialog_surface(
+            theme,
+            "create-environment-dialog",
+            components::COMPACT_DIALOG_WIDTH,
+        )
+        .child(components::dialog_title(theme, "New Environment"))
+        .child(
+            div()
+                .mt(px(theme.metrics.spacing_4))
+                .flex()
+                .flex_col()
+                .gap(px(theme.metrics.spacing_3))
+                .child(components::dialog_field(
+                    theme,
+                    "Name",
+                    components::dialog_text_input(
+                        theme,
+                        "create-environment-name",
+                        name.clone(),
+                        "",
+                        true,
+                        move |value, _, cx| {
+                            let _ = name_view.update(cx, |view, cx| {
+                                if let Some(name) = view.create_environment_dialog.as_mut() {
+                                    *name = value.to_string();
+                                }
+                                cx.notify();
+                            });
+                        },
+                        move |value, window, cx| {
+                            let _ = name_enter_view.update(cx, |view, cx| {
+                                if let Some(name) = view.create_environment_dialog.as_mut() {
+                                    *name = value.to_string();
+                                }
+                                view.submit_create_environment_dialog(window, cx);
+                            });
+                        },
+                    ),
+                )),
+        )
+        .child(
+            components::dialog_actions(theme)
+                .child(components::dialog_action_button(
+                    theme,
+                    "create-environment-cancel",
+                    "Cancel",
+                    components::DialogActionStyle::Secondary,
+                    move |_, window, cx| {
+                        let _ = cancel_view.update(cx, |view, cx| {
+                            view.close_create_environment_dialog(window, cx);
+                        });
+                    },
+                ))
+                .child(components::dialog_action_button(
+                    theme,
+                    "create-environment-submit",
+                    "Create",
+                    components::DialogActionStyle::Primary,
+                    move |_, window, cx| {
+                        let _ = submit_view.update(cx, |view, cx| {
+                            view.submit_create_environment_dialog(window, cx);
+                        });
+                    },
+                )),
+        );
+
+        components::dialog_layer(
+            theme,
+            &self.create_environment_dialog_focus,
+            "CreateEnvironmentDialog",
+            content,
+        )
+        .into_any_element()
+    }
+
     fn active_request(&self) -> Option<&HttpRequest> {
         let key = self.shell.active_tab()?;
         self.loaded_workspace.as_ref()?.workspace().request(key)
@@ -6377,6 +6585,11 @@ impl Render for ProbeApp {
                 cx.notify();
             }))
             .on_action(
+                cx.listener(|view, _: &CancelCreateEnvironmentDialog, window, cx| {
+                    view.close_create_environment_dialog(window, cx);
+                }),
+            )
+            .on_action(
                 cx.listener(|view, _: &CancelApplicationDialog, window, cx| {
                     view.handle_application_dialog_action(
                         ApplicationDialogAction::Cancel,
@@ -6473,6 +6686,7 @@ impl Render for ProbeApp {
                     ),
             )
             .child(self.render_structure_dialog(theme, cx))
+            .child(self.render_create_environment_dialog(theme, cx))
             .child(self.render_application_dialog(theme, cx))
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
@@ -6746,6 +6960,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("alt-up", MoveTreeItemUp, Some("RequestTree")),
         KeyBinding::new("alt-down", MoveTreeItemDown, Some("RequestTree")),
         KeyBinding::new("escape", CancelStructureDialog, Some("StructureDialog")),
+        KeyBinding::new(
+            "escape",
+            CancelCreateEnvironmentDialog,
+            Some("CreateEnvironmentDialog"),
+        ),
         KeyBinding::new("escape", CancelApplicationDialog, Some("ApplicationDialog")),
     ]);
 
@@ -8067,6 +8286,137 @@ mod tests {
 
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         assert!(visual.debug_bounds("request-environment-trigger").is_some());
+    }
+
+    #[gpui::test]
+    fn environment_switcher_includes_create_environment(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = environment_fixture()
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace =
+            probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let trigger = visual
+            .debug_bounds("request-environment-trigger")
+            .expect("environment switcher should render");
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        visual
+            .debug_bounds("request-environment-action-0")
+            .expect("environment switcher should include Create environment");
+    }
+
+    #[gpui::test]
+    fn creating_an_environment_from_the_switcher_persists_and_selects_it(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_environment_fixture("create-env")
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace =
+            probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let trigger = visual
+                .debug_bounds("request-environment-trigger")
+                .expect("environment switcher should render");
+            visual.simulate_click(trigger.center(), Modifiers::default());
+            visual.run_until_parked();
+            let create = visual
+                .debug_bounds("request-environment-action-0")
+                .expect("Create environment action should render");
+            visual.simulate_click(create.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.create_environment_dialog.is_some());
+                if let Some(name) = view.create_environment_dialog.as_mut() {
+                    *name = "staging".to_owned();
+                }
+                view.submit_create_environment_dialog(window, cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+                assert_eq!(view.shell.selected_environment(), Some("staging"));
+                let loaded = view.loaded_workspace.as_ref().expect("workspace");
+                assert!(
+                    loaded
+                        .workspace()
+                        .environments()
+                        .iter()
+                        .any(|environment| environment.name == "staging")
+                );
+            })
+            .expect("test window should remain open");
+
+        let reloaded =
+            probe_opencollection::load_workspace(&fixture).expect("created env should load");
+        assert!(
+            reloaded
+                .workspace()
+                .environments()
+                .iter()
+                .any(|environment| environment.name == "staging")
+        );
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn create_environment_dialog_rejects_an_empty_name(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_environment_fixture("create-env-empty")
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace =
+            probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.open_create_environment_dialog(window, cx);
+                view.submit_create_environment_dialog(window, cx);
+                assert_eq!(
+                    view.message.as_deref(),
+                    Some("Environment name is required.")
+                );
+                assert!(view.create_environment_dialog.is_some());
+            })
+            .expect("test window should be open");
+        fs::remove_file(fixture).unwrap();
     }
 
     #[gpui::test]

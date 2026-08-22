@@ -909,6 +909,13 @@ pub(crate) fn dialog_choice_button(
 
 type InputChangeHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 type DropdownChangeHandler<T> = Rc<dyn Fn(Option<&T>, &mut Window, &mut App)>;
+type DropdownActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[derive(Clone)]
+struct DropdownAction {
+    label: String,
+    on_activate: DropdownActionHandler,
+}
 
 #[derive(Debug)]
 struct DropdownState {
@@ -1076,6 +1083,70 @@ impl<T: Clone + Eq + 'static> RenderOnce for DropdownOption<T> {
                     .when(!self.selected, |marker| marker.invisible())
                     .child("✓"),
             )
+            .child(truncated_label(self.label).min_w(px(0.0)).flex_1())
+    }
+}
+
+#[derive(IntoElement)]
+struct DropdownActionItem {
+    theme: Theme,
+    id: &'static str,
+    index: usize,
+    action_index: usize,
+    label: String,
+    highlighted: bool,
+    controller: DropdownController,
+    on_activate: DropdownActionHandler,
+}
+
+impl RenderOnce for DropdownActionItem {
+    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let highlight_background = self.theme.colors.selection.inactive_background;
+        let theme = self.theme;
+        let id = self.id;
+        let index = self.index;
+        let action_index = self.action_index;
+        div()
+            .id(format!("{id}-action-{action_index}"))
+            .role(Role::ListBoxOption)
+            .when(self.highlighted, |item| item.aria_active_descendant())
+            .w_full()
+            .h(px(theme.metrics.control_height))
+            .px(px(theme.metrics.spacing_2))
+            .flex()
+            .items_center()
+            .gap(px(theme.metrics.spacing_1))
+            .overflow_hidden()
+            .rounded(px(theme.metrics.radius_small))
+            .text_color(theme.colors.text.primary)
+            .cursor_pointer()
+            .debug_selector(move || format!("{id}-action-{action_index}"))
+            .when(self.highlighted, |item| {
+                item.bg(highlight_background)
+                    .border_1()
+                    .border_color(theme.colors.borders.focused)
+            })
+            .when(!self.highlighted, |item| {
+                item.border_1().border_color(transparent_black())
+            })
+            .hover(move |item| item.bg(theme.colors.surfaces.sidebar))
+            .on_hover({
+                let controller = self.controller.clone();
+                move |hovered, _, cx| {
+                    if *hovered {
+                        controller.set_highlight(index, cx);
+                    }
+                }
+            })
+            .on_click({
+                let controller = self.controller.clone();
+                let on_activate = self.on_activate;
+                move |_, window, cx| {
+                    controller.close_and_restore_trigger(window, cx);
+                    on_activate(window, cx);
+                }
+            })
+            .child(div().flex_none().w(px(14.0)))
             .child(truncated_label(self.label).min_w(px(0.0)).flex_1())
     }
 }
@@ -1622,19 +1693,20 @@ pub(crate) fn dropdown<T: Clone + Eq + 'static>(
     options: Vec<(T, String)>,
     width: f32,
     on_value_change: impl Fn(Option<&T>, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    dropdown_with_option_colors(
+) -> ProbeDropdown<T> {
+    ProbeDropdown {
         theme,
         id,
         aria_label,
         value,
-        options
+        options: options
             .into_iter()
             .map(|(value, label)| (value, label, None))
             .collect(),
         width,
-        on_value_change,
-    )
+        actions: Vec::new(),
+        on_value_change: Rc::new(on_value_change),
+    }
 }
 
 pub(crate) fn dropdown_with_option_colors<T: Clone + Eq + 'static>(
@@ -1645,7 +1717,7 @@ pub(crate) fn dropdown_with_option_colors<T: Clone + Eq + 'static>(
     options: Vec<(T, String, Option<gpui::Rgba>)>,
     width: f32,
     on_value_change: impl Fn(Option<&T>, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> ProbeDropdown<T> {
     ProbeDropdown {
         theme,
         id,
@@ -1653,19 +1725,35 @@ pub(crate) fn dropdown_with_option_colors<T: Clone + Eq + 'static>(
         value,
         options,
         width,
+        actions: Vec::new(),
         on_value_change: Rc::new(on_value_change),
     }
 }
 
 #[derive(IntoElement)]
-struct ProbeDropdown<T: Clone + Eq + 'static> {
+pub(crate) struct ProbeDropdown<T: Clone + Eq + 'static> {
     theme: Theme,
     id: &'static str,
     aria_label: &'static str,
     value: Option<T>,
     options: Vec<(T, String, Option<gpui::Rgba>)>,
     width: f32,
+    actions: Vec<DropdownAction>,
     on_value_change: DropdownChangeHandler<T>,
+}
+
+impl<T: Clone + Eq + 'static> ProbeDropdown<T> {
+    pub(crate) fn with_action(
+        mut self,
+        label: impl Into<String>,
+        on_activate: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.actions.push(DropdownAction {
+            label: label.into(),
+            on_activate: Rc::new(on_activate),
+        });
+        self
+    }
 }
 
 impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
@@ -1687,8 +1775,11 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
                 }
             });
         state.update(cx, |state, _| {
-            if state.highlighted >= self.options.len() {
-                state.highlighted = selected_index;
+            let item_count = self.options.len() + self.actions.len();
+            if item_count == 0 {
+                state.highlighted = 0;
+            } else if state.highlighted >= item_count {
+                state.highlighted = selected_index.min(item_count - 1);
             }
         });
 
@@ -1734,9 +1825,11 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
             .unwrap_or(theme.colors.text.primary);
 
         let option_count = self.options.len();
+        let item_count = option_count + self.actions.len();
         let on_value_change = self.on_value_change.clone();
         let selected_value = self.value;
         let options = self.options;
+        let actions = self.actions;
         let list = div()
             .id(format!("{id}-list"))
             .track_focus(&list_focus)
@@ -1744,21 +1837,25 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
             .key_context("Select")
             .on_action({
                 let controller = controller.clone();
-                move |_: &SelectDown, _, cx| controller.move_highlight(1, option_count, cx)
+                move |_: &SelectDown, _, cx| controller.move_highlight(1, item_count, cx)
             })
             .on_action({
                 let controller = controller.clone();
-                move |_: &SelectUp, _, cx| controller.move_highlight(-1, option_count, cx)
+                move |_: &SelectUp, _, cx| controller.move_highlight(-1, item_count, cx)
             })
             .on_action({
                 let controller = controller.clone();
                 let on_value_change = on_value_change.clone();
                 let options = options.clone();
+                let actions = actions.clone();
                 move |_: &Confirm, window, cx| {
                     let index = controller.highlighted(cx);
                     if let Some((value, _, _)) = options.get(index) {
                         on_value_change(Some(value), window, cx);
                         controller.close_and_restore_trigger(window, cx);
+                    } else if let Some(action) = actions.get(index.saturating_sub(options.len())) {
+                        controller.close_and_restore_trigger(window, cx);
+                        (action.on_activate)(window, cx);
                     }
                 }
             })
@@ -1788,6 +1885,36 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
                             controller: controller.clone(),
                             on_value_change: on_value_change.clone(),
                         }
+                        .into_any_element()
+                    }),
+            )
+            .when(!actions.is_empty(), |list| {
+                list.child(
+                    div()
+                        .my(px(theme.metrics.spacing_1))
+                        .mx(px(theme.metrics.spacing_2))
+                        .flex_none()
+                        .h(px(1.0))
+                        .bg(theme.colors.borders.standard),
+                )
+            })
+            .children(
+                actions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(action_index, action)| {
+                        let index = option_count + action_index;
+                        DropdownActionItem {
+                            theme,
+                            id,
+                            index,
+                            action_index,
+                            label: action.label,
+                            highlighted: index == highlighted_index,
+                            controller: controller.clone(),
+                            on_activate: action.on_activate,
+                        }
+                        .into_any_element()
                     }),
             );
 

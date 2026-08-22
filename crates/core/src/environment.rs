@@ -283,6 +283,22 @@ pub fn create_environment(
     validate_environments(environments)
 }
 
+/// Removes an environment created in this session if it still has no children.
+pub fn revert_created_environment(environments: &mut Vec<Environment>, name: &str) {
+    if environments
+        .iter()
+        .any(|environment| environment.extends.as_deref() == Some(name))
+    {
+        return;
+    }
+    if let Some(index) = environments
+        .iter()
+        .position(|environment| environment.name == name)
+    {
+        environments.remove(index);
+    }
+}
+
 /// Updates a plain variable on the selected environment, or adds an override.
 ///
 /// Secret variables cannot be written. A variable defined only on a parent is

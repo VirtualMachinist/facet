@@ -1300,7 +1300,7 @@ fn environment_create_rejects_duplicates_missing_parents_and_stdin() {
         .create_environment("staging".to_owned(), None)
         .unwrap_err();
     assert!(matches!(read_only, SaveError::ReadOnlySource));
-    assert_eq!(stdin_loaded.workspace().environments().len(), 3);
+    assert_eq!(stdin_loaded.workspace().environments().len(), 2);
 
     fs::remove_file(path).unwrap();
 }
@@ -1319,6 +1319,6 @@ fn environment_create_refuses_externally_modified_document() {
         .unwrap_err();
     assert!(matches!(error, SaveError::ConcurrentModification(_)));
     assert_eq!(fs::read_to_string(&path).unwrap(), external);
-    assert_eq!(loaded.workspace().environments().len(), 3);
+    assert_eq!(loaded.workspace().environments().len(), 2);
     fs::remove_file(path).unwrap();
 }

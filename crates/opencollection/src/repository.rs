@@ -183,6 +183,30 @@ impl LoadedWorkspace {
         name: String,
         extends: Option<String>,
     ) -> Result<(), SaveError> {
+        let prepared = self.prepare_environment_create(name, extends)?;
+        let name = prepared.environment_name().to_owned();
+        match prepared.execute() {
+            Ok(saved) => {
+                self.complete_environment_create(saved);
+                Ok(())
+            }
+            Err(error) => {
+                self.revert_created_environment(&name);
+                Err(error)
+            }
+        }
+    }
+
+    /// Creates an environment in memory and captures a filesystem persist for background execution.
+    ///
+    /// The in-memory workspace contains the new environment after this returns. Call
+    /// [`PreparedEnvironmentCreate::execute`] away from the UI thread, then
+    /// [`Self::complete_environment_create`] or [`Self::revert_created_environment`].
+    pub fn prepare_environment_create(
+        &mut self,
+        name: String,
+        extends: Option<String>,
+    ) -> Result<PreparedEnvironmentCreate, SaveError> {
         self.workspace
             .create_environment(name.clone(), extends)
             .map_err(SaveError::Environment)?;
@@ -191,9 +215,13 @@ impl LoadedWorkspace {
             .environments()
             .iter()
             .find(|environment| environment.name == name)
+            .cloned()
             .expect("created environment must be present");
-        let (document_path, serialized) = match &self.source {
-            WorkspaceSource::Memory => return Err(SaveError::ReadOnlySource),
+        match &self.source {
+            WorkspaceSource::Memory => {
+                self.revert_created_environment(&name);
+                Err(SaveError::ReadOnlySource)
+            }
             WorkspaceSource::Bundled(document_path) => {
                 let document_path = document_path.clone();
                 let original_source = self
@@ -202,35 +230,43 @@ impl LoadedWorkspace {
                     .expect("bundled workspace must retain its source document")
                     .original_source
                     .clone();
-                let serialized = persist_bundled_environment_create(
-                    &document_path,
-                    &original_source,
+                Ok(PreparedEnvironmentCreate {
                     environment,
-                )?;
-                (document_path, serialized)
+                    kind: EnvironmentCreateKind::Bundled {
+                        document_path,
+                        original_source,
+                        bundled_index: self.workspace.environments().len() - 1,
+                    },
+                })
             }
-            WorkspaceSource::Unbundled(root) => {
-                persist_unbundled_environment_create(root, environment)?
-            }
-        };
-        let bundled_index = match &self.source {
-            WorkspaceSource::Bundled(_) => Some(self.workspace.environments().len() - 1),
-            WorkspaceSource::Unbundled(_) | WorkspaceSource::Memory => None,
-        };
+            WorkspaceSource::Unbundled(root) => Ok(PreparedEnvironmentCreate {
+                environment,
+                kind: EnvironmentCreateKind::Unbundled { root: root.clone() },
+            }),
+        }
+    }
+
+    /// Records persistence metadata after a prepared environment create succeeds.
+    pub fn complete_environment_create(&mut self, saved: CompletedEnvironmentCreate) {
         self.environment_persistence.insert(
-            name,
+            saved.name,
             EnvironmentPersistence {
-                document_path: document_path.clone(),
-                bundled_index,
+                document_path: saved.document_path.clone(),
+                bundled_index: saved.bundled_index,
             },
         );
         self.documents.insert(
-            document_path,
+            saved.document_path,
             SourceDocument {
-                original_source: serialized,
+                original_source: saved.serialized_source,
             },
         );
-        Ok(())
+    }
+
+    /// Drops an in-memory environment that was created but not persisted.
+    pub fn revert_created_environment(&mut self, name: &str) {
+        self.workspace.revert_created_environment(name);
+        self.environment_persistence.remove(name);
     }
 
     /// Captures an environment-variable save that can be executed away from the UI thread.
@@ -542,6 +578,70 @@ impl PreparedEnvironmentSave {
 pub struct CompletedEnvironmentSave {
     document_path: PathBuf,
     serialized_source: Vec<u8>,
+}
+
+/// A filesystem environment-create save captured for background execution.
+#[derive(Debug)]
+pub struct PreparedEnvironmentCreate {
+    environment: Environment,
+    kind: EnvironmentCreateKind,
+}
+
+#[derive(Debug)]
+enum EnvironmentCreateKind {
+    Bundled {
+        document_path: PathBuf,
+        original_source: Vec<u8>,
+        bundled_index: usize,
+    },
+    Unbundled {
+        root: PathBuf,
+    },
+}
+
+impl PreparedEnvironmentCreate {
+    fn environment_name(&self) -> &str {
+        &self.environment.name
+    }
+
+    /// Performs the conflict check and atomic write for a new environment document.
+    pub fn execute(self) -> Result<CompletedEnvironmentCreate, SaveError> {
+        let name = self.environment.name.clone();
+        let (document_path, serialized, bundled_index) = match self.kind {
+            EnvironmentCreateKind::Bundled {
+                document_path,
+                original_source,
+                bundled_index,
+            } => {
+                let serialized = persist_bundled_environment_create(
+                    &document_path,
+                    &original_source,
+                    &self.environment,
+                )?;
+                (document_path, serialized, Some(bundled_index))
+            }
+            EnvironmentCreateKind::Unbundled { root } => {
+                let (document_path, serialized) =
+                    persist_unbundled_environment_create(&root, &self.environment)?;
+                (document_path, serialized, None)
+            }
+        };
+        Ok(CompletedEnvironmentCreate {
+            name,
+            document_path,
+            serialized_source: serialized,
+            bundled_index,
+        })
+    }
+}
+
+/// The refreshed repository baseline produced by a successful environment create.
+#[derive(Debug)]
+pub struct CompletedEnvironmentCreate {
+    name: String,
+    document_path: PathBuf,
+    serialized_source: Vec<u8>,
+    bundled_index: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

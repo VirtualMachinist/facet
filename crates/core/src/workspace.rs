@@ -352,6 +352,11 @@ impl Workspace {
         crate::create_environment(&mut self.environments, name, extends)
     }
 
+    /// Removes a newly created environment that has not been persisted.
+    pub fn revert_created_environment(&mut self, name: &str) {
+        crate::revert_created_environment(&mut self.environments, name);
+    }
+
     /// Updates a plain variable on the named environment, or adds an override.
     pub fn set_environment_variable(
         &mut self,
