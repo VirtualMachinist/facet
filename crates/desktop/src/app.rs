@@ -2781,50 +2781,33 @@ impl ProbeApp {
         let close_view = cx.weak_entity();
         let close_other_view = cx.weak_entity();
         let dismiss_view = cx.weak_entity();
-        let menu = div()
-            .id("tab-context-menu")
-            .w(px(220.0))
-            .p(px(theme.metrics.spacing_1))
-            .flex()
-            .flex_col()
-            .gap(px(theme.metrics.spacing_1))
-            .rounded(px(theme.metrics.radius_medium))
-            .bg(theme.colors.surfaces.overlay)
-            .border_1()
-            .border_color(theme.colors.borders.standard)
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out({
-                let dismiss_view = dismiss_view.clone();
-                move |_, _, cx| {
-                    let _ = dismiss_view.update(cx, |view, cx| {
-                        view.close_tab_context_menu(cx);
-                    });
-                }
-            })
-            .child(components::menu_button(
-                theme,
-                "tab-context-close",
-                "Close Tab",
-                shortcut_label_for_action(window, &CloseActiveTab),
-                move |window, cx| {
-                    let _ = close_view.update(cx, |view, cx| {
-                        view.request_close_tab(key, window, cx);
-                    });
-                },
-            ))
-            .child(components::menu_button(
-                theme,
-                "tab-context-close-other",
-                "Close Other Tabs",
-                None,
-                move |window, cx| {
-                    let _ = close_other_view.update(cx, |view, cx| {
-                        view.request_close_other_tabs(key, window, cx);
-                    });
-                },
-            ));
+        let menu = components::context_menu_surface(theme, "tab-context-menu", 220.0, move |cx| {
+            let _ = dismiss_view.update(cx, |view, cx| {
+                view.close_tab_context_menu(cx);
+            });
+        })
+        .child(components::menu_button(
+            theme,
+            "tab-context-close",
+            "Close Tab",
+            shortcut_label_for_action(window, &CloseActiveTab),
+            move |window, cx| {
+                let _ = close_view.update(cx, |view, cx| {
+                    view.request_close_tab(key, window, cx);
+                });
+            },
+        ))
+        .child(components::menu_button(
+            theme,
+            "tab-context-close-other",
+            "Close Other Tabs",
+            None,
+            move |window, cx| {
+                let _ = close_other_view.update(cx, |view, cx| {
+                    view.request_close_other_tabs(key, window, cx);
+                });
+            },
+        ));
         deferred(
             Positioner::corner(Anchor::TopLeft, position)
                 .margin(px(8.0))
@@ -2857,56 +2840,39 @@ impl ProbeApp {
         let rename_view = cx.weak_entity();
         let delete_view = cx.weak_entity();
         let dismiss_view = cx.weak_entity();
-        let menu = div()
-            .id("tree-context-menu")
-            .w(px(200.0))
-            .p(px(theme.metrics.spacing_1))
-            .flex()
-            .flex_col()
-            .gap(px(theme.metrics.spacing_1))
-            .rounded(px(theme.metrics.radius_medium))
-            .bg(theme.colors.surfaces.overlay)
-            .border_1()
-            .border_color(theme.colors.borders.standard)
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down_out({
-                let dismiss_view = dismiss_view.clone();
-                move |_, _, cx| {
-                    let _ = dismiss_view.update(cx, |view, cx| {
-                        view.close_tree_context_menu(cx);
-                    });
-                }
-            })
-            .child(components::menu_button(
-                theme,
-                rename_id,
-                "Rename",
-                shortcut_label_for_action_in_context(window, &RenameTreeItem, "RequestTree"),
-                move |window, cx| {
-                    let _ = rename_view.update(cx, |view, cx| {
-                        view.tree_context_menu = None;
-                        view.tree_context_menu_position = None;
-                        view.select_tree_item(item, cx);
-                        view.open_rename_dialog(window, cx);
-                    });
-                },
-            ))
-            .child(components::destructive_menu_button(
-                theme,
-                delete_id,
-                "Delete",
-                shortcut_label_for_action_in_context(window, &DeleteTreeItem, "RequestTree"),
-                move |window, cx| {
-                    let _ = delete_view.update(cx, |view, cx| {
-                        view.tree_context_menu = None;
-                        view.tree_context_menu_position = None;
-                        view.select_tree_item(item, cx);
-                        view.request_delete_selected(window, cx);
-                    });
-                },
-            ));
+        let menu = components::context_menu_surface(theme, "tree-context-menu", 200.0, move |cx| {
+            let _ = dismiss_view.update(cx, |view, cx| {
+                view.close_tree_context_menu(cx);
+            });
+        })
+        .child(components::menu_button(
+            theme,
+            rename_id,
+            "Rename",
+            shortcut_label_for_action_in_context(window, &RenameTreeItem, "RequestTree"),
+            move |window, cx| {
+                let _ = rename_view.update(cx, |view, cx| {
+                    view.tree_context_menu = None;
+                    view.tree_context_menu_position = None;
+                    view.select_tree_item(item, cx);
+                    view.open_rename_dialog(window, cx);
+                });
+            },
+        ))
+        .child(components::destructive_menu_button(
+            theme,
+            delete_id,
+            "Delete",
+            shortcut_label_for_action_in_context(window, &DeleteTreeItem, "RequestTree"),
+            move |window, cx| {
+                let _ = delete_view.update(cx, |view, cx| {
+                    view.tree_context_menu = None;
+                    view.tree_context_menu_position = None;
+                    view.select_tree_item(item, cx);
+                    view.request_delete_selected(window, cx);
+                });
+            },
+        ));
         deferred(
             Positioner::corner(Anchor::TopLeft, position)
                 .margin(px(8.0))
@@ -2943,70 +2909,51 @@ impl ProbeApp {
                 let view = cx.weak_entity();
                 let context_menu_view = cx.weak_entity();
                 let item = WorkspaceItemRef::Request(key);
-                let button = Button::new(("request-tree-item", key.slot()))
-                    .focusable(true)
-                    .tab_stop(true)
-                    .key_context("RequestTree")
-                    .accessibility_label(format!("Request {label}"))
-                    .w_full()
-                    .h(px(theme.metrics.tree_row_height))
-                    .pl(px(tree_level_indent(theme, depth)))
-                    .pr(px(theme.metrics.spacing_1))
-                    .flex()
-                    .items_center()
-                    .gap(px(theme.metrics.spacing_1))
-                    .overflow_hidden()
-                    .rounded(px(theme.metrics.radius_small))
-                    .when(selected, |row| {
-                        row.bg(theme.colors.selection.active_background)
-                            .text_color(theme.colors.selection.active_foreground)
-                    })
-                    .when(!selected, |row| {
-                        row.hover(move |row| row.bg(theme.colors.surfaces.window))
-                    })
-                    .cursor_pointer()
-                    .on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| view.select_request(key, cx));
-                    })
-                    .when(can_edit, |row| {
-                        row.on_mouse_down(
-                            MouseButton::Right,
-                            move |event: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                let _ = context_menu_view.update(cx, |view, cx| {
-                                    view.open_tree_context_menu(item, event.position, cx);
-                                });
-                            },
+                let button =
+                    tree_row_button(theme, ("request-tree-item", key.slot()), depth, selected)
+                        .accessibility_label(format!("Request {label}"))
+                        .on_click(move |_, _, cx| {
+                            let _ = view.update(cx, |view, cx| view.select_request(key, cx));
+                        })
+                        .when(can_edit, |row| {
+                            row.on_mouse_down(
+                                MouseButton::Right,
+                                move |event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    let _ = context_menu_view.update(cx, |view, cx| {
+                                        view.open_tree_context_menu(item, event.position, cx);
+                                    });
+                                },
+                            )
+                        })
+                        .child(
+                            div()
+                                .w(px(26.0))
+                                .h_full()
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .truncate()
+                                .font_family(theme.typography.monospace_family)
+                                .text_size(px(tree_method_font_size(theme, &method_label)))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(if selected {
+                                    theme.colors.selection.active_foreground
+                                } else {
+                                    theme.method_color(&method)
+                                })
+                                .child(method_label.clone()),
                         )
-                    })
-                    .child(
-                        div()
-                            .w(px(26.0))
-                            .h_full()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .truncate()
-                            .font_family(theme.typography.monospace_family)
-                            .text_size(px(tree_method_font_size(theme, &method_label)))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(if selected {
-                                theme.colors.selection.active_foreground
-                            } else {
-                                theme.method_color(&method)
-                            })
-                            .child(method_label.clone()),
-                    )
-                    .child(
-                        components::truncated_label(label.to_owned())
-                            .flex_1()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .when(selected, |label| {
-                                label.debug_selector(|| "request-tree-label".into())
-                            }),
-                    );
+                        .child(
+                            components::truncated_label(label.to_owned())
+                                .flex_1()
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .when(selected, |label| {
+                                    label.debug_selector(|| "request-tree-label".into())
+                                }),
+                        );
                 self.wrap_tree_row(
                     TreeRowSpec {
                         item,
@@ -3033,57 +2980,38 @@ impl ProbeApp {
                 let view = cx.weak_entity();
                 let context_menu_view = cx.weak_entity();
                 let item = WorkspaceItemRef::Folder(key);
-                let button = Button::new(("folder-tree-item", key.slot()))
-                    .focusable(true)
-                    .tab_stop(true)
-                    .key_context("RequestTree")
-                    .accessibility_label(format!("Folder {label}"))
-                    .w_full()
-                    .h(px(theme.metrics.tree_row_height))
-                    .pl(px(tree_level_indent(theme, depth)))
-                    .pr(px(theme.metrics.spacing_1))
-                    .flex()
-                    .items_center()
-                    .gap(px(theme.metrics.spacing_1))
-                    .overflow_hidden()
-                    .rounded(px(theme.metrics.radius_small))
-                    .when(selected, |row| {
-                        row.bg(theme.colors.selection.active_background)
-                            .text_color(theme.colors.selection.active_foreground)
-                    })
-                    .when(!selected, |row| {
-                        row.hover(move |row| row.bg(theme.colors.surfaces.window))
-                    })
-                    .cursor_pointer()
-                    .on_click(move |_, _, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.select_tree_item(WorkspaceItemRef::Folder(key), cx);
-                            view.shell.toggle_folder(key);
-                            view.rebuild_visible_tree_rows();
-                            view.persist_session(cx);
-                            cx.notify();
-                        });
-                    })
-                    .when(can_edit, |row| {
-                        row.on_mouse_down(
-                            MouseButton::Right,
-                            move |event: &MouseDownEvent, _, cx| {
-                                cx.stop_propagation();
-                                let _ = context_menu_view.update(cx, |view, cx| {
-                                    view.open_tree_context_menu(item, event.position, cx);
-                                });
-                            },
-                        )
-                    })
-                    .child(components::tree_folder_icon(theme, expanded, selected))
-                    .child(
-                        components::truncated_label(label.to_owned())
-                            .flex_1()
-                            .when(selected, |label| {
-                                label.text_color(theme.colors.selection.active_foreground)
-                            })
-                            .font_weight(FontWeight::SEMIBOLD),
-                    );
+                let button =
+                    tree_row_button(theme, ("folder-tree-item", key.slot()), depth, selected)
+                        .accessibility_label(format!("Folder {label}"))
+                        .on_click(move |_, _, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                view.select_tree_item(WorkspaceItemRef::Folder(key), cx);
+                                view.shell.toggle_folder(key);
+                                view.rebuild_visible_tree_rows();
+                                view.persist_session(cx);
+                                cx.notify();
+                            });
+                        })
+                        .when(can_edit, |row| {
+                            row.on_mouse_down(
+                                MouseButton::Right,
+                                move |event: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    let _ = context_menu_view.update(cx, |view, cx| {
+                                        view.open_tree_context_menu(item, event.position, cx);
+                                    });
+                                },
+                            )
+                        })
+                        .child(components::tree_folder_icon(theme, expanded, selected))
+                        .child(
+                            components::truncated_label(label.to_owned())
+                                .flex_1()
+                                .when(selected, |label| {
+                                    label.text_color(theme.colors.selection.active_foreground)
+                                })
+                                .font_weight(FontWeight::SEMIBOLD),
+                        );
                 self.wrap_tree_row(
                     TreeRowSpec {
                         item,
@@ -3218,16 +3146,8 @@ impl ProbeApp {
         let import_yaak_view = cx.weak_entity();
         let can_edit = self.loaded_workspace.is_some() && self.structure_task.is_none();
         let add_menu_state_view = cx.weak_entity();
-        let add_popup = div()
-            .w(px(180.0))
-            .p(px(theme.metrics.spacing_1))
-            .flex()
-            .flex_col()
+        let add_popup = components::popup_surface(theme, "tree-add-menu-popup", 180.0)
             .gap(px(theme.metrics.spacing_1))
-            .rounded(px(theme.metrics.radius_medium))
-            .bg(theme.colors.surfaces.overlay)
-            .border_1()
-            .border_color(theme.colors.borders.standard)
             .child(components::menu_button(
                 theme,
                 "tree-new-request",
@@ -5519,17 +5439,8 @@ impl ProbeApp {
         let import_yaak_view = cx.weak_entity();
         let layout_view = cx.weak_entity();
         let collection_open = self.loaded_workspace.is_some();
-        let mut popup = div()
-            .id("workspace-switcher-popup")
-            .aria_label("Workspaces")
-            .w(px(300.0))
-            .p(px(theme.metrics.spacing_1))
-            .flex()
-            .flex_col()
-            .rounded(px(theme.metrics.radius_medium))
-            .bg(theme.colors.surfaces.overlay)
-            .border_1()
-            .border_color(theme.colors.borders.standard);
+        let mut popup = components::popup_surface(theme, "workspace-switcher-popup", 300.0)
+            .aria_label("Workspaces");
 
         if !self.session.recent_collections.is_empty() {
             popup = popup.child(
@@ -5576,63 +5487,48 @@ impl ProbeApp {
         }
 
         popup = popup
-            .child(
-                div()
-                    .w_full()
-                    .debug_selector(|| "workspace-switcher-new".into())
-                    .child(components::menu_button(
-                        theme,
-                        "workspace-switcher-new",
-                        "New Collection…",
-                        None,
-                        move |window, cx| {
-                            let _ = new_view.update(cx, |view, cx| {
-                                view.workspace_switcher_open = false;
-                                if !view.loading {
-                                    view.choose_new_workspace(window, cx);
-                                }
-                            });
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .debug_selector(|| "workspace-switcher-open".into())
-                    .child(components::menu_button(
-                        theme,
-                        "workspace-switcher-open",
-                        "Open Collection…",
-                        None,
-                        move |window, cx| {
-                            let _ = open_view.update(cx, |view, cx| {
-                                view.workspace_switcher_open = false;
-                                if !view.loading {
-                                    view.choose_workspace(window, cx);
-                                }
-                            });
-                        },
-                    )),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .debug_selector(|| "workspace-switcher-import-yaak".into())
-                    .child(components::menu_button(
-                        theme,
-                        "workspace-switcher-import-yaak",
-                        "Import from Yaak…",
-                        None,
-                        move |window, cx| {
-                            let _ = import_yaak_view.update(cx, |view, cx| {
-                                view.workspace_switcher_open = false;
-                                if !view.loading {
-                                    view.request_import_yaak(window, cx);
-                                }
-                            });
-                        },
-                    )),
-            );
+            .child(workspace_switcher_action(
+                theme,
+                "workspace-switcher-new",
+                "workspace-switcher-new",
+                "New Collection…",
+                move |window, cx| {
+                    let _ = new_view.update(cx, |view, cx| {
+                        view.workspace_switcher_open = false;
+                        if !view.loading {
+                            view.choose_new_workspace(window, cx);
+                        }
+                    });
+                },
+            ))
+            .child(workspace_switcher_action(
+                theme,
+                "workspace-switcher-open",
+                "workspace-switcher-open",
+                "Open Collection…",
+                move |window, cx| {
+                    let _ = open_view.update(cx, |view, cx| {
+                        view.workspace_switcher_open = false;
+                        if !view.loading {
+                            view.choose_workspace(window, cx);
+                        }
+                    });
+                },
+            ))
+            .child(workspace_switcher_action(
+                theme,
+                "workspace-switcher-import-yaak",
+                "workspace-switcher-import-yaak",
+                "Import from Yaak…",
+                move |window, cx| {
+                    let _ = import_yaak_view.update(cx, |view, cx| {
+                        view.workspace_switcher_open = false;
+                        if !view.loading {
+                            view.request_import_yaak(window, cx);
+                        }
+                    });
+                },
+            ));
 
         let switcher = Popover::new("workspace-switcher")
             .open(self.workspace_switcher_open)
@@ -5740,16 +5636,9 @@ impl ProbeApp {
         let index_enter_view = cx.weak_entity();
         let cancel_view = cx.weak_entity();
         let submit_view = cx.weak_entity();
-        let mut content = div()
-            .w(px(420.0))
+        let mut content = components::popup_surface(theme, "structure-dialog", 420.0)
             .p(px(theme.metrics.spacing_4))
-            .flex()
-            .flex_col()
             .gap(px(theme.metrics.spacing_3))
-            .rounded(px(theme.metrics.radius_medium))
-            .bg(theme.colors.surfaces.overlay)
-            .border_1()
-            .border_color(theme.colors.borders.standard)
             .child(
                 div()
                     .text_size(px(theme.typography.title_size))
@@ -5758,12 +5647,7 @@ impl ProbeApp {
             );
         if dialog.edits_name() {
             content = content
-                .child(
-                    div()
-                        .text_size(px(theme.typography.caption_size))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Name"),
-                )
+                .child(components::dialog_field_label(theme, "Name"))
                 .child(components::dialog_text_input(
                     theme,
                     "structure-name",
@@ -5806,12 +5690,7 @@ impl ProbeApp {
                 }));
             }
             content = content
-                .child(
-                    div()
-                        .text_size(px(theme.typography.caption_size))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Destination"),
-                )
+                .child(components::dialog_field_label(theme, "Destination"))
                 .child(components::dropdown(
                     theme,
                     "structure-parent",
@@ -5833,12 +5712,7 @@ impl ProbeApp {
                         });
                     },
                 ))
-                .child(
-                    div()
-                        .text_size(px(theme.typography.caption_size))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("Position"),
-                )
+                .child(components::dialog_field_label(theme, "Position"))
                 .child(components::dialog_text_input(
                     theme,
                     "structure-index",
@@ -5869,35 +5743,28 @@ impl ProbeApp {
                 .flex()
                 .justify_end()
                 .gap(px(theme.metrics.spacing_2))
-                .child(
-                    components::secondary_button(
-                        theme,
-                        "structure-cancel",
-                        "Cancel",
-                        move |_, window, cx| {
-                            let _ = cancel_view.update(cx, |view, cx| {
-                                view.structure_dialog = None;
-                                view.focus_handle.focus(window, cx);
-                                cx.notify();
-                            });
-                        },
-                    )
-                    .h(px(theme.metrics.control_height + 2.0))
-                    .w(px(components::COMPACT_ACTION_BUTTON_WIDTH)),
-                )
-                .child(
-                    components::primary_button(
-                        theme,
-                        "structure-submit",
-                        submit_label,
-                        move |_, window, cx| {
-                            let _ = submit_view.update(cx, |view, cx| {
-                                view.submit_structure_dialog(window, cx);
-                            });
-                        },
-                    )
-                    .w(px(components::COMPACT_ACTION_BUTTON_WIDTH)),
-                ),
+                .child(components::secondary_button(
+                    theme,
+                    "structure-cancel",
+                    "Cancel",
+                    move |_, window, cx| {
+                        let _ = cancel_view.update(cx, |view, cx| {
+                            view.structure_dialog = None;
+                            view.focus_handle.focus(window, cx);
+                            cx.notify();
+                        });
+                    },
+                ))
+                .child(components::primary_button(
+                    theme,
+                    "structure-submit",
+                    submit_label,
+                    move |_, window, cx| {
+                        let _ = submit_view.update(cx, |view, cx| {
+                            view.submit_structure_dialog(window, cx);
+                        });
+                    },
+                )),
         );
 
         div()
@@ -6286,6 +6153,48 @@ fn shortcut_label_for_binding(binding: &KeyBinding) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn tree_row_button(
+    theme: Theme,
+    id: impl Into<gpui::ElementId>,
+    depth: usize,
+    selected: bool,
+) -> Button {
+    Button::new(id)
+        .focusable(true)
+        .tab_stop(true)
+        .key_context("RequestTree")
+        .w_full()
+        .h(px(theme.metrics.tree_row_height))
+        .pl(px(tree_level_indent(theme, depth)))
+        .pr(px(theme.metrics.spacing_1))
+        .flex()
+        .items_center()
+        .gap(px(theme.metrics.spacing_1))
+        .overflow_hidden()
+        .rounded(px(theme.metrics.radius_small))
+        .when(selected, |row| {
+            row.bg(theme.colors.selection.active_background)
+                .text_color(theme.colors.selection.active_foreground)
+        })
+        .when(!selected, |row| {
+            row.hover(move |row| row.bg(theme.colors.surfaces.window))
+        })
+        .cursor_pointer()
+}
+
+fn workspace_switcher_action(
+    theme: Theme,
+    debug_selector: &'static str,
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<String>,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> gpui::Div {
+    div()
+        .w_full()
+        .debug_selector(move || debug_selector.into())
+        .child(components::menu_button(theme, id, label, None, on_activate))
 }
 
 fn tree_level_indent(theme: Theme, depth: usize) -> f32 {

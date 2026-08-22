@@ -40,6 +40,44 @@ pub(crate) fn truncated_label(text: impl Into<String>) -> gpui::Div {
     div().min_w(px(0.0)).truncate().child(text.into())
 }
 
+pub(crate) fn popup_surface(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    width: f32,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .w(px(width))
+        .p(px(theme.metrics.spacing_1))
+        .flex()
+        .flex_col()
+        .rounded(px(theme.metrics.radius_medium))
+        .bg(theme.colors.surfaces.overlay)
+        .border_1()
+        .border_color(theme.colors.borders.standard)
+}
+
+pub(crate) fn context_menu_surface(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    width: f32,
+    on_dismiss: impl Fn(&mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    popup_surface(theme, id, width)
+        .gap(px(theme.metrics.spacing_1))
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down_out(move |_, _, cx| on_dismiss(cx))
+}
+
+pub(crate) fn dialog_field_label(theme: Theme, label: impl Into<String>) -> gpui::Div {
+    div()
+        .text_size(px(theme.typography.caption_size))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(label.into())
+}
+
 static CHEVRON_DOWN_SVG: LazyLock<Vec<u8>> =
     LazyLock::new(|| icon_svg_bytes(icondata::LuChevronDown));
 static CHEVRON_UP_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuChevronUp));
@@ -155,35 +193,21 @@ pub(crate) fn hover_fill(color: gpui::Rgba) -> gpui::Rgba {
 }
 
 pub(crate) fn add_menu_button(theme: Theme, open: bool, enabled: bool) -> Button {
-    let disabled_background = theme.colors.actions.disabled;
-    let disabled_foreground = theme.colors.actions.disabled_foreground;
-    let mut button = Button::new("tree-add-menu-trigger")
-        .accessibility_label("Add request or folder")
-        .debug_selector(|| "tree-add-menu-trigger".into())
-        .selected(open && enabled)
-        .disabled(!enabled)
-        .size(px(theme.metrics.control_height))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme.metrics.radius_small))
-        .when(!enabled, |button| button.bg(disabled_background));
-
-    if enabled {
-        button = button
-            .hover(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
-            .focus(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
-            .styles(move |styles| {
-                styles.selected(move |button| button.bg(hover_fill(theme.colors.surfaces.window)))
-            });
-    }
-
-    button.child(
+    icon_button_base(
+        theme,
+        "tree-add-menu-trigger",
+        "tree-add-menu-trigger",
+        "Add request or folder",
+        enabled,
+        open && enabled,
+        hover_fill(theme.colors.surfaces.window),
+    )
+    .child(
         library_icon("lucide-plus", &PLUS_SVG, theme.metrics.icon_standard).text_color(
             if enabled {
                 theme.colors.text.primary
             } else {
-                disabled_foreground
+                theme.colors.actions.disabled_foreground
             },
         ),
     )
@@ -226,19 +250,17 @@ pub(crate) fn sidebar_toggle(
     } else {
         "Hide sidebar"
     };
-    Button::new("sidebar-toggle")
-        .accessibility_label(label)
-        .debug_selector(|| "sidebar-toggle".into())
-        .w(px(theme.metrics.control_height))
-        .h(px(theme.metrics.control_height))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme.metrics.radius_small))
-        .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-        .focus(move |button| button.bg(theme.colors.surfaces.sidebar))
-        .child(sidebar_icon(theme, collapsed))
-        .on_click(move |_, window, cx| on_toggle(window, cx))
+    icon_button_base(
+        theme,
+        "sidebar-toggle",
+        "sidebar-toggle",
+        label,
+        true,
+        false,
+        theme.colors.surfaces.sidebar,
+    )
+    .child(sidebar_icon(theme, collapsed))
+    .on_click(move |_, window, cx| on_toggle(window, cx))
 }
 
 pub(crate) fn home_button(
@@ -246,37 +268,53 @@ pub(crate) fn home_button(
     enabled: bool,
     on_click: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
-    let disabled_background = theme.colors.actions.disabled;
-    let disabled_foreground = theme.colors.actions.disabled_foreground;
-    let mut button = Button::new("home-button")
-        .accessibility_label("Close collection")
-        .debug_selector(|| "home-button".into())
+    icon_button_base(
+        theme,
+        "home-button",
+        "home-button",
+        "Close collection",
+        enabled,
+        false,
+        theme.colors.surfaces.sidebar,
+    )
+    .child(
+        library_icon("lucide-house", &HOME_SVG, theme.metrics.icon_standard).text_color(
+            if enabled {
+                theme.colors.text.secondary
+            } else {
+                theme.colors.actions.disabled_foreground
+            },
+        ),
+    )
+    .on_click(move |_, window, cx| on_click(window, cx))
+}
+
+fn icon_button_base(
+    theme: Theme,
+    id: &'static str,
+    debug_selector: &'static str,
+    accessibility_label: &'static str,
+    enabled: bool,
+    selected: bool,
+    active_background: gpui::Rgba,
+) -> Button {
+    Button::new(id)
+        .accessibility_label(accessibility_label)
+        .debug_selector(move || debug_selector.into())
+        .selected(selected)
         .disabled(!enabled)
-        .w(px(theme.metrics.control_height))
-        .h(px(theme.metrics.control_height))
+        .size(px(theme.metrics.control_height))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(theme.metrics.radius_small))
-        .when(!enabled, |button| button.bg(disabled_background));
-
-    if enabled {
-        button = button
-            .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-            .focus(move |button| button.bg(theme.colors.surfaces.sidebar));
-    }
-
-    button
-        .child(
-            library_icon("lucide-house", &HOME_SVG, theme.metrics.icon_standard).text_color(
-                if enabled {
-                    theme.colors.text.secondary
-                } else {
-                    disabled_foreground
-                },
-            ),
-        )
-        .on_click(move |_, window, cx| on_click(window, cx))
+        .when(!enabled, |button| button.bg(theme.colors.actions.disabled))
+        .when(enabled, |button| {
+            button
+                .hover(move |button| button.bg(active_background))
+                .focus(move |button| button.bg(active_background))
+                .styles(move |styles| styles.selected(move |button| button.bg(active_background)))
+        })
 }
 
 type VariableChangeHandler = Rc<dyn Fn(&str, String, &mut Window, &mut App)>;
@@ -543,29 +581,13 @@ fn variable_value_input(
     placeholder: impl Into<SharedString>,
     editable: bool,
 ) -> gpui::AnyElement {
-    ProbeTextInput {
-        theme,
-        id: id.into(),
-        value: single_line(value),
-        placeholder: placeholder.into(),
-        variables: VariableContext::default(),
-        highlight_path_variables: false,
-        variable_overlay: false,
-        font_family: theme.typography.monospace_family,
-        text_size: theme.typography.caption_size,
-        height: theme.metrics.control_height,
-        width: None,
-        debug_selector: Some("variable-tooltip-value-input"),
-        on_change: None,
-        on_enter: None,
-        autofocus: false,
-        readonly: !editable,
-        on_focus: None,
-        shared_input: Some(state),
-        flat: false,
-        leading_icon: None,
-    }
-    .into_any_element()
+    let mut input = text_input_base(theme, id, value, placeholder);
+    input.font_family = theme.typography.monospace_family;
+    input.text_size = theme.typography.caption_size;
+    input.debug_selector = Some("variable-tooltip-value-input");
+    input.readonly = !editable;
+    input.shared_input = Some(state);
+    input.into_any_element()
 }
 
 fn focus_ring_shadow(ring_color: Hsla, gap_color: Hsla) -> Vec<BoxShadow> {
@@ -581,44 +603,7 @@ pub(crate) fn primary_button(
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    let label = label.into();
-    Button::new(id)
-        .debug_selector(|| id.into())
-        .h(px(theme.metrics.control_height))
-        .min_w(px(COMPACT_ACTION_BUTTON_WIDTH))
-        .px(px(theme.metrics.spacing_3))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme.metrics.radius_small))
-        .font_family(theme.typography.interface_family)
-        .text_size(px(theme.typography.body_size))
-        .text_color(theme.colors.text.inverse)
-        .bg(theme.colors.actions.accent)
-        .border_1()
-        .border_color(theme.colors.actions.accent)
-        .cursor_pointer()
-        .hover(move |button| {
-            button
-                .bg(theme.colors.actions.hover)
-                .border_color(theme.colors.actions.hover)
-        })
-        .focus(move |button| {
-            button.shadow(focus_ring_shadow(
-                theme.colors.actions.accent.into(),
-                theme.colors.text.inverse.into(),
-            ))
-        })
-        .styles(move |styles| {
-            styles.disabled(move |button| {
-                button
-                    .bg(theme.colors.actions.disabled)
-                    .text_color(theme.colors.actions.disabled_foreground)
-                    .border_color(theme.colors.actions.disabled)
-            })
-        })
-        .on_click(on_click)
-        .child(label)
+    action_button(theme, id, label, ActionButtonKind::Primary, on_click)
 }
 
 pub(crate) fn secondary_button(
@@ -627,8 +612,23 @@ pub(crate) fn secondary_button(
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    let label = label.into();
-    Button::new(id)
+    action_button(theme, id, label, ActionButtonKind::Secondary, on_click)
+}
+
+#[derive(Clone, Copy)]
+enum ActionButtonKind {
+    Primary,
+    Secondary,
+}
+
+fn action_button(
+    theme: Theme,
+    id: &'static str,
+    label: impl Into<String>,
+    kind: ActionButtonKind,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let button = Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
         .min_w(px(COMPACT_ACTION_BUTTON_WIDTH))
@@ -639,30 +639,58 @@ pub(crate) fn secondary_button(
         .rounded(px(theme.metrics.radius_small))
         .font_family(theme.typography.interface_family)
         .text_size(px(theme.typography.body_size))
-        .text_color(theme.colors.text.primary)
-        .bg(theme.colors.surfaces.raised)
         .border_1()
-        .border_color(theme.colors.borders.standard)
-        .cursor_pointer()
-        .hover(move |button| button.bg(theme.colors.surfaces.window))
-        .focus(move |button| {
-            button
-                .border_color(theme.colors.borders.focused)
-                .shadow(focus_ring_shadow(
-                    theme.colors.borders.focused.into(),
-                    theme.colors.surfaces.raised.into(),
-                ))
-        })
-        .styles(move |styles| {
-            styles.disabled(move |button| {
+        .cursor_pointer();
+    match kind {
+        ActionButtonKind::Primary => button
+            .text_color(theme.colors.text.inverse)
+            .bg(theme.colors.actions.accent)
+            .border_color(theme.colors.actions.accent)
+            .hover(move |button| {
                 button
-                    .bg(theme.colors.actions.disabled)
-                    .text_color(theme.colors.actions.disabled_foreground)
-                    .border_color(theme.colors.actions.disabled)
+                    .bg(theme.colors.actions.hover)
+                    .border_color(theme.colors.actions.hover)
             })
-        })
-        .on_click(on_click)
-        .child(label)
+            .focus(move |button| {
+                button.shadow(focus_ring_shadow(
+                    theme.colors.actions.accent.into(),
+                    theme.colors.text.inverse.into(),
+                ))
+            })
+            .styles(move |styles| {
+                styles.disabled(move |button| {
+                    button
+                        .bg(theme.colors.actions.disabled)
+                        .text_color(theme.colors.actions.disabled_foreground)
+                        .border_color(theme.colors.actions.disabled)
+                })
+            })
+            .on_click(on_click)
+            .child(label.into()),
+        ActionButtonKind::Secondary => button
+            .text_color(theme.colors.text.primary)
+            .bg(theme.colors.surfaces.raised)
+            .border_color(theme.colors.borders.standard)
+            .hover(move |button| button.bg(theme.colors.surfaces.window))
+            .focus(move |button| {
+                button
+                    .border_color(theme.colors.borders.focused)
+                    .shadow(focus_ring_shadow(
+                        theme.colors.borders.focused.into(),
+                        theme.colors.surfaces.raised.into(),
+                    ))
+            })
+            .styles(move |styles| {
+                styles.disabled(move |button| {
+                    button
+                        .bg(theme.colors.actions.disabled)
+                        .text_color(theme.colors.actions.disabled_foreground)
+                        .border_color(theme.colors.actions.disabled)
+                })
+            })
+            .on_click(on_click)
+            .child(label.into()),
+    }
 }
 
 type InputChangeHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -1033,28 +1061,26 @@ impl RenderOnce for ProbeTextInput {
     }
 }
 
-pub(crate) fn variable_text_input(
+fn text_input_base(
     theme: Theme,
     id: impl Into<ElementId>,
     value: impl Into<SharedString>,
     placeholder: impl Into<SharedString>,
-    variables: VariableContext,
-    on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
-) -> gpui::AnyElement {
+) -> ProbeTextInput {
     ProbeTextInput {
         theme,
         id: id.into(),
         value: single_line(value),
         placeholder: placeholder.into(),
-        variables,
+        variables: VariableContext::default(),
         highlight_path_variables: false,
-        variable_overlay: true,
-        font_family: theme.typography.monospace_family,
+        variable_overlay: false,
+        font_family: theme.typography.interface_family,
         text_size: theme.typography.body_size,
         height: theme.metrics.control_height,
         width: None,
         debug_selector: None,
-        on_change: Some(Rc::new(on_value_change)),
+        on_change: None,
         on_enter: None,
         on_focus: None,
         autofocus: false,
@@ -1063,7 +1089,22 @@ pub(crate) fn variable_text_input(
         flat: false,
         leading_icon: None,
     }
-    .into_any_element()
+}
+
+pub(crate) fn variable_text_input(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    value: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    variables: VariableContext,
+    on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
+) -> gpui::AnyElement {
+    let mut input = text_input_base(theme, id, value, placeholder);
+    input.variables = variables;
+    input.variable_overlay = true;
+    input.font_family = theme.typography.monospace_family;
+    input.on_change = Some(Rc::new(on_value_change));
+    input.into_any_element()
 }
 
 pub(crate) fn url_text_input(
@@ -1074,29 +1115,13 @@ pub(crate) fn url_text_input(
     variables: VariableContext,
     on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    ProbeTextInput {
-        theme,
-        id: id.into(),
-        value: single_line(value),
-        placeholder: placeholder.into(),
-        variables,
-        highlight_path_variables: true,
-        variable_overlay: true,
-        font_family: theme.typography.monospace_family,
-        text_size: theme.typography.body_size,
-        height: theme.metrics.control_height,
-        width: None,
-        debug_selector: None,
-        on_change: Some(Rc::new(on_value_change)),
-        on_enter: None,
-        on_focus: None,
-        autofocus: false,
-        readonly: false,
-        shared_input: None,
-        flat: false,
-        leading_icon: None,
-    }
-    .into_any_element()
+    let mut input = text_input_base(theme, id, value, placeholder);
+    input.variables = variables;
+    input.highlight_path_variables = true;
+    input.variable_overlay = true;
+    input.font_family = theme.typography.monospace_family;
+    input.on_change = Some(Rc::new(on_value_change));
+    input.into_any_element()
 }
 
 pub(crate) fn dialog_text_input(
@@ -1108,29 +1133,11 @@ pub(crate) fn dialog_text_input(
     on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
     on_enter: impl Fn(SharedString, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    ProbeTextInput {
-        theme,
-        id: id.into(),
-        value: single_line(value),
-        placeholder: placeholder.into(),
-        variables: VariableContext::default(),
-        highlight_path_variables: false,
-        variable_overlay: false,
-        font_family: theme.typography.interface_family,
-        text_size: theme.typography.body_size,
-        height: theme.metrics.control_height,
-        width: None,
-        debug_selector: None,
-        on_change: Some(Rc::new(on_value_change)),
-        on_enter: Some(Rc::new(on_enter)),
-        on_focus: None,
-        autofocus,
-        readonly: false,
-        shared_input: None,
-        flat: false,
-        leading_icon: None,
-    }
-    .into_any_element()
+    let mut input = text_input_base(theme, id, value, placeholder);
+    input.on_change = Some(Rc::new(on_value_change));
+    input.on_enter = Some(Rc::new(on_enter));
+    input.autofocus = autofocus;
+    input.into_any_element()
 }
 
 pub(crate) fn sidebar_search_input(
@@ -1139,31 +1146,16 @@ pub(crate) fn sidebar_search_input(
     placeholder: impl Into<SharedString>,
     on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    ProbeTextInput {
-        theme,
-        id: "tree-search-input".into(),
-        value: single_line(value),
-        placeholder: placeholder.into(),
-        variables: VariableContext::default(),
-        highlight_path_variables: false,
-        variable_overlay: false,
-        font_family: theme.typography.interface_family,
-        text_size: theme.typography.caption_size,
-        height: theme.metrics.control_height,
-        width: None,
-        debug_selector: Some("tree-search"),
-        on_change: Some(Rc::new(on_value_change)),
-        on_enter: None,
-        on_focus: None,
-        autofocus: false,
-        readonly: false,
-        shared_input: None,
-        flat: true,
-        leading_icon: Some(
-            library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
-                .text_color(theme.colors.text.muted),
-        ),
-    }
+    let mut input = text_input_base(theme, "tree-search-input", value, placeholder);
+    input.text_size = theme.typography.caption_size;
+    input.debug_selector = Some("tree-search");
+    input.on_change = Some(Rc::new(on_value_change));
+    input.flat = true;
+    input.leading_icon = Some(
+        library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
+            .text_color(theme.colors.text.muted),
+    );
+    input
 }
 
 pub(crate) fn search_input(
@@ -1174,28 +1166,13 @@ pub(crate) fn search_input(
     on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
     on_enter: impl Fn(SharedString, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    ProbeTextInput {
-        theme,
-        id: id.into(),
-        value: single_line(value),
-        placeholder: placeholder.into(),
-        variables: VariableContext::default(),
-        highlight_path_variables: false,
-        variable_overlay: false,
-        font_family: theme.typography.interface_family,
-        text_size: theme.typography.body_size,
-        height: theme.metrics.control_height - 2.0,
-        width: Some(180.0),
-        debug_selector: Some("response-search"),
-        on_change: Some(Rc::new(on_value_change)),
-        on_enter: Some(Rc::new(on_enter)),
-        on_focus: None,
-        autofocus: false,
-        readonly: false,
-        shared_input: None,
-        flat: false,
-        leading_icon: None,
-    }
+    let mut input = text_input_base(theme, id, value, placeholder);
+    input.height = theme.metrics.control_height - 2.0;
+    input.width = Some(180.0);
+    input.debug_selector = Some("response-search");
+    input.on_change = Some(Rc::new(on_value_change));
+    input.on_enter = Some(Rc::new(on_enter));
+    input
 }
 
 fn editor_button_base(
@@ -1260,12 +1237,7 @@ pub(crate) fn editor_subtab(
     size: usize,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    Button::new(id)
-        .role(Role::Tab)
-        .selected(selected)
-        .aria_selected(selected)
-        .aria_position_in_set(position)
-        .aria_size_of_set(size)
+    tab_button_base(theme, id, selected, position, size, on_click)
         .h(px(theme.metrics.control_height))
         .px(px(theme.metrics.spacing_2))
         .flex()
@@ -1285,9 +1257,6 @@ pub(crate) fn editor_subtab(
         .when(!selected, |tab| {
             tab.hover(move |tab| tab.bg(theme.colors.surfaces.raised))
         })
-        .focus(move |tab| tab.border_color(theme.colors.borders.focused))
-        .cursor_pointer()
-        .on_click(on_click)
         .child(label.into())
 }
 
@@ -1313,12 +1282,7 @@ pub(crate) fn text_tab(
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let label = label.into();
-    Button::new(id)
-        .role(Role::Tab)
-        .selected(selected)
-        .aria_selected(selected)
-        .aria_position_in_set(position)
-        .aria_size_of_set(size)
+    tab_button_base(theme, id, selected, position, size, on_click)
         .h(px(theme.metrics.control_height - 2.0))
         .px(px(theme.metrics.spacing_2))
         .flex()
@@ -1339,10 +1303,26 @@ pub(crate) fn text_tab(
         .when(!selected, |tab| {
             tab.hover(move |tab| tab.bg(theme.colors.surfaces.raised))
         })
+        .child(label)
+}
+
+fn tab_button_base(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    selected: bool,
+    position: usize,
+    size: usize,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .role(Role::Tab)
+        .selected(selected)
+        .aria_selected(selected)
+        .aria_position_in_set(position)
+        .aria_size_of_set(size)
         .focus(move |tab| tab.border_color(theme.colors.borders.focused))
         .cursor_pointer()
         .on_click(on_click)
-        .child(label)
 }
 
 pub(crate) fn remove_row_button(
@@ -1351,23 +1331,8 @@ pub(crate) fn remove_row_button(
     aria_label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let color = theme.colors.text.secondary;
-    Button::new(id)
-        .accessibility_label(aria_label)
-        .w(px(30.0))
-        .h(px(theme.metrics.control_height))
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(px(theme.metrics.radius_small))
-        .bg(transparent_black())
-        .border_1()
-        .border_color(transparent_black())
-        .cursor_pointer()
-        .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-        .focus(move |button| button.border_color(theme.colors.borders.focused))
-        .on_click(on_click)
-        .child(trash_icon(color))
+    row_icon_button_base(theme, id, aria_label, on_click)
+        .child(trash_icon(theme.colors.text.secondary))
 }
 
 pub(crate) fn browse_file_button(
@@ -1376,7 +1341,16 @@ pub(crate) fn browse_file_button(
     aria_label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let color = theme.colors.text.secondary;
+    row_icon_button_base(theme, id, aria_label, on_click)
+        .child(folder_open_icon(theme.colors.text.secondary))
+}
+
+fn row_icon_button_base(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    aria_label: impl Into<SharedString>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
     Button::new(id)
         .accessibility_label(aria_label)
         .w(px(30.0))
@@ -1392,7 +1366,6 @@ pub(crate) fn browse_file_button(
         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
         .focus(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
-        .child(folder_open_icon(color))
 }
 
 fn folder_open_icon(color: gpui::Rgba) -> gpui::Div {
@@ -1693,34 +1666,19 @@ pub(crate) fn response_body_input(
     language: impl Into<SharedString>,
     on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
 ) -> gpui::AnyElement {
-    let mut decorations = Vec::new();
-    let mut scroll_to_offset = None;
-    for (index, found) in matches.iter().enumerate() {
-        let active = index == active_match;
-        if active {
-            scroll_to_offset = Some(found.range.start);
-        }
-        decorations.push(search_match_decoration(theme, found.range.clone(), active));
-    }
-    ProbeEditor {
+    let (decorations, scroll_to_offset) = response_search_decorations(theme, matches, active_match);
+    response_editor(
         theme,
-        id: id.into(),
-        value: text.to_owned().into(),
-        placeholder: SharedString::default(),
-        decorations,
-        language: language.into(),
-        readonly: true,
-        min_height: None,
-        padded: true,
-        soft_wrap: false,
-        text_color: theme.colors.syntax.plain,
-        scroll_to_offset,
-        on_change: None,
-        on_visible_range: Some(Rc::new(on_visible_range)),
-        debug_selector: None,
-        variables: None,
-    }
-    .into_any_element()
+        id,
+        ResponseEditorPresentation {
+            value: text.into(),
+            decorations,
+            language: language.into(),
+            text_color: theme.colors.syntax.plain,
+            scroll_to_offset,
+        },
+        on_visible_range,
+    )
 }
 
 pub(crate) fn response_headers_input(
@@ -1740,6 +1698,29 @@ pub(crate) fn response_headers_input(
             None,
         ));
     }
+    let (search_decorations, scroll_to_offset) =
+        response_search_decorations(theme, matches, active_match);
+    decorations.extend(search_decorations);
+    response_editor(
+        theme,
+        id,
+        ResponseEditorPresentation {
+            value: joined.text.into(),
+            decorations,
+            language: SharedString::default(),
+            text_color: theme.colors.text.primary,
+            scroll_to_offset,
+        },
+        on_visible_range,
+    )
+}
+
+fn response_search_decorations(
+    theme: Theme,
+    matches: &[SearchMatch],
+    active_match: usize,
+) -> (Vec<TextDecoration>, Option<usize>) {
+    let mut decorations = Vec::with_capacity(matches.len());
     let mut scroll_to_offset = None;
     for (index, found) in matches.iter().enumerate() {
         let active = index == active_match;
@@ -1748,19 +1729,36 @@ pub(crate) fn response_headers_input(
         }
         decorations.push(search_match_decoration(theme, found.range.clone(), active));
     }
+    (decorations, scroll_to_offset)
+}
+
+struct ResponseEditorPresentation {
+    value: SharedString,
+    decorations: Vec<TextDecoration>,
+    language: SharedString,
+    text_color: gpui::Rgba,
+    scroll_to_offset: Option<usize>,
+}
+
+fn response_editor(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    presentation: ResponseEditorPresentation,
+    on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+) -> gpui::AnyElement {
     ProbeEditor {
         theme,
         id: id.into(),
-        value: joined.text.into(),
+        value: presentation.value,
         placeholder: SharedString::default(),
-        decorations,
-        language: SharedString::default(),
+        decorations: presentation.decorations,
+        language: presentation.language,
         readonly: true,
         min_height: None,
         padded: true,
         soft_wrap: false,
-        text_color: theme.colors.text.primary,
-        scroll_to_offset,
+        text_color: presentation.text_color,
+        scroll_to_offset: presentation.scroll_to_offset,
         on_change: None,
         on_visible_range: Some(Rc::new(on_visible_range)),
         debug_selector: None,
