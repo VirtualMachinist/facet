@@ -12,8 +12,8 @@ mod path_parameters;
 mod workspace;
 
 pub use environment::{
-    EnvironmentResolutionError, ResolvedEnvironment, resolve_environment, resolve_request,
-    set_environment_variable, unset_environment_variable, validate_environments,
+    EnvironmentResolutionError, ResolvedEnvironment, create_environment, resolve_environment,
+    resolve_request, set_environment_variable, unset_environment_variable, validate_environments,
 };
 pub use path_parameters::{
     add_path_parameter, apply_path_parameters, ensure_path_parameters_from_url,

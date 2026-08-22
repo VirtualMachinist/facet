@@ -487,3 +487,78 @@ fn unset_environment_variable_removes_local_entry_and_restores_parent() {
         )
     }));
 }
+
+#[test]
+fn create_environment_appends_and_validates_inheritance() {
+    let mut environments = vec![environment(
+        "base",
+        None,
+        vec![variable("host", "api.example.com")],
+    )];
+
+    probe_core::create_environment(
+        &mut environments,
+        "development".to_owned(),
+        Some("base".to_owned()),
+    )
+    .unwrap();
+
+    assert_eq!(environments.len(), 2);
+    assert_eq!(environments[1].name, "development");
+    assert_eq!(environments[1].extends.as_deref(), Some("base"));
+    assert!(environments[1].variables.is_empty());
+    assert_eq!(
+        resolve_environment(&environments, "development")
+            .unwrap()
+            .variable("host"),
+        Some("api.example.com")
+    );
+}
+
+#[test]
+fn create_environment_rejects_invalid_names_and_parents() {
+    let mut environments = vec![environment("base", None, vec![])];
+
+    assert_eq!(
+        probe_core::create_environment(&mut environments, String::new(), None).unwrap_err(),
+        EnvironmentResolutionError::InvalidEnvironmentName
+    );
+    assert_eq!(
+        probe_core::create_environment(
+            &mut environments,
+            "base".to_owned(),
+            Some("base".to_owned()),
+        )
+        .unwrap_err(),
+        EnvironmentResolutionError::DuplicateEnvironment("base".to_owned())
+    );
+    assert_eq!(
+        probe_core::create_environment(
+            &mut environments,
+            "staging".to_owned(),
+            Some("missing".to_owned()),
+        )
+        .unwrap_err(),
+        EnvironmentResolutionError::ParentEnvironmentNotFound {
+            environment: "staging".to_owned(),
+            parent: "missing".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn create_environment_rejects_inheritance_cycles() {
+    let mut environments = vec![Environment {
+        name: "a".to_owned(),
+        color: None,
+        extends: Some("b".to_owned()),
+        dot_env_file_path: None,
+        variables: Vec::new(),
+    }];
+
+    assert!(matches!(
+        probe_core::create_environment(&mut environments, "b".to_owned(), Some("a".to_owned()))
+            .unwrap_err(),
+        EnvironmentResolutionError::EnvironmentInheritanceCycle(_)
+    ));
+}

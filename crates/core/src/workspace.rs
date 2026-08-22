@@ -343,6 +343,15 @@ impl Workspace {
         &self.environments
     }
 
+    /// Creates a new environment with an optional parent.
+    pub fn create_environment(
+        &mut self,
+        name: String,
+        extends: Option<String>,
+    ) -> Result<(), crate::EnvironmentResolutionError> {
+        crate::create_environment(&mut self.environments, name, extends)
+    }
+
     /// Updates a plain variable on the named environment, or adds an override.
     pub fn set_environment_variable(
         &mut self,

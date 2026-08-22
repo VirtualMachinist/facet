@@ -97,6 +97,8 @@ pub enum EnvironmentResolutionError {
     VariableInterpolationCycle(Vec<String>),
     /// An interpolation starts with `{{` but has no valid closing expression.
     MalformedInterpolation,
+    /// An environment name is empty or otherwise unusable for creation.
+    InvalidEnvironmentName,
     /// A variable name is empty or otherwise unusable for set/unset.
     InvalidVariableName,
     /// The named environment has no entry for this variable.
@@ -219,6 +221,9 @@ impl fmt::Display for EnvironmentResolutionError {
                 )
             }
             Self::MalformedInterpolation => write!(formatter, "malformed variable interpolation"),
+            Self::InvalidEnvironmentName => {
+                formatter.write_str("environment name must not be empty")
+            }
             Self::InvalidVariableName => formatter.write_str("variable name must not be empty"),
             Self::VariableNotFound {
                 environment,
@@ -238,6 +243,44 @@ enum RawVariable {
     Value(String),
     Unavailable,
     Secret,
+}
+
+/// Creates a new environment with an optional parent.
+///
+/// The new environment starts with no variables. Validation rejects duplicate names,
+/// missing parents, and inheritance cycles.
+pub fn create_environment(
+    environments: &mut Vec<Environment>,
+    name: String,
+    extends: Option<String>,
+) -> Result<(), EnvironmentResolutionError> {
+    if name.is_empty() {
+        return Err(EnvironmentResolutionError::InvalidEnvironmentName);
+    }
+    if environments
+        .iter()
+        .any(|environment| environment.name == name)
+    {
+        return Err(EnvironmentResolutionError::DuplicateEnvironment(name));
+    }
+    if let Some(parent) = extends.as_deref()
+        && !environments
+            .iter()
+            .any(|environment| environment.name == parent)
+    {
+        return Err(EnvironmentResolutionError::ParentEnvironmentNotFound {
+            environment: name.clone(),
+            parent: parent.to_owned(),
+        });
+    }
+    environments.push(Environment {
+        name,
+        color: None,
+        extends,
+        dot_env_file_path: None,
+        variables: Vec::new(),
+    });
+    validate_environments(environments)
 }
 
 /// Updates a plain variable on the selected environment, or adds an override.

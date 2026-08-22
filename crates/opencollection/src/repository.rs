@@ -177,6 +177,62 @@ impl LoadedWorkspace {
         )
     }
 
+    /// Creates a new environment in memory and atomically persists its OpenCollection document.
+    pub fn create_environment(
+        &mut self,
+        name: String,
+        extends: Option<String>,
+    ) -> Result<(), SaveError> {
+        self.workspace
+            .create_environment(name.clone(), extends)
+            .map_err(SaveError::Environment)?;
+        let environment = self
+            .workspace
+            .environments()
+            .iter()
+            .find(|environment| environment.name == name)
+            .expect("created environment must be present");
+        let (document_path, serialized) = match &self.source {
+            WorkspaceSource::Memory => return Err(SaveError::ReadOnlySource),
+            WorkspaceSource::Bundled(document_path) => {
+                let document_path = document_path.clone();
+                let original_source = self
+                    .documents
+                    .get(&document_path)
+                    .expect("bundled workspace must retain its source document")
+                    .original_source
+                    .clone();
+                let serialized = persist_bundled_environment_create(
+                    &document_path,
+                    &original_source,
+                    environment,
+                )?;
+                (document_path, serialized)
+            }
+            WorkspaceSource::Unbundled(root) => {
+                persist_unbundled_environment_create(root, environment)?
+            }
+        };
+        let bundled_index = match &self.source {
+            WorkspaceSource::Bundled(_) => Some(self.workspace.environments().len() - 1),
+            WorkspaceSource::Unbundled(_) | WorkspaceSource::Memory => None,
+        };
+        self.environment_persistence.insert(
+            name,
+            EnvironmentPersistence {
+                document_path: document_path.clone(),
+                bundled_index,
+            },
+        );
+        self.documents.insert(
+            document_path,
+            SourceDocument {
+                original_source: serialized,
+            },
+        );
+        Ok(())
+    }
+
     /// Captures an environment-variable save that can be executed away from the UI thread.
     ///
     /// The in-memory workspace must already contain the updated variable. Preparing is
@@ -1630,6 +1686,120 @@ fn persist_environment_yaml(
         .into_bytes();
     atomic_write(&persistence.document_path, &serialized, original_source)?;
     Ok(serialized)
+}
+
+fn persist_bundled_environment_create(
+    document_path: &Path,
+    original_source: &[u8],
+    environment: &Environment,
+) -> Result<Vec<u8>, SaveError> {
+    let _save_lock = SaveLock::acquire(document_path)?;
+    let current = fs::read(document_path).map_err(|source| SaveError::Io {
+        path: document_path.to_owned(),
+        source,
+    })?;
+    if current != original_source {
+        return Err(SaveError::ConcurrentModification(document_path.to_owned()));
+    }
+    let mut document: Value = serde_yaml_ng::from_slice(original_source).map_err(|error| {
+        SaveError::InvalidDocument(format!("retained source cannot be parsed: {error}"))
+    })?;
+    let mapping = document.as_mapping_mut().ok_or_else(|| {
+        SaveError::InvalidDocument("the collection document is not a mapping".to_owned())
+    })?;
+    let config = mapping_child(mapping, "config")?;
+    let environments = config
+        .get_mut(string_key("environments"))
+        .and_then(Value::as_sequence_mut);
+    let environments = match environments {
+        Some(environments) => environments,
+        None => {
+            let sequence = Value::Sequence(Vec::new());
+            config.insert(string_key("environments"), sequence.clone());
+            config
+                .get_mut(string_key("environments"))
+                .and_then(Value::as_sequence_mut)
+                .expect("environments sequence must exist after insertion")
+        }
+    };
+    environments.push(environment_value(environment));
+    let serialized = serde_yaml_ng::to_string(&document)
+        .map_err(SaveError::Serialize)?
+        .into_bytes();
+    atomic_write(document_path, &serialized, original_source)?;
+    Ok(serialized)
+}
+
+fn persist_unbundled_environment_create(
+    root: &Path,
+    environment: &Environment,
+) -> Result<(PathBuf, Vec<u8>), SaveError> {
+    let directory = root.join("environments");
+    if !directory.exists() {
+        fs::create_dir_all(&directory).map_err(|source| SaveError::Io {
+            path: directory.clone(),
+            source,
+        })?;
+    }
+    let document_path = directory.join(format!("{}.yml", environment.name));
+    if document_path.exists() {
+        return Err(SaveError::ConcurrentModification(document_path));
+    }
+    let serialized = serde_yaml_ng::to_string(&environment_value(environment))
+        .map_err(SaveError::Serialize)?
+        .into_bytes();
+    write_new_environment_file(&document_path, &serialized)?;
+    Ok((document_path, serialized))
+}
+
+fn write_new_environment_file(path: &Path, contents: &[u8]) -> Result<(), SaveError> {
+    let map_io = |source| SaveError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent).map_err(map_io)?;
+    }
+
+    let (temporary_path, mut file) = create_unique_temporary_save_file(path)?;
+    let write_result = file.write_all(contents).and_then(|()| file.sync_all());
+    drop(file);
+    let write_result = write_result.and_then(|()| fs::hard_link(&temporary_path, path));
+    let cleanup_result = fs::remove_file(&temporary_path);
+
+    match write_result {
+        Ok(()) => {
+            let _ = cleanup_result;
+            Ok(())
+        }
+        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+            let _ = cleanup_result;
+            Err(SaveError::ConcurrentModification(path.to_owned()))
+        }
+        Err(source) => {
+            let _ = cleanup_result;
+            Err(map_io(source))
+        }
+    }
+}
+
+fn create_unique_temporary_save_file(path: &Path) -> Result<(PathBuf, fs::File), SaveError> {
+    create_unique_temporary_file(path).map_err(create_error_to_save_error)
+}
+
+fn create_error_to_save_error(error: CreateError) -> SaveError {
+    match error {
+        CreateError::Serialize(error) => SaveError::Serialize(error),
+        CreateError::Io { path, source } => SaveError::Io { path, source },
+        CreateError::AlreadyExists(path) => SaveError::ConcurrentModification(path),
+        CreateError::IsDirectory(path) => {
+            SaveError::InvalidDocument(format!("{} is a directory", path.display()))
+        }
+        CreateError::Load(error) => SaveError::InvalidDocument(error.to_string()),
+    }
 }
 
 fn environment_document_mut<'a>(
