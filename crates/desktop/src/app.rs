@@ -5691,7 +5691,7 @@ impl ProbeApp {
             .child(self.render_response_panel(theme, cx))
     }
 
-    fn render_titlebar(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_titlebar(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let switcher_view = cx.weak_entity();
         let sidebar_toggle_view = cx.weak_entity();
         let home_view = cx.weak_entity();
@@ -5706,7 +5706,7 @@ impl ProbeApp {
         if !self.session.recent_collections.is_empty() {
             popup = popup.child(
                 div()
-                    .px(px(theme.metrics.spacing_3))
+                    .px(px(theme.metrics.spacing_2))
                     .py(px(theme.metrics.spacing_1))
                     .text_size(px(theme.typography.caption_size))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -5740,7 +5740,7 @@ impl ProbeApp {
             popup = popup.child(
                 div()
                     .my(px(theme.metrics.spacing_1))
-                    .mx(px(theme.metrics.spacing_3))
+                    .mx(px(theme.metrics.spacing_2))
                     .flex_none()
                     .h(px(1.0))
                     .bg(theme.colors.borders.standard),
@@ -5748,11 +5748,11 @@ impl ProbeApp {
         }
 
         popup = popup
-            .child(workspace_switcher_action(
+            .child(components::menu_button(
                 theme,
                 "workspace-switcher-new",
-                "workspace-switcher-new",
                 "New Collection…",
+                shortcut_label_for_action(window, &NewCollection),
                 move |window, cx| {
                     let _ = new_view.update(cx, |view, cx| {
                         view.workspace_switcher_open = false;
@@ -5762,11 +5762,11 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(workspace_switcher_action(
+            .child(components::menu_button(
                 theme,
                 "workspace-switcher-open",
-                "workspace-switcher-open",
                 "Open Collection…",
+                shortcut_label_for_action(window, &OpenWorkspace),
                 move |window, cx| {
                     let _ = open_view.update(cx, |view, cx| {
                         view.workspace_switcher_open = false;
@@ -5776,11 +5776,11 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(workspace_switcher_action(
+            .child(components::menu_button(
                 theme,
                 "workspace-switcher-import-yaak",
-                "workspace-switcher-import-yaak",
                 "Import from Yaak…",
+                None,
                 move |window, cx| {
                     let _ = import_yaak_view.update(cx, |view, cx| {
                         view.workspace_switcher_open = false;
@@ -6394,7 +6394,7 @@ impl Render for ProbeApp {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.finish_resize(cx)),
             )
-            .child(self.render_titlebar(theme, cx))
+            .child(self.render_titlebar(theme, window, cx))
             .when_some(status_message, |root, message| {
                 root.child(
                     div()
@@ -6532,19 +6532,6 @@ fn tree_row_button(
             row.hover(move |row| row.bg(theme.colors.surfaces.window))
         })
         .cursor_pointer()
-}
-
-fn workspace_switcher_action(
-    theme: Theme,
-    debug_selector: &'static str,
-    id: impl Into<gpui::ElementId>,
-    label: impl Into<String>,
-    on_activate: impl Fn(&mut Window, &mut App) + 'static,
-) -> gpui::Div {
-    div()
-        .w_full()
-        .debug_selector(move || debug_selector.into())
-        .child(components::menu_button(theme, id, label, None, on_activate))
 }
 
 fn tree_level_indent(theme: Theme, depth: usize) -> f32 {

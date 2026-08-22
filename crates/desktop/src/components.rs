@@ -3009,6 +3009,8 @@ fn menu_button_with_style(
     style: MenuButtonStyle,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let id = id.into();
+    let debug_selector = id.to_string();
     let label = label.into();
     let on_activate = Rc::new(on_activate);
     let pointer_activate = on_activate.clone();
@@ -3026,6 +3028,7 @@ fn menu_button_with_style(
         })
         .child(
             Button::new(id)
+                .debug_selector(move || debug_selector)
                 .w_full()
                 .h(px(theme.metrics.control_height + 4.0))
                 .px(px(style.padding_x))
