@@ -1,5 +1,6 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -9,11 +10,11 @@ use std::{
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
     FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point,
-    PromptButton, PromptLevel, Render, ScrollHandle, ScrollStrategy,
-    StatefulInteractiveElement as _, Styled as _, Task, TitlebarOptions, UniformListScrollHandle,
-    Window, WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
-    prelude::FluentBuilder as _, px, relative, size, uniform_list,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, Render,
+    ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Task,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
+    WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
+    uniform_list,
 };
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -28,7 +29,8 @@ use probe_opencollection::{
     create_bundled_workspace_from_collection, load_workspace,
 };
 use probe_yaak::{
-    ImportDiagnostic, ImportDiagnosticSeverity, YaakImportError, inspect_yaak_source,
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportedYaakWorkspace, YaakImportError,
+    YaakImportPreview, YaakWorkspaceSummary, inspect_yaak_source,
 };
 
 use crate::{
@@ -167,11 +169,11 @@ gpui::actions!(
         CollapseTreeItem,
         ExpandTreeItem,
         ActivateTreeItem,
-        CancelStructureDialog
+        CancelStructureDialog,
+        CancelApplicationDialog
     ]
 );
 
-#[derive(Clone, Debug)]
 enum PendingClose {
     Tab(RequestKey),
     OtherTabs {
@@ -189,6 +191,186 @@ enum PendingClose {
     },
     ImportYaak,
 }
+
+enum ApplicationDialog {
+    Unsaved {
+        keys: Vec<RequestKey>,
+        pending: PendingClose,
+    },
+    Delete {
+        kind: ItemKind,
+        selector: String,
+        name: String,
+        detail: String,
+    },
+    FilesystemConflict {
+        path: Option<PathBuf>,
+        detail: String,
+    },
+    SelectYaakWorkspace {
+        preview: YaakImportPreview,
+        workspaces: Vec<YaakWorkspaceSummary>,
+    },
+    ConfirmPartialYaakImport {
+        preview: YaakImportPreview,
+        workspace_id: String,
+        detail: String,
+    },
+}
+
+impl ApplicationDialog {
+    fn title(&self) -> Cow<'_, str> {
+        match self {
+            Self::Unsaved { keys, .. } => {
+                let noun = if keys.len() == 1 {
+                    "request"
+                } else {
+                    "requests"
+                };
+                Cow::Owned(format!("Save changes to {} {noun}?", keys.len()))
+            }
+            Self::Delete { name, .. } => Cow::Owned(format!("Delete “{name}”?")),
+            Self::FilesystemConflict { .. } => {
+                Cow::Borrowed("Collection changes conflict with local edits")
+            }
+            Self::SelectYaakWorkspace { .. } => Cow::Borrowed("Select a Yaak workspace"),
+            Self::ConfirmPartialYaakImport { .. } => {
+                Cow::Borrowed("Some Yaak data cannot be represented")
+            }
+        }
+    }
+
+    fn description(&self) -> &str {
+        match self {
+            Self::Unsaved { .. } => "Unsaved changes will be lost if you discard them.",
+            Self::Delete { detail, .. }
+            | Self::FilesystemConflict { detail, .. }
+            | Self::ConfirmPartialYaakImport { detail, .. } => detail,
+            Self::SelectYaakWorkspace { .. } => {
+                "Choose the workspace to import into a new Probe collection."
+            }
+        }
+    }
+
+    const fn width(&self) -> f32 {
+        match self {
+            Self::SelectYaakWorkspace { .. } | Self::ConfirmPartialYaakImport { .. } => {
+                components::WIDE_DIALOG_WIDTH
+            }
+            _ => components::COMPACT_DIALOG_WIDTH,
+        }
+    }
+
+    const fn action_specs(&self) -> Option<&'static [DialogActionSpec]> {
+        match self {
+            Self::Unsaved { .. } => Some(UNSAVED_DIALOG_ACTIONS),
+            Self::Delete { .. } => Some(DELETE_DIALOG_ACTIONS),
+            Self::FilesystemConflict { .. } => Some(FILESYSTEM_CONFLICT_DIALOG_ACTIONS),
+            Self::SelectYaakWorkspace { .. } => None,
+            Self::ConfirmPartialYaakImport { .. } => Some(PARTIAL_IMPORT_DIALOG_ACTIONS),
+        }
+    }
+}
+
+enum YaakConversionResult {
+    Imported(ImportedYaakWorkspace),
+    NeedsPartialConfirmation {
+        preview: YaakImportPreview,
+        workspace_id: String,
+        detail: String,
+    },
+    Failed(String),
+}
+
+#[derive(Clone, Copy)]
+enum ApplicationDialogAction {
+    Cancel,
+    Save,
+    Discard,
+    Delete,
+    UseDisk,
+    KeepLocal,
+    SelectWorkspace(usize),
+    ImportSupportedData,
+}
+
+#[derive(Clone, Copy)]
+struct DialogActionSpec {
+    id: &'static str,
+    label: &'static str,
+    style: components::DialogActionStyle,
+    action: ApplicationDialogAction,
+}
+
+impl DialogActionSpec {
+    const fn new(
+        id: &'static str,
+        label: &'static str,
+        style: components::DialogActionStyle,
+        action: ApplicationDialogAction,
+    ) -> Self {
+        Self {
+            id,
+            label,
+            style,
+            action,
+        }
+    }
+}
+
+const CANCEL_DIALOG_ACTION: DialogActionSpec = DialogActionSpec::new(
+    "application-dialog-cancel",
+    "Cancel",
+    components::DialogActionStyle::Secondary,
+    ApplicationDialogAction::Cancel,
+);
+const UNSAVED_DIALOG_ACTIONS: &[DialogActionSpec] = &[
+    CANCEL_DIALOG_ACTION,
+    DialogActionSpec::new(
+        "application-dialog-discard",
+        "Discard",
+        components::DialogActionStyle::Destructive,
+        ApplicationDialogAction::Discard,
+    ),
+    DialogActionSpec::new(
+        "application-dialog-save",
+        "Save",
+        components::DialogActionStyle::Primary,
+        ApplicationDialogAction::Save,
+    ),
+];
+const DELETE_DIALOG_ACTIONS: &[DialogActionSpec] = &[
+    CANCEL_DIALOG_ACTION,
+    DialogActionSpec::new(
+        "application-dialog-delete",
+        "Delete",
+        components::DialogActionStyle::Destructive,
+        ApplicationDialogAction::Delete,
+    ),
+];
+const FILESYSTEM_CONFLICT_DIALOG_ACTIONS: &[DialogActionSpec] = &[
+    DialogActionSpec::new(
+        "application-dialog-keep-local",
+        "Keep Local",
+        components::DialogActionStyle::Secondary,
+        ApplicationDialogAction::KeepLocal,
+    ),
+    DialogActionSpec::new(
+        "application-dialog-use-disk",
+        "Use Disk",
+        components::DialogActionStyle::Destructive,
+        ApplicationDialogAction::UseDisk,
+    ),
+];
+const PARTIAL_IMPORT_DIALOG_ACTIONS: &[DialogActionSpec] = &[
+    CANCEL_DIALOG_ACTION,
+    DialogActionSpec::new(
+        "application-dialog-import-supported",
+        "Import Supported Data",
+        components::DialogActionStyle::Primary,
+        ApplicationDialogAction::ImportSupportedData,
+    ),
+];
 
 const TREE_LIST_PADDING_Y: f32 = 2.0;
 
@@ -269,6 +451,7 @@ impl Render for TreeDrag {
 pub(crate) struct ProbeApp {
     focus_handle: FocusHandle,
     structure_dialog_focus: FocusHandle,
+    application_dialog_focus: FocusHandle,
     loaded_workspace: Option<LoadedWorkspace>,
     workspace_path: Option<PathBuf>,
     shell: ShellState,
@@ -301,6 +484,8 @@ pub(crate) struct ProbeApp {
     tree_row_height: f32,
     tree_auto_scroll: AutoScroll,
     structure_dialog: Option<StructureDialog>,
+    application_dialog: Option<ApplicationDialog>,
+    pending_application_dialogs: VecDeque<ApplicationDialog>,
     request_editor: RequestEditorState,
     execution: ExecutionState,
     response_viewer: ResponseViewerState,
@@ -348,10 +533,12 @@ impl ProbeApp {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         let structure_dialog_focus = cx.focus_handle();
+        let application_dialog_focus = cx.focus_handle();
 
         Self {
             focus_handle,
             structure_dialog_focus,
+            application_dialog_focus,
             loaded_workspace: None,
             workspace_path: None,
             shell: ShellState::default(),
@@ -384,6 +571,8 @@ impl ProbeApp {
             tree_row_height: 28.0,
             tree_auto_scroll: AutoScroll::default(),
             structure_dialog: None,
+            application_dialog: None,
+            pending_application_dialogs: VecDeque::new(),
             request_editor: RequestEditorState::default(),
             execution: ExecutionState::default(),
             response_viewer: ResponseViewerState::default(),
@@ -572,108 +761,95 @@ impl ProbeApp {
                         return;
                     }
                 };
-
                 let summaries = preview.workspaces();
-                let selected_id = if summaries.len() == 1 {
-                    summaries[0].id.clone()
-                } else {
-                    let detail = summaries
-                        .iter()
-                        .map(|workspace| format!("{} — {}", workspace.name, workspace.id))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    let mut buttons = summaries
-                        .iter()
-                        .map(|workspace| {
-                            PromptButton::new(format!("{} — {}", workspace.name, workspace.id))
-                        })
-                        .collect::<Vec<_>>();
-                    buttons.push(PromptButton::cancel("Cancel"));
-                    let prompt = match view.update_in(cx, |_, window, cx| {
-                        window.prompt(
-                            PromptLevel::Info,
-                            "Select a Yaak workspace",
-                            Some(&detail),
-                            &buttons,
+                let _ = view.update_in(cx, |view, window, cx| {
+                    if let [workspace] = summaries.as_slice() {
+                        view.convert_yaak_import(preview, workspace.id.clone(), false, window, cx);
+                    } else {
+                        view.show_application_dialog(
+                            ApplicationDialog::SelectYaakWorkspace {
+                                preview,
+                                workspaces: summaries,
+                            },
+                            window,
                             cx,
-                        )
-                    }) {
-                        Ok(prompt) => prompt,
-                        Err(_) => return,
-                    };
-                    let Ok(answer) = prompt.await else {
-                        return;
-                    };
-                    let Some(workspace) = summaries.get(answer) else {
-                        let _ = view.update_in(cx, |view, _, cx| {
-                            view.loading = false;
-                            cx.notify();
-                        });
-                        return;
-                    };
-                    workspace.id.clone()
-                };
+                        );
+                    }
+                });
+            })
+            .detach();
+    }
 
-                let imported = match preview.convert(Some(&selected_id), false) {
-                    Ok(imported) => imported,
-                    Err(YaakImportError::Unsupported(diagnostics)) => {
-                        let detail = format_import_diagnostics(&diagnostics);
-                        let prompt = match view.update_in(cx, |_, window, cx| {
-                            window.prompt(
-                                PromptLevel::Warning,
-                                "Some Yaak data cannot be represented",
-                                Some(&detail),
-                                &[
-                                    PromptButton::cancel("Cancel"),
-                                    PromptButton::ok("Import Supported Data"),
-                                ],
-                                cx,
-                            )
-                        }) {
-                            Ok(prompt) => prompt,
-                            Err(_) => return,
-                        };
-                        let Ok(answer) = prompt.await else {
-                            return;
-                        };
-                        if answer != 1 {
-                            let _ = view.update_in(cx, |view, _, cx| {
-                                view.loading = false;
-                                cx.notify();
-                            });
-                            return;
-                        }
-                        match preview.convert(Some(&selected_id), true) {
-                            Ok(imported) => imported,
-                            Err(error) => {
-                                let _ = view.update_in(cx, |view, _, cx| {
-                                    view.loading = false;
-                                    view.message =
-                                        Some(format!("Could not convert Yaak data: {error}"));
-                                    cx.notify();
-                                });
-                                return;
+    fn convert_yaak_import(
+        &mut self,
+        preview: YaakImportPreview,
+        workspace_id: String,
+        allow_partial: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.application_dialog = None;
+        self.loading = true;
+        cx.notify();
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        match preview.convert(Some(&workspace_id), allow_partial) {
+                            Ok(imported) => YaakConversionResult::Imported(imported),
+                            Err(YaakImportError::Unsupported(diagnostics)) if !allow_partial => {
+                                YaakConversionResult::NeedsPartialConfirmation {
+                                    preview,
+                                    workspace_id,
+                                    detail: format_import_diagnostics(&diagnostics),
+                                }
                             }
+                            Err(error) => YaakConversionResult::Failed(error.to_string()),
                         }
+                    })
+                    .await;
+                let _ = view.update_in(cx, |view, window, cx| match result {
+                    YaakConversionResult::Imported(imported) => {
+                        view.choose_yaak_import_destination(imported, window, cx);
                     }
-                    Err(error) => {
-                        let _ = view.update_in(cx, |view, _, cx| {
-                            view.loading = false;
-                            view.message = Some(format!("Could not convert Yaak data: {error}"));
-                            cx.notify();
-                        });
-                        return;
+                    YaakConversionResult::NeedsPartialConfirmation {
+                        preview,
+                        workspace_id,
+                        detail,
+                    } => {
+                        view.show_application_dialog(
+                            ApplicationDialog::ConfirmPartialYaakImport {
+                                preview,
+                                workspace_id,
+                                detail,
+                            },
+                            window,
+                            cx,
+                        );
                     }
-                };
+                    YaakConversionResult::Failed(error) => {
+                        view.loading = false;
+                        view.message = Some(format!("Could not convert Yaak data: {error}"));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+    }
 
-                let filename = suggested_collection_filename(&imported.workspace.name);
-                let destination_receiver = match view.update_in(cx, |view, _, cx| {
-                    cx.prompt_for_new_path(&view.new_collection_directory(), Some(&filename))
-                }) {
-                    Ok(receiver) => receiver,
-                    Err(_) => return,
-                };
-                let destination = match destination_receiver.await {
+    fn choose_yaak_import_destination(
+        &mut self,
+        imported: ImportedYaakWorkspace,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filename = suggested_collection_filename(&imported.workspace.name);
+        let receiver = cx.prompt_for_new_path(&self.new_collection_directory(), Some(&filename));
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let destination = match receiver.await {
                     Ok(Ok(Some(path))) => path,
                     Ok(Ok(None)) | Err(_) => {
                         let _ = view.update_in(cx, |view, _, cx| {
@@ -1189,6 +1365,195 @@ impl ProbeApp {
         }
     }
 
+    fn show_application_dialog(
+        &mut self,
+        dialog: ApplicationDialog,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.application_dialog.is_some() {
+            self.enqueue_application_dialog(dialog);
+            return;
+        }
+        self.structure_dialog = None;
+        self.dismiss_transient_surfaces();
+        self.application_dialog = Some(dialog);
+        self.application_dialog_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn enqueue_application_dialog(&mut self, dialog: ApplicationDialog) {
+        if let ApplicationDialog::FilesystemConflict { path, .. } = &dialog
+            && (matches!(
+                &self.application_dialog,
+                Some(ApplicationDialog::FilesystemConflict {
+                    path: current_path,
+                    ..
+                }) if current_path == path
+            ) || self.pending_application_dialogs.iter().any(|pending| {
+                matches!(
+                    pending,
+                    ApplicationDialog::FilesystemConflict {
+                        path: pending_path,
+                        ..
+                    } if pending_path == path
+                )
+            }))
+        {
+            return;
+        }
+        self.pending_application_dialogs.push_back(dialog);
+    }
+
+    fn show_next_application_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.application_dialog.is_none()
+            && let Some(dialog) = self.pending_application_dialogs.pop_front()
+        {
+            self.show_application_dialog(dialog, window, cx);
+        }
+    }
+
+    fn dismiss_transient_surfaces(&mut self) {
+        self.workspace_switcher_open = false;
+        self.structure_add_menu_open = false;
+        self.tree_context_menu = None;
+        self.tree_context_menu_position = None;
+        self.tab_context_menu = None;
+        self.tab_context_menu_position = None;
+    }
+
+    fn handle_application_dialog_action(
+        &mut self,
+        action: ApplicationDialogAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(dialog) = self.application_dialog.take() else {
+            return;
+        };
+        match (dialog, action) {
+            (ApplicationDialog::Unsaved { keys, pending }, ApplicationDialogAction::Save) => {
+                self.pending_close = Some(pending);
+                self.persistence.enqueue(keys);
+                self.start_next_request_save(window, cx);
+            }
+            (ApplicationDialog::Unsaved { keys, pending }, ApplicationDialogAction::Discard) => {
+                self.discard_dirty_requests(&keys);
+                self.finish_pending_close(pending, window, cx);
+            }
+            (ApplicationDialog::Delete { kind, selector, .. }, ApplicationDialogAction::Delete) => {
+                let operation = match kind {
+                    ItemKind::Request => StructureOperation::DeleteRequest { selector },
+                    ItemKind::Folder => StructureOperation::DeleteFolder { selector },
+                };
+                self.apply_structure(operation, window, cx);
+            }
+            (
+                ApplicationDialog::FilesystemConflict { path, .. },
+                ApplicationDialogAction::UseDisk,
+            ) => self.reload_conflicted_workspace(path, window, cx),
+            (ApplicationDialog::FilesystemConflict { .. }, ApplicationDialogAction::KeepLocal) => {
+                self.message = Some(
+                    "Kept local edits. Probe will not overwrite the changed disk files; resolve the conflict before saving."
+                        .to_owned(),
+                );
+                cx.notify();
+            }
+            (
+                ApplicationDialog::SelectYaakWorkspace {
+                    preview,
+                    workspaces,
+                },
+                ApplicationDialogAction::SelectWorkspace(index),
+            ) => {
+                if let Some(workspace) = workspaces.get(index) {
+                    self.convert_yaak_import(preview, workspace.id.clone(), false, window, cx);
+                } else {
+                    self.loading = false;
+                    cx.notify();
+                }
+            }
+            (
+                ApplicationDialog::ConfirmPartialYaakImport {
+                    preview,
+                    workspace_id,
+                    ..
+                },
+                ApplicationDialogAction::ImportSupportedData,
+            ) => self.convert_yaak_import(preview, workspace_id, true, window, cx),
+            (
+                ApplicationDialog::SelectYaakWorkspace { .. }
+                | ApplicationDialog::ConfirmPartialYaakImport { .. },
+                ApplicationDialogAction::Cancel,
+            ) => {
+                self.loading = false;
+                self.focus_handle.focus(window, cx);
+                cx.notify();
+            }
+            (_, ApplicationDialogAction::Cancel) => {
+                self.focus_handle.focus(window, cx);
+                cx.notify();
+            }
+            (dialog, _) => {
+                self.application_dialog = Some(dialog);
+                cx.notify();
+            }
+        }
+        self.show_next_application_dialog(window, cx);
+    }
+
+    fn reload_conflicted_workspace(
+        &mut self,
+        path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace_path != path {
+            return;
+        }
+        let Some(path) = path else {
+            return;
+        };
+        self.loading = true;
+        cx.notify();
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let result = cx.background_spawn(async move { load_workspace(path) }).await;
+                let _ = view.update_in(cx, |view, _, cx| {
+                    view.loading = false;
+                    match result {
+                        Ok(workspace) => {
+                            let clean_local = view
+                                .local_request_states()
+                                .into_iter()
+                                .map(|mut state| {
+                                    state.local.clone_from(&state.baseline);
+                                    state
+                                })
+                                .collect();
+                            if let ReconcileResult::Applied(reconciled) =
+                                reconcile(clean_local, workspace, &BTreeMap::new())
+                            {
+                                view.apply_reconciled_workspace(*reconciled, cx);
+                                view.message = Some(
+                                    "Reloaded the collection from disk; conflicting local edits were discarded."
+                                        .to_owned(),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            view.message = Some(format!(
+                                "Could not reload the collection from disk: {error}"
+                            ));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+    }
+
     fn prompt_filesystem_conflict(
         &mut self,
         conflicts: Vec<SynchronizationConflict>,
@@ -1201,88 +1566,24 @@ impl ProbeApp {
             .map(SynchronizationConflict::description)
             .collect::<Vec<_>>()
             .join("; ");
-        let prompt = window.prompt(
-            PromptLevel::Warning,
-            "Collection changes conflict with local edits",
-            Some(&format!(
-                "{detail}. Choose Use Disk to discard the conflicting local edits, or Keep Local to retain them without overwriting disk."
-            )),
-            &["Use Disk", "Keep Local"],
+        self.show_application_dialog(
+            ApplicationDialog::FilesystemConflict {
+                path: self.workspace_path.clone(),
+                detail: format!(
+                    "{detail}. Choose Use Disk to discard the conflicting local edits, or Keep Local to retain them without overwriting disk."
+                ),
+            },
+            window,
             cx,
         );
-        let path = self.workspace_path.clone();
-        let view = cx.weak_entity();
-        window
-            .spawn(cx, async move |cx| {
-                let Ok(answer) = prompt.await else {
-                    return;
-                };
-                let _ = view.update_in(cx, |view, _, cx| {
-                    if view.workspace_path != path {
-                        return;
-                    }
-                    if answer == 0 {
-                        let Some(path) = path else {
-                            return;
-                        };
-                        view.loading = true;
-                        let reload = cx.background_spawn(async move { load_workspace(path) });
-                        cx.spawn(async move |view, cx| {
-                            let result = reload.await;
-                            let _ = view.update(cx, |view, cx| {
-                                view.loading = false;
-                                match result {
-                                    Ok(workspace) => {
-                                        let clean_local = view
-                                            .local_request_states()
-                                            .into_iter()
-                                            .map(|mut state| {
-                                                state.local.clone_from(&state.baseline);
-                                                state
-                                            })
-                                            .collect();
-                                        if let ReconcileResult::Applied(reconciled) = reconcile(
-                                            clean_local,
-                                            workspace,
-                                            &BTreeMap::new(),
-                                        ) {
-                                            view.apply_reconciled_workspace(*reconciled, cx);
-                                            view.message = Some(
-                                                "Reloaded the collection from disk; conflicting local edits were discarded."
-                                                    .to_owned(),
-                                            );
-                                        }
-                                    }
-                                    Err(error) => {
-                                        view.message = Some(format!(
-                                            "Could not reload the collection from disk: {error}"
-                                        ));
-                                    }
-                                }
-                                cx.notify();
-                            });
-                        })
-                        .detach();
-                    } else {
-                        view.message = Some(
-                            "Kept local edits. Probe will not overwrite the changed disk files; resolve the conflict before saving."
-                                .to_owned(),
-                        );
-                        cx.notify();
-                    }
-                });
-            })
-            .detach();
     }
 
     fn reset_collection_ui(&mut self) {
         self.selected_tree_item = None;
         self.structure_dialog = None;
-        self.structure_add_menu_open = false;
-        self.tree_context_menu = None;
-        self.tree_context_menu_position = None;
-        self.tab_context_menu = None;
-        self.tab_context_menu_position = None;
+        self.application_dialog = None;
+        self.pending_application_dialogs.clear();
+        self.dismiss_transient_surfaces();
         self.clear_tree_drag();
         self.tree_search.clear();
         self.request_editor.clear();
@@ -1764,31 +2065,16 @@ impl ProbeApp {
                 "This will discard unsaved changes in {dirty_count} request(s) and cannot be undone."
             )
         };
-        let prompt = window.prompt(
-            PromptLevel::Warning,
-            &format!("Delete “{name}”?"),
-            Some(&detail),
-            &["Cancel", "Delete"],
+        self.show_application_dialog(
+            ApplicationDialog::Delete {
+                kind,
+                selector,
+                name,
+                detail,
+            },
+            window,
             cx,
         );
-        let view = cx.weak_entity();
-        window
-            .spawn(cx, async move |cx| {
-                let Ok(answer) = prompt.await else {
-                    return;
-                };
-                if answer != 1 {
-                    return;
-                }
-                let _ = view.update_in(cx, |view, window, cx| {
-                    let operation = match kind {
-                        ItemKind::Request => StructureOperation::DeleteRequest { selector },
-                        ItemKind::Folder => StructureOperation::DeleteFolder { selector },
-                    };
-                    view.apply_structure(operation, window, cx);
-                });
-            })
-            .detach();
     }
 
     fn submit_structure_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2118,6 +2404,9 @@ impl ProbeApp {
     }
 
     fn request_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.application_dialog.is_some() {
+            return false;
+        }
         let dirty = self.dirty_keys();
         if !dirty.is_empty() {
             self.prompt_unsaved(dirty, PendingClose::Window, window, cx);
@@ -2132,6 +2421,9 @@ impl ProbeApp {
     }
 
     fn quit_application(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.application_dialog.is_some() {
+            return;
+        }
         let dirty = self.dirty_keys();
         if !dirty.is_empty() {
             self.prompt_unsaved(dirty, PendingClose::Quit, window, cx);
@@ -2155,38 +2447,7 @@ impl ProbeApp {
         if self.pending_close.is_some() {
             return;
         }
-        let noun = if keys.len() == 1 {
-            "request"
-        } else {
-            "requests"
-        };
-        let prompt = window.prompt(
-            PromptLevel::Warning,
-            &format!("Save changes to {} {noun}?", keys.len()),
-            Some("Unsaved changes will be lost if you discard them."),
-            &["Save", "Discard", "Cancel"],
-            cx,
-        );
-        let view = cx.weak_entity();
-        window
-            .spawn(cx, async move |cx| {
-                let Ok(answer) = prompt.await else {
-                    return;
-                };
-                let _ = view.update_in(cx, |view, window, cx| match answer {
-                    0 => {
-                        view.pending_close = Some(pending);
-                        view.persistence.enqueue(keys);
-                        view.start_next_request_save(window, cx);
-                    }
-                    1 => {
-                        view.discard_dirty_requests(&keys);
-                        view.finish_pending_close(pending, window, cx);
-                    }
-                    _ => {}
-                });
-            })
-            .detach();
+        self.show_application_dialog(ApplicationDialog::Unsaved { keys, pending }, window, cx);
     }
 
     fn discard_dirty_requests(&mut self, keys: &[RequestKey]) {
@@ -5625,6 +5886,90 @@ impl ProbeApp {
             .child(render_windows_controls(theme))
     }
 
+    fn render_application_dialog_actions(
+        theme: Theme,
+        specs: &[DialogActionSpec],
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut actions = components::dialog_actions(theme);
+        for spec in specs.iter().copied() {
+            let view = cx.weak_entity();
+            actions = actions.child(components::dialog_action_button(
+                theme,
+                spec.id,
+                spec.label,
+                spec.style,
+                move |_, window, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.handle_application_dialog_action(spec.action, window, cx);
+                    });
+                },
+            ));
+        }
+        actions
+    }
+
+    fn render_application_dialog(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(dialog) = self.application_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let mut content = components::dialog_surface(theme, "application-dialog", dialog.width())
+            .child(components::dialog_title(theme, dialog.title()))
+            .child(
+                components::dialog_description(theme, dialog.description())
+                    .id("application-dialog-description")
+                    .mt(px(theme.metrics.spacing_2))
+                    .max_h(px(280.0))
+                    .overflow_y_scroll()
+                    .line_height(relative(theme.typography.body_line_height)),
+            );
+
+        if let Some(specs) = dialog.action_specs() {
+            content = content.child(Self::render_application_dialog_actions(theme, specs, cx));
+        } else if let ApplicationDialog::SelectYaakWorkspace { workspaces, .. } = dialog {
+            let mut choices = div()
+                .id("application-dialog-workspaces")
+                .mt(px(theme.metrics.spacing_3))
+                .max_h(px(320.0))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(theme.metrics.spacing_2));
+            for (index, workspace) in workspaces.iter().enumerate() {
+                let choice_view = cx.weak_entity();
+                choices = choices.child(components::dialog_choice_button(
+                    theme,
+                    format!("application-dialog-workspace-{index}"),
+                    format!("{} — {}", workspace.name, workspace.id),
+                    move |_, window, cx| {
+                        let _ = choice_view.update(cx, |view, cx| {
+                            view.handle_application_dialog_action(
+                                ApplicationDialogAction::SelectWorkspace(index),
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                ));
+            }
+            content = content
+                .child(choices)
+                .child(Self::render_application_dialog_actions(
+                    theme,
+                    &[CANCEL_DIALOG_ACTION],
+                    cx,
+                ));
+        }
+
+        components::dialog_layer(
+            theme,
+            &self.application_dialog_focus,
+            "ApplicationDialog",
+            content,
+        )
+        .into_any_element()
+    }
+
     fn render_structure_dialog(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let Some(dialog) = self.structure_dialog.as_ref() else {
             return div().into_any_element();
@@ -5636,23 +5981,20 @@ impl ProbeApp {
         let index_enter_view = cx.weak_entity();
         let cancel_view = cx.weak_entity();
         let submit_view = cx.weak_entity();
-        let mut content = components::popup_surface(theme, "structure-dialog", 420.0)
-            .p(px(theme.metrics.spacing_4))
-            .gap(px(theme.metrics.spacing_3))
-            .child(
-                div()
-                    .text_size(px(theme.typography.title_size))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(dialog.title()),
-            );
+        let mut form = div()
+            .mt(px(theme.metrics.spacing_4))
+            .flex()
+            .flex_col()
+            .gap(px(theme.metrics.spacing_3));
         if dialog.edits_name() {
-            content = content
-                .child(components::dialog_field_label(theme, "Name"))
-                .child(components::dialog_text_input(
+            form = form.child(components::dialog_field(
+                theme,
+                "Name",
+                components::dialog_text_input(
                     theme,
                     "structure-name",
                     dialog.name.clone(),
-                    "Name",
+                    "",
                     true,
                     move |value, _, cx| {
                         let _ = name_view.update(cx, |view, cx| {
@@ -5670,7 +6012,8 @@ impl ProbeApp {
                             view.submit_structure_dialog(window, cx);
                         });
                     },
-                ));
+                ),
+            ));
         }
         if dialog.edits_destination() {
             let mut options = vec![(ROOT_PARENT.to_owned(), "Collection root".to_owned())];
@@ -5689,109 +6032,100 @@ impl ProbeApp {
                     ))
                 }));
             }
-            content = content
-                .child(components::dialog_field_label(theme, "Destination"))
-                .child(components::dropdown(
+            form = form
+                .child(components::dialog_field(
                     theme,
-                    "structure-parent",
-                    "Destination folder",
-                    Some(dialog.parent.clone()),
-                    options,
-                    380.0,
-                    move |value, _, cx| {
-                        let Some(value) = value else {
-                            return;
-                        };
-                        let value = value.clone();
-                        let _ = parent_view.update(cx, |view, cx| {
-                            if let Some(dialog) = view.structure_dialog.as_mut() {
-                                dialog.parent = value;
-                                dialog.index.clear();
-                            }
-                            cx.notify();
-                        });
-                    },
+                    "Destination",
+                    components::dropdown(
+                        theme,
+                        "structure-parent",
+                        "Destination folder",
+                        Some(dialog.parent.clone()),
+                        options,
+                        388.0,
+                        move |value, _, cx| {
+                            let Some(value) = value else {
+                                return;
+                            };
+                            let value = value.clone();
+                            let _ = parent_view.update(cx, |view, cx| {
+                                if let Some(dialog) = view.structure_dialog.as_mut() {
+                                    dialog.parent = value;
+                                    dialog.index.clear();
+                                }
+                                cx.notify();
+                            });
+                        },
+                    ),
                 ))
-                .child(components::dialog_field_label(theme, "Position"))
-                .child(components::dialog_text_input(
+                .child(components::dialog_field(
                     theme,
-                    "structure-index",
-                    dialog.index.clone(),
-                    "Append",
-                    false,
-                    move |value, _, cx| {
-                        let _ = index_view.update(cx, |view, cx| {
-                            if let Some(dialog) = view.structure_dialog.as_mut() {
-                                dialog.index = value.to_string();
-                            }
-                            cx.notify();
-                        });
-                    },
-                    move |value, window, cx| {
-                        let _ = index_enter_view.update(cx, |view, cx| {
-                            if let Some(dialog) = view.structure_dialog.as_mut() {
-                                dialog.index = value.to_string();
-                            }
-                            view.submit_structure_dialog(window, cx);
-                        });
-                    },
+                    "Position",
+                    components::dialog_text_input(
+                        theme,
+                        "structure-index",
+                        dialog.index.clone(),
+                        "Append",
+                        false,
+                        move |value, _, cx| {
+                            let _ = index_view.update(cx, |view, cx| {
+                                if let Some(dialog) = view.structure_dialog.as_mut() {
+                                    dialog.index = value.to_string();
+                                }
+                                cx.notify();
+                            });
+                        },
+                        move |value, window, cx| {
+                            let _ = index_enter_view.update(cx, |view, cx| {
+                                if let Some(dialog) = view.structure_dialog.as_mut() {
+                                    dialog.index = value.to_string();
+                                }
+                                view.submit_structure_dialog(window, cx);
+                            });
+                        },
+                    ),
                 ));
         }
         let submit_label = dialog.submit_label();
-        content = content.child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(px(theme.metrics.spacing_2))
-                .child(components::secondary_button(
-                    theme,
-                    "structure-cancel",
-                    "Cancel",
-                    move |_, window, cx| {
-                        let _ = cancel_view.update(cx, |view, cx| {
-                            view.structure_dialog = None;
-                            view.focus_handle.focus(window, cx);
-                            cx.notify();
-                        });
-                    },
-                ))
-                .child(components::primary_button(
-                    theme,
-                    "structure-submit",
-                    submit_label,
-                    move |_, window, cx| {
-                        let _ = submit_view.update(cx, |view, cx| {
-                            view.submit_structure_dialog(window, cx);
-                        });
-                    },
-                )),
-        );
+        let content =
+            components::dialog_surface(theme, "structure-dialog", components::COMPACT_DIALOG_WIDTH)
+                .child(components::dialog_title(theme, dialog.title()))
+                .child(form)
+                .child(
+                    components::dialog_actions(theme)
+                        .child(components::dialog_action_button(
+                            theme,
+                            "structure-cancel",
+                            "Cancel",
+                            components::DialogActionStyle::Secondary,
+                            move |_, window, cx| {
+                                let _ = cancel_view.update(cx, |view, cx| {
+                                    view.structure_dialog = None;
+                                    view.focus_handle.focus(window, cx);
+                                    cx.notify();
+                                });
+                            },
+                        ))
+                        .child(components::dialog_action_button(
+                            theme,
+                            "structure-submit",
+                            submit_label,
+                            components::DialogActionStyle::Primary,
+                            move |_, window, cx| {
+                                let _ = submit_view.update(cx, |view, cx| {
+                                    view.submit_structure_dialog(window, cx);
+                                });
+                            },
+                        )),
+                );
 
-        div()
-            .absolute()
-            .top(px(0.0))
-            .right(px(0.0))
-            .bottom(px(0.0))
-            .left(px(0.0))
-            .occlude()
-            .track_focus(&self.structure_dialog_focus)
-            .tab_stop(true)
-            .key_context("StructureDialog")
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(
-                div()
-                    .absolute()
-                    .top(px(0.0))
-                    .right(px(0.0))
-                    .bottom(px(0.0))
-                    .left(px(0.0))
-                    .bg(theme.colors.surfaces.scrim),
-            )
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(content)
-            .into_any_element()
+        components::dialog_layer(
+            theme,
+            &self.structure_dialog_focus,
+            "StructureDialog",
+            content,
+        )
+        .into_any_element()
     }
 
     fn active_request(&self) -> Option<&HttpRequest> {
@@ -5971,18 +6305,24 @@ impl Render for ProbeApp {
                 cx.listener(|view, _, _, cx| view.reset_caret_blink(cx)),
             )
             .on_action(cx.listener(|view, _: &SaveRequest, window, cx| {
-                view.save_active_request(window, cx);
+                if view.application_dialog.is_none() {
+                    view.save_active_request(window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &OpenWorkspace, window, cx| {
-                view.choose_workspace(window, cx);
+                if view.application_dialog.is_none() {
+                    view.choose_workspace(window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &NewCollection, window, cx| {
-                if !view.loading {
+                if !view.loading && view.application_dialog.is_none() {
                     view.choose_new_workspace(window, cx);
                 }
             }))
             .on_action(cx.listener(|view, _: &CloseActiveTab, window, cx| {
-                if let Some(key) = view.shell.active_tab() {
+                if view.application_dialog.is_none()
+                    && let Some(key) = view.shell.active_tab()
+                {
                     view.request_close_tab(key, window, cx);
                 }
             }))
@@ -6036,6 +6376,15 @@ impl Render for ProbeApp {
                 view.focus_handle.focus(window, cx);
                 cx.notify();
             }))
+            .on_action(
+                cx.listener(|view, _: &CancelApplicationDialog, window, cx| {
+                    view.handle_application_dialog_action(
+                        ApplicationDialogAction::Cancel,
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(
                 MouseButton::Left,
@@ -6124,6 +6473,7 @@ impl Render for ProbeApp {
                     ),
             )
             .child(self.render_structure_dialog(theme, cx))
+            .child(self.render_application_dialog(theme, cx))
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
     }
@@ -6409,6 +6759,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("alt-up", MoveTreeItemUp, Some("RequestTree")),
         KeyBinding::new("alt-down", MoveTreeItemDown, Some("RequestTree")),
         KeyBinding::new("escape", CancelStructureDialog, Some("StructureDialog")),
+        KeyBinding::new("escape", CancelApplicationDialog, Some("ApplicationDialog")),
     ]);
 
     #[cfg(target_os = "macos")]
@@ -6461,7 +6812,8 @@ mod tests {
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 
     use super::{
-        IMPORT_DIAGNOSTIC_GROUP_LIMIT, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
+        ApplicationDialog, ApplicationDialogAction, IMPORT_DIAGNOSTIC_GROUP_LIMIT, ProbeApp,
+        bind_platform_hotkeys, format_import_diagnostics,
     };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
@@ -7058,6 +7410,103 @@ mod tests {
                     .unwrap();
                 assert_eq!(request.url, original_url);
                 assert!(view.dirty_keys().is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn unsaved_changes_use_the_custom_dialog_and_cancel_preserves_the_tab(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = bundled_fixture()
+            .canonicalize()
+            .expect("fixture should exist");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let key = workspace.requests()[0].key();
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.select_request(key, cx);
+                view.edit_request(
+                    key,
+                    |request| request.url = Some("https://unsaved.example".to_owned()),
+                    cx,
+                );
+                view.request_close_tab(key, window, cx);
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::Unsaved { .. })
+                ));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let cancel = visual
+            .debug_bounds("application-dialog-cancel")
+            .expect("custom dialog Cancel action should be rendered");
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.application_dialog.is_none());
+                assert!(view.shell.tabs().contains(&key));
+                assert!(view.request_is_dirty(key));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn application_dialogs_queue_without_repeating_the_same_filesystem_conflict(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let conflict_path = PathBuf::from("collection.yml");
+
+        window
+            .update(cx, |view, window, cx| {
+                view.show_application_dialog(
+                    ApplicationDialog::Delete {
+                        kind: probe_opencollection::ItemKind::Request,
+                        selector: "products/list".to_owned(),
+                        name: "List products".to_owned(),
+                        detail: "This cannot be undone.".to_owned(),
+                    },
+                    window,
+                    cx,
+                );
+                for detail in ["First conflict", "Repeated conflict"] {
+                    view.show_application_dialog(
+                        ApplicationDialog::FilesystemConflict {
+                            path: Some(conflict_path.clone()),
+                            detail: detail.to_owned(),
+                        },
+                        window,
+                        cx,
+                    );
+                }
+
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::Delete { .. })
+                ));
+                assert_eq!(view.pending_application_dialogs.len(), 1);
+
+                view.handle_application_dialog_action(ApplicationDialogAction::Cancel, window, cx);
+
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::FilesystemConflict { .. })
+                ));
+                assert!(view.pending_application_dialogs.is_empty());
             })
             .unwrap();
     }

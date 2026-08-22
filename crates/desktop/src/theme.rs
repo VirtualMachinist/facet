@@ -131,6 +131,7 @@ pub struct Typography {
     pub body_size: f32,
     pub caption_size: f32,
     pub title_size: f32,
+    pub dialog_title_size: f32,
     pub body_line_height: f32,
     pub regular_weight: u16,
     pub medium_weight: u16,
@@ -331,7 +332,7 @@ fn porcelain_honey() -> Colors {
             editor: rgba(0xfaf8f5ff),  // clean ivory editor
             raised: rgba(0xfcf9f5ff),  // lifted paper
             overlay: rgba(0xfdfbf8ff), // warm overlay
-            scrim: rgba(0x00000059),   // black @ ~35%
+            scrim: rgba(0x0000003d),   // black @ ~24%
         },
         text: TextColors {
             primary: rgba(0x4b4641ff),     // warm graphite
@@ -401,7 +402,7 @@ fn graphite_honey() -> Colors {
             editor: rgba(0x222327ff),  // graphite editor
             raised: rgba(0x222327ff),  // lifted graphite
             overlay: rgba(0x292a2eff), // dark metal overlay
-            scrim: rgba(0x00000070),   // black @ ~44%
+            scrim: rgba(0x00000059),   // black @ ~35%
         },
         text: TextColors {
             primary: rgba(0xe9e6e0ff),     // soft off-white
@@ -469,6 +470,7 @@ const fn platform_typography() -> Typography {
         body_size: 13.0,
         caption_size: 12.0,
         title_size: 24.0,
+        dialog_title_size: 21.0,
         body_line_height: 1.45,
         regular_weight: 400,
         medium_weight: 500,

@@ -22,8 +22,9 @@ use gpui::{
     prelude::FluentBuilder as _, px, relative, size, transparent_black,
 };
 use gpui_base::{
-    Align, Button, Editor, ElementExt as _, Input, InputBase, POPUP_PRIORITY, Placement, Popup,
-    Positioner, Select, Switch, SwitchThumb, SwitchTrack, Toggle, ToggleGroup,
+    Align, Button, Editor, ElementExt as _, FocusTrapElement as _, Input, InputBase,
+    POPUP_PRIORITY, Placement, Popup, Positioner, Select, Switch, SwitchThumb, SwitchTrack, Toggle,
+    ToggleGroup,
     actions::{Cancel, Confirm, SelectDown, SelectUp},
     input::{
         EditorState, InputEditorStyle, InputEvent, InputState, TextDecoration,
@@ -34,6 +35,8 @@ use probe_core::path_variable_ranges;
 
 /// Fixed width for compact primary actions such as Send.
 pub(crate) const COMPACT_ACTION_BUTTON_WIDTH: f32 = 72.0;
+pub(crate) const COMPACT_DIALOG_WIDTH: f32 = 420.0;
+pub(crate) const WIDE_DIALOG_WIDTH: f32 = 520.0;
 
 /// Single-line label that shows an ellipsis when the available width is too small.
 pub(crate) fn truncated_label(text: impl Into<String>) -> gpui::Div {
@@ -57,6 +60,33 @@ pub(crate) fn popup_surface(
         .border_color(theme.colors.borders.standard)
 }
 
+/// A restrained temporary surface for application dialogs.
+pub(crate) fn dialog_surface(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    width: f32,
+) -> gpui::Stateful<gpui::Div> {
+    let mut shadow_color: Hsla = theme.colors.text.primary.into();
+    shadow_color.a = match theme.appearance {
+        crate::theme::ThemeAppearance::Light => 0.12,
+        crate::theme::ThemeAppearance::Dark => 0.28,
+    };
+
+    div()
+        .id(id)
+        .w(px(width))
+        .p(px(theme.metrics.spacing_4))
+        .flex()
+        .flex_col()
+        .rounded(px(theme.metrics.radius_medium))
+        .bg(theme.colors.surfaces.overlay)
+        .border_1()
+        .border_color(theme.colors.borders.standard)
+        .shadow(vec![
+            BoxShadow::new(px(0.0), px(6.0), shadow_color).blur_radius(px(18.0)),
+        ])
+}
+
 pub(crate) fn context_menu_surface(
     theme: Theme,
     id: impl Into<ElementId>,
@@ -76,6 +106,74 @@ pub(crate) fn dialog_field_label(theme: Theme, label: impl Into<String>) -> gpui
         .text_size(px(theme.typography.caption_size))
         .font_weight(FontWeight::SEMIBOLD)
         .child(label.into())
+}
+
+pub(crate) fn dialog_title(theme: Theme, title: impl Into<String>) -> gpui::Div {
+    div()
+        .text_size(px(theme.typography.dialog_title_size))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.colors.text.primary)
+        .child(title.into())
+}
+
+pub(crate) fn dialog_description(theme: Theme, description: impl Into<String>) -> gpui::Div {
+    div()
+        .text_size(px(theme.typography.body_size))
+        .text_color(theme.colors.text.secondary)
+        .child(description.into())
+}
+
+pub(crate) fn dialog_field(
+    theme: Theme,
+    label: impl Into<String>,
+    control: impl IntoElement,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(theme.metrics.spacing_1))
+        .child(dialog_field_label(theme, label))
+        .child(control)
+}
+
+pub(crate) fn dialog_actions(theme: Theme) -> gpui::Div {
+    div()
+        .mt(px(theme.metrics.spacing_4))
+        .flex()
+        .justify_end()
+        .gap(px(theme.metrics.spacing_2))
+}
+
+pub(crate) fn dialog_layer(
+    theme: Theme,
+    focus: &FocusHandle,
+    key_context: &'static str,
+    content: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(px(0.0))
+        .right(px(0.0))
+        .bottom(px(0.0))
+        .left(px(0.0))
+        .occlude()
+        .tab_stop(true)
+        .key_context(key_context)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .left(px(0.0))
+                .bg(theme.colors.surfaces.scrim),
+        )
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(content)
+        .focus_trap(format!("{key_context}-focus-trap"), focus)
 }
 
 static CHEVRON_DOWN_SVG: LazyLock<Vec<u8>> =
@@ -619,6 +717,15 @@ pub(crate) fn secondary_button(
 enum ActionButtonKind {
     Primary,
     Secondary,
+    DialogSecondary,
+    Destructive,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DialogActionStyle {
+    Primary,
+    Secondary,
+    Destructive,
 }
 
 fn action_button(
@@ -690,7 +797,114 @@ fn action_button(
             })
             .on_click(on_click)
             .child(label.into()),
+        ActionButtonKind::DialogSecondary => button
+            .text_color(theme.colors.text.secondary)
+            .bg(gpui::transparent_black())
+            .border_color(theme.colors.borders.standard)
+            .hover(move |button| {
+                button
+                    .text_color(theme.colors.text.primary)
+                    .bg(theme.colors.selection.inactive_background)
+                    .border_color(theme.colors.borders.standard)
+            })
+            .focus(move |button| {
+                button
+                    .border_color(theme.colors.borders.strong)
+                    .shadow(focus_ring_shadow(
+                        theme.colors.borders.focused.into(),
+                        theme.colors.surfaces.overlay.into(),
+                    ))
+            })
+            .styles(move |styles| {
+                styles.disabled(move |button| {
+                    button
+                        .bg(gpui::transparent_black())
+                        .text_color(theme.colors.actions.disabled_foreground)
+                        .border_color(theme.colors.borders.subtle)
+                })
+            })
+            .on_click(on_click)
+            .child(label.into()),
+        ActionButtonKind::Destructive => button
+            .text_color(theme.colors.status.error)
+            .bg(gpui::transparent_black())
+            .border_color(theme.colors.borders.standard)
+            .hover(move |button| {
+                let mut hover: Hsla = theme.colors.status.error.into();
+                hover.a = match theme.appearance {
+                    crate::theme::ThemeAppearance::Light => 0.09,
+                    crate::theme::ThemeAppearance::Dark => 0.14,
+                };
+                button.bg(hover).border_color(theme.colors.borders.standard)
+            })
+            .focus(move |button| {
+                button
+                    .border_color(theme.colors.status.error)
+                    .shadow(focus_ring_shadow(
+                        theme.colors.status.error.into(),
+                        theme.colors.surfaces.overlay.into(),
+                    ))
+            })
+            .styles(move |styles| {
+                styles.disabled(move |button| {
+                    button
+                        .bg(gpui::transparent_black())
+                        .text_color(theme.colors.actions.disabled_foreground)
+                        .border_color(theme.colors.borders.subtle)
+                })
+            })
+            .on_click(on_click)
+            .child(label.into()),
     }
+}
+
+pub(crate) fn dialog_action_button(
+    theme: Theme,
+    id: &'static str,
+    label: impl Into<String>,
+    style: DialogActionStyle,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let kind = match style {
+        DialogActionStyle::Primary => ActionButtonKind::Primary,
+        DialogActionStyle::Secondary => ActionButtonKind::DialogSecondary,
+        DialogActionStyle::Destructive => ActionButtonKind::Destructive,
+    };
+    action_button(theme, id, label, kind, on_click)
+}
+
+pub(crate) fn dialog_choice_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .h(px(theme.metrics.control_height + 4.0))
+        .w_full()
+        .px(px(theme.metrics.spacing_3))
+        .flex()
+        .items_center()
+        .justify_start()
+        .rounded(px(theme.metrics.radius_small))
+        .font_family(theme.typography.interface_family)
+        .text_size(px(theme.typography.body_size))
+        .text_color(theme.colors.text.primary)
+        .bg(theme.colors.surfaces.raised)
+        .border_1()
+        .border_color(theme.colors.borders.standard)
+        .cursor_pointer()
+        .hover(move |button| button.bg(theme.colors.selection.inactive_background))
+        .focus(move |button| {
+            button
+                .border_color(theme.colors.borders.strong)
+                .shadow(focus_ring_shadow(
+                    theme.colors.borders.focused.into(),
+                    theme.colors.surfaces.overlay.into(),
+                ))
+        })
+        .on_click(on_click)
+        .child(label.into())
 }
 
 type InputChangeHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
@@ -936,6 +1150,7 @@ struct ProbeTextInput {
     flat: bool,
     leading_icon: Option<gpui::Div>,
     content_gap: f32,
+    quiet_focus: bool,
 }
 
 impl RenderOnce for ProbeTextInput {
@@ -1019,7 +1234,11 @@ impl RenderOnce for ProbeTextInput {
             })
             .when(!self.flat, |input| {
                 input.border_1().border_color(if focused {
-                    theme.colors.borders.focused
+                    if self.quiet_focus {
+                        theme.colors.borders.strong
+                    } else {
+                        theme.colors.borders.focused
+                    }
                 } else {
                     theme.colors.borders.standard
                 })
@@ -1029,6 +1248,8 @@ impl RenderOnce for ProbeTextInput {
                 styles.focused(move |input| {
                     if self.flat {
                         input.bg(hover_fill(theme.colors.surfaces.sidebar))
+                    } else if self.quiet_focus {
+                        input.border_color(theme.colors.borders.strong)
                     } else {
                         input.border_color(theme.colors.borders.focused)
                     }
@@ -1090,6 +1311,7 @@ fn text_input_base(
         flat: false,
         leading_icon: None,
         content_gap: theme.metrics.spacing_1,
+        quiet_focus: false,
     }
 }
 
@@ -1139,6 +1361,7 @@ pub(crate) fn dialog_text_input(
     input.on_change = Some(Rc::new(on_value_change));
     input.on_enter = Some(Rc::new(on_enter));
     input.autofocus = autofocus;
+    input.quiet_focus = true;
     input.into_any_element()
 }
 
