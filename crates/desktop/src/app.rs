@@ -3457,8 +3457,8 @@ impl ProbeApp {
                     .items_center()
                     .gap(px(theme.metrics.spacing_1))
                     .overflow_hidden()
-                    .rounded_tl(px(theme.metrics.radius_small))
-                    .rounded_tr(px(theme.metrics.radius_small))
+                    .rounded_tl(px(theme.metrics.radius_medium))
+                    .rounded_tr(px(theme.metrics.radius_medium))
                     .when(active, |tab| {
                         tab.bg(active_tab_background)
                             .border_b_1()
@@ -3909,7 +3909,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -4078,7 +4078,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -4317,7 +4317,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -4470,7 +4470,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(components::editor_button(
                             theme,
                             ("multipart-kind", index),
@@ -4695,7 +4695,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(
                             div()
                                 .flex_1()
@@ -4899,7 +4899,7 @@ impl ProbeApp {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(theme.metrics.spacing_2))
+                        .gap(px(theme.metrics.spacing_1))
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
