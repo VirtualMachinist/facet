@@ -291,19 +291,31 @@ fn merge_field<T: Clone + PartialEq>(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf, time::SystemTime};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{
         LocalRequestState, ReconcileResult, SynchronizationConflict, hinted_selector, reconcile,
     };
 
     fn fixture_copy() -> PathBuf {
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase1-bundled.yml");
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "probe-sync-{}-{:?}.yml",
+            "probe-sync-{}-{timestamp}-{}.yml",
             std::process::id(),
-            SystemTime::now()
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
         ));
         fs::copy(source, &path).unwrap();
         path

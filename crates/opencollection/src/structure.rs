@@ -1675,12 +1675,20 @@ fn io_error(path: &Path, source: io::Error) -> StructureError {
 }
 
 fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_SUFFIX: AtomicU64 = AtomicU64::new(0);
+
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos()
         .to_string()
+        + "-"
+        + &std::process::id().to_string()
+        + "-"
+        + &NEXT_SUFFIX.fetch_add(1, Ordering::Relaxed).to_string()
 }
 
 #[cfg(test)]
@@ -1843,5 +1851,12 @@ mod tests {
         assert!(message.contains("recovery manifest"));
         assert!(message.contains("workspace-item"));
         assert!(message.contains("rename failed"));
+    }
+
+    #[test]
+    fn unique_suffixes_do_not_collide_within_a_process() {
+        let suffixes = (0..1_000).map(|_| unique_suffix()).collect::<BTreeSet<_>>();
+
+        assert_eq!(suffixes.len(), 1_000);
     }
 }
