@@ -18,7 +18,6 @@ use gpui::{
 };
 #[cfg(target_os = "macos")]
 use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
-use gpui_base::actions::Cancel as CancelPopover;
 use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -194,6 +193,7 @@ gpui::actions!(
         ExpandTreeItem,
         ActivateTreeItem,
         OpenImportSubmenu,
+        CloseImportSubmenu,
         CancelStructureDialog,
         CancelCreateEnvironmentDialog,
         CancelApplicationDialog
@@ -581,6 +581,10 @@ pub(crate) struct ProbeApp {
     workspace_switcher_open: bool,
     workspace_import_submenu_open: bool,
     sidebar_import_menu_open: bool,
+    workspace_import_trigger_focus: FocusHandle,
+    workspace_import_popup_focus: FocusHandle,
+    sidebar_import_trigger_focus: FocusHandle,
+    sidebar_import_popup_focus: FocusHandle,
     structure_add_menu_open: bool,
     tree_context_menu: Option<WorkspaceItemRef>,
     tree_context_menu_position: Option<Point<Pixels>>,
@@ -647,6 +651,10 @@ impl ProbeApp {
         let structure_dialog_focus = cx.focus_handle();
         let create_environment_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
+        let workspace_import_trigger_focus = cx.focus_handle();
+        let workspace_import_popup_focus = cx.focus_handle();
+        let sidebar_import_trigger_focus = cx.focus_handle();
+        let sidebar_import_popup_focus = cx.focus_handle();
 
         Self {
             focus_handle,
@@ -675,6 +683,10 @@ impl ProbeApp {
             workspace_switcher_open: false,
             workspace_import_submenu_open: false,
             sidebar_import_menu_open: false,
+            workspace_import_trigger_focus,
+            workspace_import_popup_focus,
+            sidebar_import_trigger_focus,
+            sidebar_import_popup_focus,
             structure_add_menu_open: false,
             tree_context_menu: None,
             tree_context_menu_position: None,
@@ -3869,6 +3881,8 @@ impl ProbeApp {
         let sidebar_import_keyboard_view = cx.weak_entity();
         let sidebar_import_postman_view = cx.weak_entity();
         let sidebar_import_yaak_view = cx.weak_entity();
+        let sidebar_import_trigger_focus = self.sidebar_import_trigger_focus.clone();
+        let sidebar_import_popup_focus = self.sidebar_import_popup_focus.clone();
         let can_edit = self.loaded_workspace.is_some() && self.structure_task.is_none();
         let add_menu_state_view = cx.weak_entity();
         let add_popup = components::popup_surface(theme, "tree-add-menu-popup", 180.0)
@@ -3917,6 +3931,7 @@ impl ProbeApp {
         let sidebar_import_popup =
             components::popup_surface(theme, "sidebar-import-provider-popup", 180.0)
                 .aria_label("Import providers")
+                .track_focus(&self.sidebar_import_popup_focus)
                 .key_context("ImportSubmenu")
                 .child(components::menu_button(
                     theme,
@@ -3948,6 +3963,7 @@ impl ProbeApp {
                 ));
         let sidebar_import_menu = Popover::new("sidebar-import-provider-menu")
             .open(self.sidebar_import_menu_open)
+            .track_focus(&self.sidebar_import_popup_focus)
             .on_open_change(move |open, _, cx| {
                 let _ = sidebar_import_state_view.update(cx, |view, cx| {
                     view.sidebar_import_menu_open = *open;
@@ -3958,9 +3974,17 @@ impl ProbeApp {
                 theme,
                 "sidebar-import-from",
                 "Import from…",
-                move |_, cx| {
+                &self.sidebar_import_trigger_focus,
+                move |window, cx| {
+                    let trigger_focus = sidebar_import_trigger_focus.clone();
+                    let popup_focus = sidebar_import_popup_focus.clone();
                     let _ = sidebar_import_keyboard_view.update(cx, |view, cx| {
                         view.sidebar_import_menu_open = !view.sidebar_import_menu_open;
+                        if view.sidebar_import_menu_open {
+                            popup_focus.focus(window, cx);
+                        } else {
+                            trigger_focus.focus(window, cx);
+                        }
                         cx.notify();
                     });
                 },
@@ -6472,6 +6496,8 @@ impl ProbeApp {
         let import_keyboard_view = cx.weak_entity();
         let import_postman_view = cx.weak_entity();
         let import_yaak_view = cx.weak_entity();
+        let import_trigger_focus = self.workspace_import_trigger_focus.clone();
+        let import_popup_focus = self.workspace_import_popup_focus.clone();
         let layout_view = cx.weak_entity();
         let collection_open = self.loaded_workspace.is_some();
         let mut popup = components::popup_surface(theme, "workspace-switcher-popup", 300.0)
@@ -6524,6 +6550,7 @@ impl ProbeApp {
         let import_popup =
             components::popup_surface(theme, "workspace-switcher-import-popup", 180.0)
                 .aria_label("Import providers")
+                .track_focus(&self.workspace_import_popup_focus)
                 .key_context("ImportSubmenu")
                 .child(components::menu_button(
                     theme,
@@ -6558,6 +6585,7 @@ impl ProbeApp {
         let import_menu = Popover::new("workspace-switcher-import-menu")
             .anchor(Anchor::TopRight)
             .open(self.workspace_import_submenu_open)
+            .track_focus(&self.workspace_import_popup_focus)
             .on_open_change(move |open, _, cx| {
                 let _ = import_state_view.update(cx, |view, cx| {
                     view.workspace_import_submenu_open = *open;
@@ -6569,9 +6597,17 @@ impl ProbeApp {
                 "workspace-switcher-import-from",
                 "Import from…",
                 self.workspace_import_submenu_open,
-                move |_, cx| {
+                &self.workspace_import_trigger_focus,
+                move |window, cx| {
+                    let trigger_focus = import_trigger_focus.clone();
+                    let popup_focus = import_popup_focus.clone();
                     let _ = import_keyboard_view.update(cx, |view, cx| {
                         view.workspace_import_submenu_open = !view.workspace_import_submenu_open;
+                        if view.workspace_import_submenu_open {
+                            popup_focus.focus(window, cx);
+                        } else {
+                            trigger_focus.focus(window, cx);
+                        }
                         cx.notify();
                     });
                 },
@@ -7246,11 +7282,23 @@ impl Render for ProbeApp {
                     view.request_import(ImportSource::Yaak, window, cx);
                 }
             }))
-            .on_action(cx.listener(|view, _: &OpenImportSubmenu, _, cx| {
+            .on_action(cx.listener(|view, _: &OpenImportSubmenu, window, cx| {
                 if view.workspace_switcher_open {
                     view.workspace_import_submenu_open = true;
+                    view.workspace_import_popup_focus.focus(window, cx);
                 } else {
                     view.sidebar_import_menu_open = true;
+                    view.sidebar_import_popup_focus.focus(window, cx);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &CloseImportSubmenu, window, cx| {
+                if view.workspace_import_submenu_open {
+                    view.workspace_import_submenu_open = false;
+                    view.workspace_import_trigger_focus.focus(window, cx);
+                } else if view.sidebar_import_menu_open {
+                    view.sidebar_import_menu_open = false;
+                    view.sidebar_import_trigger_focus.focus(window, cx);
                 }
                 cx.notify();
             }))
@@ -7775,7 +7823,8 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("enter", ActivateTreeItem, Some("RequestTree")),
         KeyBinding::new("space", ActivateTreeItem, Some("RequestTree")),
         KeyBinding::new("right", OpenImportSubmenu, Some("ImportSubmenuTrigger")),
-        KeyBinding::new("left", CancelPopover, Some("ImportSubmenu")),
+        KeyBinding::new("left", CloseImportSubmenu, Some("ImportSubmenu")),
+        KeyBinding::new("escape", CloseImportSubmenu, Some("ImportSubmenu")),
         KeyBinding::new("n", NewRequest, Some("RequestTree")),
         KeyBinding::new("shift-n", NewFolder, Some("RequestTree")),
         KeyBinding::new("m", MoveTreeItem, Some("RequestTree")),
@@ -7856,14 +7905,17 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
+    use gpui::{
+        KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext,
+        VisualTestContext, point, px, size,
+    };
     use probe_core::WorkspaceItemRef;
     use probe_http::{HttpResponse, ResponseHeader};
     use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 
     use super::{
-        ApplicationDialog, ApplicationDialogAction, CancelPopover, DesktopMenu,
+        ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
         IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
         ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
     };
@@ -8200,32 +8252,86 @@ mod tests {
 
         cx.dispatch_action(window.into(), OpenImportSubmenu);
         window
-            .update(cx, |view, _, _| {
+            .update(cx, |view, window, cx| {
                 assert!(view.workspace_import_submenu_open);
                 assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.workspace_import_popup_focus.clone())
+                );
             })
             .unwrap();
+        cx.dispatch_action(window.into(), CloseImportSubmenu);
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(!view.workspace_import_submenu_open);
+                assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.workspace_import_trigger_focus.clone())
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn sidebar_import_submenu_keyboard_activation_restores_trigger_focus(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
         window
             .update(cx, |view, _, cx| {
-                view.workspace_import_submenu_open = false;
+                view.session_store = None;
                 cx.notify();
             })
             .unwrap();
         cx.run_until_parked();
-
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let import_trigger = visual
-            .debug_bounds("workspace-switcher-import-from")
-            .expect("import submenu trigger should render");
-        visual.simulate_click(import_trigger.center(), Modifiers::default());
-        visual.run_until_parked();
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual
+                .debug_bounds("sidebar-import-from")
+                .expect("sidebar import trigger should render");
+        }
+        window
+            .update(cx, |view, window, cx| {
+                view.sidebar_import_trigger_focus.focus(window, cx);
+            })
+            .unwrap();
         cx.run_until_parked();
-        cx.dispatch_action(window.into(), CancelPopover);
+
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let keystroke = Keystroke::parse("enter").unwrap();
+            visual.simulate_event(KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            visual.simulate_event(KeyUpEvent { keystroke });
+        }
         cx.run_until_parked();
         window
-            .update(cx, |view, _, _| {
-                assert!(!view.workspace_import_submenu_open);
+            .update(cx, |view, window, cx| {
+                assert!(view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.sidebar_import_popup_focus.clone())
+                );
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
                 assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.sidebar_import_trigger_focus.clone())
+                );
             })
             .unwrap();
     }

@@ -720,6 +720,7 @@ pub(crate) fn secondary_menu_trigger(
     theme: Theme,
     id: &'static str,
     label: impl Into<String>,
+    focus_handle: &FocusHandle,
     on_keyboard_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
     secondary_button(theme, id, label, move |event, window, cx| {
@@ -727,6 +728,7 @@ pub(crate) fn secondary_menu_trigger(
             on_keyboard_activate(window, cx);
         }
     })
+    .track_focus(focus_handle)
     .key_context("ImportSubmenuTrigger")
 }
 
@@ -3217,6 +3219,7 @@ pub(crate) fn import_submenu_menu_button(
     id: impl Into<ElementId>,
     label: impl Into<String>,
     open: bool,
+    focus_handle: &FocusHandle,
     on_keyboard_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
     let id = id.into();
@@ -3242,6 +3245,7 @@ pub(crate) fn import_submenu_menu_button(
             ),
     )
     .debug_selector(move || debug_selector)
+    .track_focus(focus_handle)
     .key_context("ImportSubmenuTrigger")
     .on_click(move |event, window, cx| {
         if !matches!(event, ClickEvent::Mouse(_)) {
