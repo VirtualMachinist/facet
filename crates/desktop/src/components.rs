@@ -2720,7 +2720,7 @@ fn with_variable_tooltip(
                         value_input,
                     )),
             )
-            .with_priority(POPUP_PRIORITY),
+            .with_priority(POPUP_PRIORITY + 1),
         )
         .into_any_element()
 }
@@ -3220,7 +3220,7 @@ pub(crate) fn import_submenu_menu_button(
     label: impl Into<String>,
     open: bool,
     focus_handle: &FocusHandle,
-    on_keyboard_activate: impl Fn(&mut Window, &mut App) + 'static,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> Button {
     let id = id.into();
     let debug_selector = id.to_string();
@@ -3247,10 +3247,34 @@ pub(crate) fn import_submenu_menu_button(
     .debug_selector(move || debug_selector)
     .track_focus(focus_handle)
     .key_context("ImportSubmenuTrigger")
-    .on_click(move |event, window, cx| {
-        if !matches!(event, ClickEvent::Mouse(_)) {
-            on_keyboard_activate(window, cx);
-        }
+    .on_click(move |_, window, cx| on_activate(window, cx))
+}
+
+pub(crate) fn positioned_cascading_menu(
+    theme: Theme,
+    open: bool,
+    parent_width: f32,
+    trigger: impl IntoElement,
+    popup: gpui::AnyElement,
+) -> impl IntoElement {
+    let surface_inset = theme.metrics.spacing_1 + 1.0;
+    div().relative().w_full().child(trigger).when(open, |row| {
+        row.child(
+            deferred(
+                div()
+                    .absolute()
+                    .occlude()
+                    // Let the popup surface overlap the parent like a native
+                    // cascading menu, and offset its padding plus border so the
+                    // first child row aligns with the trigger row.
+                    .top(px(-surface_inset))
+                    .left(px(parent_width - surface_inset * 2.0))
+                    .child(popup),
+            )
+            // The parent surface paints its border after normal children.
+            // Deferring the submenu keeps that border behind the overlap.
+            .with_priority(POPUP_PRIORITY),
+        )
     })
 }
 
@@ -3263,19 +3287,13 @@ pub(crate) fn cascading_menu(
     popup: gpui::AnyElement,
     on_open: impl Fn(&mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .relative()
-        .w_full()
-        .child(submenu_menu_button(theme, id, label, open, on_open))
-        .when(open, |row| {
-            row.child(
-                div()
-                    .absolute()
-                    .top(px(0.0))
-                    .left(px(parent_width - theme.metrics.spacing_1))
-                    .child(popup),
-            )
-        })
+    positioned_cascading_menu(
+        theme,
+        open,
+        parent_width,
+        submenu_menu_button(theme, id, label, open, on_open),
+        popup,
+    )
 }
 
 pub(crate) fn checked_menu_button(
