@@ -716,6 +716,20 @@ pub(crate) fn secondary_button(
     action_button(theme, id, label, ActionButtonKind::Secondary, on_click)
 }
 
+pub(crate) fn secondary_menu_trigger(
+    theme: Theme,
+    id: &'static str,
+    label: impl Into<String>,
+    on_keyboard_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    secondary_button(theme, id, label, move |event, window, cx| {
+        if !matches!(event, ClickEvent::Mouse(_)) {
+            on_keyboard_activate(window, cx);
+        }
+    })
+    .key_context("ImportSubmenuTrigger")
+}
+
 #[derive(Clone, Copy)]
 enum ActionButtonKind {
     Primary,
