@@ -2720,7 +2720,7 @@ fn with_variable_tooltip(
                         value_input,
                     )),
             )
-            .with_priority(POPUP_PRIORITY),
+            .with_priority(POPUP_PRIORITY + 1),
         )
         .into_any_element()
 }
@@ -3257,13 +3257,23 @@ pub(crate) fn positioned_cascading_menu(
     trigger: impl IntoElement,
     popup: gpui::AnyElement,
 ) -> impl IntoElement {
+    let surface_inset = theme.metrics.spacing_1 + 1.0;
     div().relative().w_full().child(trigger).when(open, |row| {
         row.child(
-            div()
-                .absolute()
-                .top(px(0.0))
-                .left(px(parent_width - theme.metrics.spacing_1))
-                .child(popup),
+            deferred(
+                div()
+                    .absolute()
+                    .occlude()
+                    // Let the popup surface overlap the parent like a native
+                    // cascading menu, and offset its padding plus border so the
+                    // first child row aligns with the trigger row.
+                    .top(px(-surface_inset))
+                    .left(px(parent_width - surface_inset * 2.0))
+                    .child(popup),
+            )
+            // The parent surface paints its border after normal children.
+            // Deferring the submenu keeps that border behind the overlap.
+            .with_priority(POPUP_PRIORITY),
         )
     })
 }

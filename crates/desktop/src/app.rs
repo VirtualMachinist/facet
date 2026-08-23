@@ -9166,19 +9166,25 @@ mod tests {
         let submenu = visual
             .debug_bounds("workspace-switcher-import-popup")
             .expect("workspace switcher import popup should render");
-        visual
+        let postman = visual
             .debug_bounds("workspace-switcher-import-postman")
             .expect("workspace switcher import menu should include Postman");
         visual
             .debug_bounds("workspace-switcher-import-yaak")
             .expect("workspace switcher import menu should include Yaak");
         assert!(
-            submenu.left() >= import.right() - px(4.0),
+            submenu.center().x > import.center().x,
             "import submenu should open beside its trigger: trigger={import:?}, submenu={submenu:?}"
         );
-        assert!(
-            (submenu.top() - import.top()).abs() <= px(4.0),
-            "import submenu should align with its trigger row: trigger={import:?}, submenu={submenu:?}"
+        assert_eq!(
+            submenu.left(),
+            import.right(),
+            "the submenu should meet the trigger edge while its surfaces overlap"
+        );
+        assert_eq!(
+            postman.top(),
+            import.top(),
+            "the first submenu row should align with its trigger row"
         );
     }
 
