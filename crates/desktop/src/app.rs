@@ -3937,7 +3937,7 @@ impl ProbeApp {
                 .child(components::menu_button(
                     theme,
                     "sidebar-import-postman",
-                    "Postman",
+                    "Postman Export…",
                     None,
                     move |window, cx| {
                         let _ = sidebar_import_postman_view.update(cx, |view, cx| {
@@ -3951,7 +3951,7 @@ impl ProbeApp {
                 .child(components::menu_button(
                     theme,
                     "sidebar-import-yaak",
-                    "Yaak",
+                    "Yaak Export…",
                     None,
                     move |window, cx| {
                         let _ = sidebar_import_yaak_view.update(cx, |view, cx| {
@@ -3974,7 +3974,7 @@ impl ProbeApp {
             .trigger(components::secondary_menu_trigger(
                 theme,
                 "sidebar-import-from",
-                "Import from…",
+                "Import From…",
                 &self.sidebar_import_trigger_focus,
                 move |window, cx| {
                     let trigger_focus = sidebar_import_trigger_focus.clone();
@@ -4161,7 +4161,7 @@ impl ProbeApp {
                                 components::sidebar_search_input(
                                     theme,
                                     self.tree_search.clone(),
-                                    "Search requests...",
+                                    "Search requests…",
                                     move |value, _, input_cx| {
                                         let _ = search_view.update(input_cx, |view, cx| {
                                             view.set_tree_search(value.to_string(), cx);
@@ -4356,7 +4356,7 @@ impl ProbeApp {
                         });
                     },
                 )
-                .with_action("Create environment...", move |window, cx| {
+                .with_action("Create environment…", move |window, cx| {
                     let _ = create_environment_view.update(cx, |view, cx| {
                         view.open_create_environment_dialog(window, cx);
                     });
@@ -6402,7 +6402,7 @@ impl ProbeApp {
                     DesktopMenuItem::action("New Collection…", NewCollection),
                     DesktopMenuItem::action("Open Collection…", OpenWorkspace),
                     DesktopMenuItem::submenu(
-                        "Import From...",
+                        "Import From…",
                         DesktopSubmenu::Import,
                         DesktopMenuDefinition {
                             id: "desktop-import-menu-popup",
@@ -6560,7 +6560,7 @@ impl ProbeApp {
                 .child(components::menu_button(
                     theme,
                     "workspace-switcher-import-postman",
-                    "Postman",
+                    "Postman Export…",
                     None,
                     move |window, cx| {
                         let _ = import_postman_view.update(cx, |view, cx| {
@@ -6575,7 +6575,7 @@ impl ProbeApp {
                 .child(components::menu_button(
                     theme,
                     "workspace-switcher-import-yaak",
-                    "Yaak",
+                    "Yaak Export…",
                     None,
                     move |window, cx| {
                         let _ = import_yaak_view.update(cx, |view, cx| {
@@ -6590,7 +6590,7 @@ impl ProbeApp {
         let import_trigger = components::import_submenu_menu_button(
             theme,
             "workspace-switcher-import-from",
-            "Import from…",
+            "Import From…",
             self.workspace_import_submenu_open,
             &self.workspace_import_trigger_focus,
             move |window, cx| {
@@ -7768,9 +7768,9 @@ fn system_menus(pane_layout: PaneLayout) -> [Menu; 5] {
             MenuItem::action("Quit Probe", QuitApplication),
         ]),
         Menu::new("File").items([
-            MenuItem::action("New Collection...", NewCollection),
+            MenuItem::action("New Collection…", NewCollection),
             MenuItem::action("Open Collection…", OpenWorkspace),
-            MenuItem::submenu(Menu::new("Import From...").items([
+            MenuItem::submenu(Menu::new("Import From…").items([
                 MenuItem::action("Postman Export…", ImportPostmanExport),
                 MenuItem::action("Yaak Export…", ImportYaakExport),
             ])),
@@ -7981,7 +7981,7 @@ mod tests {
             matches!(
                 item,
                 MenuItem::Submenu(menu)
-                    if menu.name == "Import From..."
+                    if menu.name == "Import From…"
                         && matches!(
                             menu.items.as_slice(),
                             [
@@ -9115,7 +9115,7 @@ mod tests {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         let trigger = visual
             .debug_bounds("sidebar-import-from")
-            .expect("empty sidebar should include Import from");
+            .expect("empty sidebar should include Import From");
         visual.simulate_click(trigger.center(), Modifiers::default());
         visual.run_until_parked();
         cx.run_until_parked();
@@ -9158,7 +9158,7 @@ mod tests {
             .expect("workspace switcher should include Open Collection");
         let import = visual
             .debug_bounds("workspace-switcher-import-from")
-            .expect("workspace switcher should include Import from");
+            .expect("workspace switcher should include Import From");
         visual.simulate_click(import.center(), Modifiers::default());
         visual.run_until_parked();
         cx.run_until_parked();
