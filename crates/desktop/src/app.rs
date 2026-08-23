@@ -8,15 +8,16 @@ use std::{
 };
 
 use gpui::{
-    Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, Menu, MenuItem,
-    MouseButton, MouseDownEvent, MouseMoveEvent, OsAction, ParentElement as _, PathPromptOptions,
-    Pixels, Point, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
-    Styled as _, SystemMenuType, Task, TitlebarOptions, UniformListScrollHandle, Window,
-    WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
-    prelude::FluentBuilder as _, px, relative, size, uniform_list,
+    Action, Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, Render,
+    ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Task,
+    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
+    WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
+    uniform_list,
 };
 #[cfg(target_os = "macos")]
+use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
 use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
@@ -164,6 +165,10 @@ gpui::actions!(
         ToggleSidebar,
         UseVerticalEditorLayout,
         UseHorizontalEditorLayout,
+        OpenFileMenu,
+        OpenEditMenu,
+        OpenViewMenu,
+        OpenHelpMenu,
         HideApplication,
         HideOtherApplications,
         ShowAllApplications,
@@ -231,6 +236,20 @@ enum ApplicationDialog {
         workspace_id: String,
         detail: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopMenu {
+    File,
+    Edit,
+    View,
+    Help,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DesktopSubmenu {
+    Import,
+    EditorLayout,
 }
 
 impl ApplicationDialog {
@@ -498,6 +517,8 @@ pub(crate) struct ProbeApp {
     filesystem_watch_task: Option<Task<()>>,
     persistence: PersistenceState,
     pending_close: Option<PendingClose>,
+    desktop_menu_open: Option<DesktopMenu>,
+    desktop_submenu_open: Option<DesktopSubmenu>,
     workspace_switcher_open: bool,
     structure_add_menu_open: bool,
     tree_context_menu: Option<WorkspaceItemRef>,
@@ -588,6 +609,8 @@ impl ProbeApp {
             filesystem_watch_task: None,
             persistence: PersistenceState::default(),
             pending_close: None,
+            desktop_menu_open: None,
+            desktop_submenu_open: None,
             workspace_switcher_open: false,
             structure_add_menu_open: false,
             tree_context_menu: None,
@@ -1448,6 +1471,8 @@ impl ProbeApp {
     }
 
     fn dismiss_transient_surfaces(&mut self) {
+        self.desktop_menu_open = None;
+        self.desktop_submenu_open = None;
         self.workspace_switcher_open = false;
         self.structure_add_menu_open = false;
         self.tree_context_menu = None;
@@ -5861,6 +5886,427 @@ impl ProbeApp {
             .child(self.render_response_panel(theme, cx))
     }
 
+    fn render_desktop_action_menu_item(
+        &self,
+        theme: Theme,
+        id: &'static str,
+        label: &'static str,
+        action: Box<dyn Action>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let shortcut = shortcut_label_for_action(window, action.as_ref());
+        let view = cx.weak_entity();
+        components::menu_button(theme, id, label, shortcut, move |window, cx| {
+            let _ = view.update(cx, |view, cx| {
+                view.desktop_menu_open = None;
+                view.desktop_submenu_open = None;
+                cx.notify();
+            });
+            window.dispatch_action(action.boxed_clone(), cx);
+        })
+        .into_any_element()
+    }
+
+    fn render_desktop_top_level_menu(
+        &self,
+        theme: Theme,
+        menu: DesktopMenu,
+        id: &'static str,
+        label: &'static str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let open = self.desktop_menu_open == Some(menu);
+        let hover_view = cx.weak_entity();
+        let change_view = cx.weak_entity();
+        let popup = self.render_desktop_menu_popup(theme, menu, window, cx);
+
+        Popover::new(id)
+            .open(open)
+            .on_open_change(move |open, _, cx| {
+                let _ = change_view.update(cx, |view, cx| {
+                    view.desktop_menu_open = open.then_some(menu);
+                    view.desktop_submenu_open = None;
+                    cx.notify();
+                });
+            })
+            .trigger(components::app_menu_trigger(
+                theme,
+                (id, 0_usize),
+                label,
+                open,
+                move |cx| {
+                    let _ = hover_view.update(cx, |view, cx| {
+                        if view.desktop_menu_open.is_some() && view.desktop_menu_open != Some(menu)
+                        {
+                            view.desktop_menu_open = Some(menu);
+                            view.desktop_submenu_open = None;
+                            cx.notify();
+                        }
+                    });
+                },
+            ))
+            .content(move |_, _, _| popup)
+            .into_any_element()
+    }
+
+    fn render_desktop_menu_bar(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        if cfg!(target_os = "macos") {
+            return div().into_any_element();
+        }
+
+        div()
+            .id("desktop-menu-bar")
+            .debug_selector(|| "desktop-menu-bar".into())
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .child(self.render_desktop_top_level_menu(
+                theme,
+                DesktopMenu::File,
+                "desktop-file-menu",
+                "File",
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_top_level_menu(
+                theme,
+                DesktopMenu::Edit,
+                "desktop-edit-menu",
+                "Edit",
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_top_level_menu(
+                theme,
+                DesktopMenu::View,
+                "desktop-view-menu",
+                "View",
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_top_level_menu(
+                theme,
+                DesktopMenu::Help,
+                "desktop-help-menu",
+                "Help",
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_desktop_menu_popup(
+        &self,
+        theme: Theme,
+        menu: DesktopMenu,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        match menu {
+            DesktopMenu::File => self.render_desktop_file_menu(theme, window, cx),
+            DesktopMenu::Edit => self.render_desktop_edit_menu(theme, window, cx),
+            DesktopMenu::View => self.render_desktop_view_menu(theme, window, cx),
+            DesktopMenu::Help => self.render_desktop_help_menu(theme, window, cx),
+        }
+    }
+
+    fn render_desktop_file_menu(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        const WIDTH: f32 = 240.0;
+        let submenu_open = self.desktop_submenu_open == Some(DesktopSubmenu::Import);
+        let submenu_view = cx.weak_entity();
+        let mut popup = components::popup_surface(theme, "desktop-file-menu-popup", WIDTH)
+            .aria_label("File menu")
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-new-collection",
+                "New Collection…",
+                Box::new(NewCollection),
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-open-collection",
+                "Open Collection…",
+                Box::new(OpenWorkspace),
+                window,
+                cx,
+            ));
+
+        let import_row = div()
+            .relative()
+            .w_full()
+            .child(components::submenu_menu_button(
+                theme,
+                "desktop-import-menu",
+                "Import",
+                submenu_open,
+                move |cx| {
+                    let _ = submenu_view.update(cx, |view, cx| {
+                        if view.desktop_submenu_open != Some(DesktopSubmenu::Import) {
+                            view.desktop_submenu_open = Some(DesktopSubmenu::Import);
+                            cx.notify();
+                        }
+                    });
+                },
+            ))
+            .when(submenu_open, |row| {
+                let view = cx.weak_entity();
+                row.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(WIDTH - theme.metrics.spacing_1))
+                        .child(
+                            components::popup_surface(theme, "desktop-import-menu-popup", 210.0)
+                                .aria_label("Import menu")
+                                .child(components::menu_button(
+                                    theme,
+                                    "desktop-import-yaak",
+                                    "Yaak Export…",
+                                    None,
+                                    move |window, cx| {
+                                        let _ = view.update(cx, |view, cx| {
+                                            view.desktop_menu_open = None;
+                                            view.desktop_submenu_open = None;
+                                            if !view.loading {
+                                                view.request_import_yaak(window, cx);
+                                            }
+                                        });
+                                    },
+                                )),
+                        ),
+                )
+            });
+
+        popup = popup
+            .child(import_row)
+            .child(components::menu_separator(theme))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-save-request",
+                "Save Request",
+                Box::new(SaveRequest),
+                window,
+                cx,
+            ))
+            .child(components::menu_separator(theme))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-close-tab",
+                "Close Tab",
+                Box::new(CloseActiveTab),
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-close-window",
+                "Close Window",
+                Box::new(CloseWindow),
+                window,
+                cx,
+            ))
+            .child(components::menu_separator(theme))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-quit",
+                if cfg!(target_os = "windows") {
+                    "Exit"
+                } else {
+                    "Quit"
+                },
+                Box::new(QuitApplication),
+                window,
+                cx,
+            ));
+
+        popup.into_any_element()
+    }
+
+    fn render_desktop_edit_menu(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        components::popup_surface(theme, "desktop-edit-menu-popup", 220.0)
+            .aria_label("Edit menu")
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-undo",
+                "Undo",
+                Box::new(Undo),
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-redo",
+                "Redo",
+                Box::new(Redo),
+                window,
+                cx,
+            ))
+            .child(components::menu_separator(theme))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-cut",
+                "Cut",
+                Box::new(Cut),
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-copy",
+                "Copy",
+                Box::new(Copy),
+                window,
+                cx,
+            ))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-paste",
+                "Paste",
+                Box::new(Paste),
+                window,
+                cx,
+            ))
+            .child(components::menu_separator(theme))
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-select-all",
+                "Select All",
+                Box::new(SelectAll),
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_desktop_view_menu(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        const WIDTH: f32 = 230.0;
+        let submenu_open = self.desktop_submenu_open == Some(DesktopSubmenu::EditorLayout);
+        let submenu_view = cx.weak_entity();
+        let view = cx.weak_entity();
+        let horizontal_view = cx.weak_entity();
+
+        let layout_row = div()
+            .relative()
+            .w_full()
+            .child(components::submenu_menu_button(
+                theme,
+                "desktop-editor-layout-menu",
+                "Editor Layout",
+                submenu_open,
+                move |cx| {
+                    let _ = submenu_view.update(cx, |view, cx| {
+                        if view.desktop_submenu_open != Some(DesktopSubmenu::EditorLayout) {
+                            view.desktop_submenu_open = Some(DesktopSubmenu::EditorLayout);
+                            cx.notify();
+                        }
+                    });
+                },
+            ))
+            .when(submenu_open, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .top(px(0.0))
+                        .left(px(WIDTH - theme.metrics.spacing_1))
+                        .child(
+                            components::popup_surface(
+                                theme,
+                                "desktop-editor-layout-menu-popup",
+                                190.0,
+                            )
+                            .aria_label("Editor Layout menu")
+                            .child(components::checked_menu_button(
+                                theme,
+                                "desktop-layout-vertical",
+                                "Vertical",
+                                self.shell.pane_layout == PaneLayout::Vertical,
+                                move |_, cx| {
+                                    let _ = view.update(cx, |view, cx| {
+                                        view.desktop_menu_open = None;
+                                        view.desktop_submenu_open = None;
+                                        view.set_pane_layout(PaneLayout::Vertical, cx);
+                                    });
+                                },
+                            ))
+                            .child(components::checked_menu_button(
+                                theme,
+                                "desktop-layout-horizontal",
+                                "Horizontal",
+                                self.shell.pane_layout == PaneLayout::Horizontal,
+                                move |_, cx| {
+                                    let _ = horizontal_view.update(cx, |view, cx| {
+                                        view.desktop_menu_open = None;
+                                        view.desktop_submenu_open = None;
+                                        view.set_pane_layout(PaneLayout::Horizontal, cx);
+                                    });
+                                },
+                            )),
+                        ),
+                )
+            });
+
+        components::popup_surface(theme, "desktop-view-menu-popup", WIDTH)
+            .aria_label("View menu")
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-toggle-sidebar",
+                if self.shell.sidebar_collapsed {
+                    "Show Sidebar"
+                } else {
+                    "Hide Sidebar"
+                },
+                Box::new(ToggleSidebar),
+                window,
+                cx,
+            ))
+            .child(layout_row)
+            .into_any_element()
+    }
+
+    fn render_desktop_help_menu(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        components::popup_surface(theme, "desktop-help-menu-popup", 190.0)
+            .aria_label("Help menu")
+            .child(self.render_desktop_action_menu_item(
+                theme,
+                "desktop-about-probe",
+                "About Probe",
+                Box::new(AboutProbe),
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+
     fn render_titlebar(&self, theme: Theme, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         let switcher_view = cx.weak_entity();
         let sidebar_toggle_view = cx.weak_entity();
@@ -6031,6 +6477,7 @@ impl ProbeApp {
                 },
             ))
             .child(switcher)
+            .child(self.render_desktop_menu_bar(theme, window, cx))
             .child(
                 div()
                     .h_full()
@@ -6561,6 +7008,26 @@ impl Render for ProbeApp {
                 if view.application_dialog.is_none() {
                     view.save_active_request(window, cx);
                 }
+            }))
+            .on_action(cx.listener(|view, _: &OpenFileMenu, _, cx| {
+                view.desktop_menu_open = Some(DesktopMenu::File);
+                view.desktop_submenu_open = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &OpenEditMenu, _, cx| {
+                view.desktop_menu_open = Some(DesktopMenu::Edit);
+                view.desktop_submenu_open = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &OpenViewMenu, _, cx| {
+                view.desktop_menu_open = Some(DesktopMenu::View);
+                view.desktop_submenu_open = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &OpenHelpMenu, _, cx| {
+                view.desktop_menu_open = Some(DesktopMenu::Help);
+                view.desktop_submenu_open = None;
+                cx.notify();
             }))
             .on_action(cx.listener(|view, _: &OpenWorkspace, window, cx| {
                 if view.application_dialog.is_none() {
@@ -7133,6 +7600,18 @@ fn bind_platform_hotkeys(cx: &mut App) {
 
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
+        KeyBinding::new("f10", OpenFileMenu, None),
+        KeyBinding::new("alt-f", OpenFileMenu, None),
+        KeyBinding::new("alt-e", OpenEditMenu, None),
+        KeyBinding::new("alt-v", OpenViewMenu, None),
+        KeyBinding::new("alt-h", OpenHelpMenu, None),
+        KeyBinding::new("ctrl-z", Undo, None),
+        KeyBinding::new("ctrl-shift-z", Redo, None),
+        KeyBinding::new("ctrl-x", Cut, None),
+        KeyBinding::new("ctrl-c", Copy, None),
+        KeyBinding::new("ctrl-v", Paste, None),
+        KeyBinding::new("ctrl-a", SelectAll, None),
+        KeyBinding::new("ctrl-shift-w", CloseWindow, None),
         KeyBinding::new("f2", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("delete", DeleteTreeItem, Some("RequestTree")),
     ]);
@@ -7143,7 +7622,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-n", NewCollection, None),
         KeyBinding::new("ctrl-s", SaveRequest, None),
         KeyBinding::new("ctrl-w", CloseActiveTab, None),
-        KeyBinding::new("alt-f4", QuitApplication, None),
+        KeyBinding::new("alt-f4", CloseWindow, None),
     ]);
 
     #[cfg(target_os = "linux")]
@@ -7170,8 +7649,8 @@ mod tests {
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 
     use super::{
-        ApplicationDialog, ApplicationDialogAction, IMPORT_DIAGNOSTIC_GROUP_LIMIT, ProbeApp,
-        bind_platform_hotkeys, format_import_diagnostics,
+        ApplicationDialog, ApplicationDialogAction, DesktopMenu, IMPORT_DIAGNOSTIC_GROUP_LIMIT,
+        OpenFileMenu, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
     };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
@@ -7277,6 +7756,29 @@ mod tests {
                 assert!(view.session.horizontal_panes);
             })
             .expect("test window should remain open");
+    }
+
+    #[gpui::test]
+    fn desktop_menu_action_opens_the_requested_menu(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        cx.run_until_parked();
+
+        window
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(OpenFileMenu), cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        assert_eq!(
+            window
+                .update(cx, |view, _, _| view.desktop_menu_open)
+                .expect("test window should remain open"),
+            Some(DesktopMenu::File)
+        );
     }
 
     fn visible_tree_names(view: &ProbeApp) -> Vec<String> {

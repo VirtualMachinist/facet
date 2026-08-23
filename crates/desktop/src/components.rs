@@ -179,6 +179,9 @@ pub(crate) fn dialog_layer(
 static CHEVRON_DOWN_SVG: LazyLock<Vec<u8>> =
     LazyLock::new(|| icon_svg_bytes(icondata::LuChevronDown));
 static CHEVRON_UP_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuChevronUp));
+static CHEVRON_RIGHT_SVG: LazyLock<Vec<u8>> =
+    LazyLock::new(|| icon_svg_bytes(icondata::LuChevronRight));
+static CHECK_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuCheck));
 static FOLDER_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuFolder));
 static FOLDER_OPEN_SVG: LazyLock<Vec<u8>> =
     LazyLock::new(|| icon_svg_bytes(icondata::LuFolderOpen));
@@ -3098,6 +3101,144 @@ pub(crate) fn menu_button(
         },
         on_activate,
     )
+}
+
+pub(crate) fn app_menu_trigger(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    open: bool,
+    on_hover: impl Fn(&mut App) + 'static,
+) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .selected(open)
+        .h(px(theme.metrics.control_height))
+        .px(px(theme.metrics.spacing_2))
+        .flex()
+        .items_center()
+        .rounded(px(theme.metrics.radius_small))
+        .font_family(theme.typography.interface_family)
+        .text_size(px(theme.typography.body_size))
+        .text_color(theme.colors.text.primary)
+        .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
+        .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+        .styles(move |styles| {
+            styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
+        })
+        .on_mouse_move(move |_, _, cx| on_hover(cx))
+        .child(label)
+}
+
+pub(crate) fn submenu_menu_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    open: bool,
+    on_open: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    let on_open = Rc::new(on_open);
+    let pointer_open = on_open.clone();
+    let keyboard_open = on_open;
+
+    div()
+        .w_full()
+        .on_mouse_move(move |_, _, cx| pointer_open(cx))
+        .child(
+            Button::new(id)
+                .selected(open)
+                .w_full()
+                .h(px(theme.metrics.control_height + 4.0))
+                .px(px(theme.metrics.spacing_2))
+                .flex()
+                .items_center()
+                .justify_start()
+                .rounded(px(theme.metrics.radius_small))
+                .font_family(theme.typography.interface_family)
+                .text_size(px(theme.typography.body_size))
+                .text_color(theme.colors.text.primary)
+                .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
+                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+                .styles(move |styles| {
+                    styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
+                })
+                .on_click(move |_, _, cx| keyboard_open(cx))
+                .child(truncated_label(label).flex_1())
+                .child(
+                    library_icon(
+                        "lucide-chevron-right",
+                        &CHEVRON_RIGHT_SVG,
+                        theme.metrics.icon_small,
+                    )
+                    .text_color(theme.colors.text.muted),
+                ),
+        )
+}
+
+pub(crate) fn checked_menu_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    checked: bool,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let label = label.into();
+    let on_activate = Rc::new(on_activate);
+    let pointer_activate = on_activate.clone();
+    let keyboard_activate = on_activate;
+
+    div()
+        .w_full()
+        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+            cx.stop_propagation();
+            pointer_activate(window, cx);
+        })
+        .child(
+            Button::new(id)
+                .w_full()
+                .h(px(theme.metrics.control_height + 4.0))
+                .px(px(theme.metrics.spacing_2))
+                .flex()
+                .items_center()
+                .justify_start()
+                .rounded(px(theme.metrics.radius_small))
+                .font_family(theme.typography.interface_family)
+                .text_size(px(theme.typography.body_size))
+                .text_color(theme.colors.text.primary)
+                .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
+                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+                .on_click(move |event, window, cx| {
+                    if !matches!(event, ClickEvent::Mouse(_)) {
+                        keyboard_activate(window, cx);
+                    }
+                })
+                .child(
+                    div()
+                        .w(px(theme.metrics.icon_standard))
+                        .flex_none()
+                        .when(checked, |slot| {
+                            slot.child(
+                                library_icon(
+                                    "lucide-check",
+                                    &CHECK_SVG,
+                                    theme.metrics.icon_standard,
+                                )
+                                .text_color(theme.colors.text.primary),
+                            )
+                        }),
+                )
+                .child(truncated_label(label).ml(px(theme.metrics.spacing_1))),
+        )
+}
+
+pub(crate) fn menu_separator(theme: Theme) -> gpui::Div {
+    div()
+        .mx(px(theme.metrics.spacing_2))
+        .my(px(theme.metrics.spacing_1))
+        .h(px(1.0))
+        .flex_none()
+        .bg(theme.colors.borders.subtle)
 }
 
 pub(crate) fn destructive_menu_button(
