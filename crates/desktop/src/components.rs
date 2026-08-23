@@ -3130,6 +3130,35 @@ pub(crate) fn app_menu_trigger(
         .child(label)
 }
 
+fn menu_row_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    selected: bool,
+    style: MenuButtonStyle,
+    content: impl IntoElement,
+) -> Button {
+    Button::new(id)
+        .selected(selected)
+        .w_full()
+        .h(px(theme.metrics.control_height + 4.0))
+        .px(px(style.padding_x))
+        .flex()
+        .items_center()
+        .justify_start()
+        .overflow_hidden()
+        .rounded(px(theme.metrics.radius_small))
+        .font_family(theme.typography.interface_family)
+        .text_size(px(theme.typography.body_size))
+        .text_color(style.text_color)
+        .cursor_pointer()
+        .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
+        .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+        .styles(move |styles| {
+            styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
+        })
+        .child(content)
+}
+
 pub(crate) fn submenu_menu_button(
     theme: Theme,
     id: impl Into<ElementId>,
@@ -3146,34 +3175,51 @@ pub(crate) fn submenu_menu_button(
         .w_full()
         .on_mouse_move(move |_, _, cx| pointer_open(cx))
         .child(
-            Button::new(id)
-                .selected(open)
-                .w_full()
-                .h(px(theme.metrics.control_height + 4.0))
-                .px(px(theme.metrics.spacing_2))
-                .flex()
-                .items_center()
-                .justify_start()
-                .rounded(px(theme.metrics.radius_small))
-                .font_family(theme.typography.interface_family)
-                .text_size(px(theme.typography.body_size))
-                .text_color(theme.colors.text.primary)
-                .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
-                .styles(move |styles| {
-                    styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
-                })
-                .on_click(move |_, _, cx| keyboard_open(cx))
-                .child(truncated_label(label).flex_1())
-                .child(
-                    library_icon(
-                        "lucide-chevron-right",
-                        &CHEVRON_RIGHT_SVG,
-                        theme.metrics.icon_small,
-                    )
-                    .text_color(theme.colors.text.muted),
-                ),
+            menu_row_button(
+                theme,
+                id,
+                open,
+                MenuButtonStyle::standard(theme),
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .child(truncated_label(label).flex_1())
+                    .child(
+                        library_icon(
+                            "lucide-chevron-right",
+                            &CHEVRON_RIGHT_SVG,
+                            theme.metrics.icon_small,
+                        )
+                        .text_color(theme.colors.text.muted),
+                    ),
+            )
+            .on_click(move |_, _, cx| keyboard_open(cx)),
         )
+}
+
+pub(crate) fn cascading_menu(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    open: bool,
+    parent_width: f32,
+    popup: gpui::AnyElement,
+    on_open: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .relative()
+        .w_full()
+        .child(submenu_menu_button(theme, id, label, open, on_open))
+        .when(open, |row| {
+            row.child(
+                div()
+                    .absolute()
+                    .top(px(0.0))
+                    .left(px(parent_width - theme.metrics.spacing_1))
+                    .child(popup),
+            )
+        })
 }
 
 pub(crate) fn checked_menu_button(
@@ -3195,29 +3241,18 @@ pub(crate) fn checked_menu_button(
             pointer_activate(window, cx);
         })
         .child(
-            Button::new(id)
-                .w_full()
-                .h(px(theme.metrics.control_height + 4.0))
-                .px(px(theme.metrics.spacing_2))
-                .flex()
-                .items_center()
-                .justify_start()
-                .rounded(px(theme.metrics.radius_small))
-                .font_family(theme.typography.interface_family)
-                .text_size(px(theme.typography.body_size))
-                .text_color(theme.colors.text.primary)
-                .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
-                .on_click(move |event, window, cx| {
-                    if !matches!(event, ClickEvent::Mouse(_)) {
-                        keyboard_activate(window, cx);
-                    }
-                })
-                .child(
-                    div()
-                        .w(px(theme.metrics.icon_standard))
-                        .flex_none()
-                        .when(checked, |slot| {
+            menu_row_button(
+                theme,
+                id,
+                false,
+                MenuButtonStyle::standard(theme),
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .child(div().w(px(theme.metrics.icon_standard)).flex_none().when(
+                        checked,
+                        |slot| {
                             slot.child(
                                 library_icon(
                                     "lucide-check",
@@ -3226,9 +3261,15 @@ pub(crate) fn checked_menu_button(
                                 )
                                 .text_color(theme.colors.text.primary),
                             )
-                        }),
-                )
-                .child(truncated_label(label).ml(px(theme.metrics.spacing_1))),
+                        },
+                    ))
+                    .child(truncated_label(label).ml(px(theme.metrics.spacing_1))),
+            )
+            .on_click(move |event, window, cx| {
+                if !matches!(event, ClickEvent::Mouse(_)) {
+                    keyboard_activate(window, cx);
+                }
+            }),
         )
 }
 
@@ -3269,6 +3310,16 @@ struct MenuButtonStyle {
     shortcut_color: gpui::Rgba,
 }
 
+impl MenuButtonStyle {
+    fn standard(theme: Theme) -> Self {
+        Self {
+            padding_x: theme.metrics.spacing_2,
+            text_color: theme.colors.text.primary,
+            shortcut_color: theme.colors.text.muted,
+        }
+    }
+}
+
 fn menu_button_with_style(
     theme: Theme,
     id: impl Into<ElementId>,
@@ -3295,44 +3346,33 @@ fn menu_button_with_style(
             pointer_activate(window, cx);
         })
         .child(
-            Button::new(id)
-                .debug_selector(move || debug_selector)
-                .w_full()
-                .h(px(theme.metrics.control_height + 4.0))
-                .px(px(style.padding_x))
-                .flex()
-                .items_center()
-                .justify_start()
-                .overflow_hidden()
-                .rounded(px(theme.metrics.radius_small))
-                .font_family(theme.typography.interface_family)
-                .text_size(px(theme.typography.body_size))
-                .text_color(style.text_color)
-                .cursor_pointer()
-                .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-                .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
-                .on_click(move |event, window, cx| {
-                    if !matches!(event, ClickEvent::Mouse(_)) {
-                        keyboard_activate(window, cx);
-                    }
-                })
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_2))
-                        .child(truncated_label(label).flex_1())
-                        .when_some(shortcut, |row, shortcut| {
-                            row.child(
-                                div()
-                                    .flex_none()
-                                    .text_size(px(theme.typography.caption_size))
-                                    .text_color(style.shortcut_color)
-                                    .child(shortcut),
-                            )
-                        }),
-                ),
+            menu_row_button(
+                theme,
+                id,
+                false,
+                style,
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(px(theme.metrics.spacing_2))
+                    .child(truncated_label(label).flex_1())
+                    .when_some(shortcut, |row, shortcut| {
+                        row.child(
+                            div()
+                                .flex_none()
+                                .text_size(px(theme.typography.caption_size))
+                                .text_color(style.shortcut_color)
+                                .child(shortcut),
+                        )
+                    }),
+            )
+            .debug_selector(move || debug_selector)
+            .on_click(move |event, window, cx| {
+                if !matches!(event, ClickEvent::Mouse(_)) {
+                    keyboard_activate(window, cx);
+                }
+            }),
         )
 }
 
