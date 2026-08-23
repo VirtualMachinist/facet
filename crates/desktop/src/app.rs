@@ -9,13 +9,15 @@ use std::{
 
 use gpui::{
     Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, FocusHandle,
-    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, Render,
-    ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Task,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
-    WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
-    uniform_list,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, Menu, MenuItem,
+    MouseButton, MouseDownEvent, MouseMoveEvent, OsAction, ParentElement as _, PathPromptOptions,
+    Pixels, Point, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _,
+    Styled as _, SystemMenuType, Task, TitlebarOptions, UniformListScrollHandle, Window,
+    WindowBounds, WindowControlArea, WindowOptions, deferred, div, point,
+    prelude::FluentBuilder as _, px, relative, size, uniform_list,
 };
+#[cfg(target_os = "macos")]
+use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
     AuthenticationKind, AuthenticationValue, Body, FileReference, FormField, Header, HttpRequest,
@@ -152,8 +154,19 @@ gpui::actions!(
     [
         OpenWorkspace,
         NewCollection,
+        ImportYaakExport,
         SaveRequest,
         CloseActiveTab,
+        AboutProbe,
+        CloseWindow,
+        MinimizeWindow,
+        ZoomWindow,
+        ToggleSidebar,
+        UseVerticalEditorLayout,
+        UseHorizontalEditorLayout,
+        HideApplication,
+        HideOtherApplications,
+        ShowAllApplications,
         QuitApplication,
         FocusNextControl,
         FocusPreviousControl,
@@ -194,6 +207,7 @@ enum PendingClose {
 }
 
 enum ApplicationDialog {
+    About,
     Unsaved {
         keys: Vec<RequestKey>,
         pending: PendingClose,
@@ -222,6 +236,7 @@ enum ApplicationDialog {
 impl ApplicationDialog {
     fn title(&self) -> Cow<'_, str> {
         match self {
+            Self::About => Cow::Borrowed("Probe"),
             Self::Unsaved { keys, .. } => {
                 let noun = if keys.len() == 1 {
                     "request"
@@ -243,6 +258,11 @@ impl ApplicationDialog {
 
     fn description(&self) -> &str {
         match self {
+            Self::About => concat!(
+                "Version ",
+                env!("CARGO_PKG_VERSION"),
+                "\n\nA fast, native, local-first API client."
+            ),
             Self::Unsaved { .. } => "Unsaved changes will be lost if you discard them.",
             Self::Delete { detail, .. }
             | Self::FilesystemConflict { detail, .. }
@@ -264,6 +284,7 @@ impl ApplicationDialog {
 
     const fn action_specs(&self) -> Option<&'static [DialogActionSpec]> {
         match self {
+            Self::About => Some(ABOUT_DIALOG_ACTIONS),
             Self::Unsaved { .. } => Some(UNSAVED_DIALOG_ACTIONS),
             Self::Delete { .. } => Some(DELETE_DIALOG_ACTIONS),
             Self::FilesystemConflict { .. } => Some(FILESYSTEM_CONFLICT_DIALOG_ACTIONS),
@@ -325,6 +346,12 @@ const CANCEL_DIALOG_ACTION: DialogActionSpec = DialogActionSpec::new(
     components::DialogActionStyle::Secondary,
     ApplicationDialogAction::Cancel,
 );
+const ABOUT_DIALOG_ACTIONS: &[DialogActionSpec] = &[DialogActionSpec::new(
+    "application-dialog-done",
+    "Done",
+    components::DialogActionStyle::Primary,
+    ApplicationDialogAction::Cancel,
+)];
 const UNSAVED_DIALOG_ACTIONS: &[DialogActionSpec] = &[
     CANCEL_DIALOG_ACTION,
     DialogActionSpec::new(
@@ -1043,7 +1070,7 @@ impl ProbeApp {
                             view.set_workspace(canonical_path, workspace);
                             if let Some(state) = restored_state {
                                 view.session = state;
-                                view.restore_shell_state();
+                                view.restore_shell_state(cx);
                             }
                             view.start_workspace_watcher(window, cx);
                             view.persist_session(cx);
@@ -1730,7 +1757,7 @@ impl ProbeApp {
         cx.notify();
     }
 
-    fn restore_shell_state(&mut self) {
+    fn restore_shell_state(&mut self, cx: &mut Context<Self>) {
         let Some(loaded) = &self.loaded_workspace else {
             return;
         };
@@ -1764,6 +1791,7 @@ impl ProbeApp {
             } else {
                 PaneLayout::Vertical
             });
+        self.refresh_system_menu(cx);
         for key in tabs {
             self.shell.open_request(key);
         }
@@ -2532,6 +2560,27 @@ impl ProbeApp {
         }
         true
     }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.shell.toggle_sidebar();
+        self.persist_session(cx);
+        cx.notify();
+    }
+
+    fn set_pane_layout(&mut self, layout: PaneLayout, cx: &mut Context<Self>) {
+        self.shell.set_pane_layout(layout);
+        self.refresh_system_menu(cx);
+        self.persist_session(cx);
+        cx.notify();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_system_menu(&self, cx: &mut Context<Self>) {
+        cx.set_menus(system_menus(self.shell.pane_layout));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn refresh_system_menu(&self, _: &mut Context<Self>) {}
 
     fn quit_application(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.application_dialog.is_some() {
@@ -5966,9 +6015,7 @@ impl ProbeApp {
                 self.shell.sidebar_collapsed,
                 move |_, cx| {
                     let _ = sidebar_toggle_view.update(cx, |view, cx| {
-                        view.shell.toggle_sidebar();
-                        view.persist_session(cx);
-                        cx.notify();
+                        view.toggle_sidebar(cx);
                     });
                 },
             ))
@@ -5998,9 +6045,7 @@ impl ProbeApp {
                 self.shell.pane_layout,
                 move |layout, _, cx| {
                     let _ = layout_view.update(cx, |view, cx| {
-                        view.shell.set_pane_layout(layout);
-                        view.persist_session(cx);
-                        cx.notify();
+                        view.set_pane_layout(layout, cx);
                     });
                 },
             ))
@@ -6527,12 +6572,40 @@ impl Render for ProbeApp {
                     view.choose_new_workspace(window, cx);
                 }
             }))
+            .on_action(cx.listener(|view, _: &ImportYaakExport, window, cx| {
+                if !view.loading && view.application_dialog.is_none() {
+                    view.request_import_yaak(window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &CloseActiveTab, window, cx| {
                 if view.application_dialog.is_none()
                     && let Some(key) = view.shell.active_tab()
                 {
                     view.request_close_tab(key, window, cx);
                 }
+            }))
+            .on_action(cx.listener(|view, _: &AboutProbe, window, cx| {
+                view.show_application_dialog(ApplicationDialog::About, window, cx);
+            }))
+            .on_action(cx.listener(|view, _: &CloseWindow, window, cx| {
+                if view.request_close_window(window, cx) {
+                    window.remove_window();
+                }
+            }))
+            .on_action(cx.listener(|_, _: &MinimizeWindow, window, _| {
+                window.minimize_window();
+            }))
+            .on_action(cx.listener(|_, _: &ZoomWindow, window, _| {
+                window.zoom_window();
+            }))
+            .on_action(cx.listener(|view, _: &ToggleSidebar, _, cx| {
+                view.toggle_sidebar(cx);
+            }))
+            .on_action(cx.listener(|view, _: &UseVerticalEditorLayout, _, cx| {
+                view.set_pane_layout(PaneLayout::Vertical, cx);
+            }))
+            .on_action(cx.listener(|view, _: &UseHorizontalEditorLayout, _, cx| {
+                view.set_pane_layout(PaneLayout::Horizontal, cx);
             }))
             .on_action(cx.listener(|view, _: &QuitApplication, window, cx| {
                 view.quit_application(window, cx);
@@ -6913,6 +6986,7 @@ pub fn run() {
         cx.set_app_identity(APPLICATION_ID, APPLICATION_NAME);
         Theme::init(cx);
         bind_platform_hotkeys(cx);
+        install_system_menu(cx);
 
         let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
         cx.open_window(
@@ -6943,6 +7017,74 @@ pub fn run() {
         cx.activate(true);
     });
 }
+
+#[cfg(target_os = "macos")]
+fn install_system_menu(cx: &mut App) {
+    cx.on_action(|_: &HideApplication, cx| cx.hide());
+    cx.on_action(|_: &HideOtherApplications, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAllApplications, cx| cx.unhide_other_apps());
+
+    cx.set_menus(system_menus(PaneLayout::Vertical));
+}
+
+#[cfg(target_os = "macos")]
+fn system_menus(pane_layout: PaneLayout) -> [Menu; 5] {
+    [
+        Menu::new(APPLICATION_NAME).items([
+            MenuItem::action("About Probe", AboutProbe),
+            MenuItem::separator(),
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Hide Probe", HideApplication),
+            MenuItem::action("Hide Others", HideOtherApplications),
+            MenuItem::action("Show All", ShowAllApplications),
+            MenuItem::separator(),
+            MenuItem::action("Quit Probe", QuitApplication),
+        ]),
+        Menu::new("File").items([
+            MenuItem::action("New Collection", NewCollection),
+            MenuItem::action("Open Collection…", OpenWorkspace),
+            MenuItem::submenu(
+                Menu::new("Import").items([MenuItem::action("Yaak Export…", ImportYaakExport)]),
+            ),
+            MenuItem::separator(),
+            MenuItem::action("Save Request", SaveRequest),
+            MenuItem::separator(),
+            MenuItem::action("Close Tab", CloseActiveTab),
+            MenuItem::action("Close Window", CloseWindow),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::separator(),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        Menu::new("View").items([
+            MenuItem::action("Show/Hide Sidebar", ToggleSidebar),
+            MenuItem::submenu(
+                Menu::new("Editor Layout").items([
+                    MenuItem::action("Vertical", UseVerticalEditorLayout)
+                        .checked(pane_layout == PaneLayout::Vertical),
+                    MenuItem::action("Horizontal", UseHorizontalEditorLayout)
+                        .checked(pane_layout == PaneLayout::Horizontal),
+                ]),
+            ),
+            MenuItem::separator(),
+        ]),
+        Menu::new("Window").items([
+            MenuItem::action("Minimize", MinimizeWindow),
+            MenuItem::action("Zoom", ZoomWindow),
+            MenuItem::separator(),
+        ]),
+    ]
+}
+
+#[cfg(not(target_os = "macos"))]
+fn install_system_menu(_: &mut App) {}
 
 fn bind_platform_hotkeys(cx: &mut App) {
     cx.bind_keys([
@@ -6975,6 +7117,16 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("cmd-s", SaveRequest, None),
         KeyBinding::new("cmd-w", CloseActiveTab, None),
         KeyBinding::new("cmd-q", QuitApplication, None),
+        KeyBinding::new("cmd-shift-w", CloseWindow, None),
+        KeyBinding::new("cmd-m", MinimizeWindow, None),
+        KeyBinding::new("cmd-h", HideApplication, None),
+        KeyBinding::new("cmd-alt-h", HideOtherApplications, None),
+        KeyBinding::new("cmd-z", Undo, None),
+        KeyBinding::new("cmd-shift-z", Redo, None),
+        KeyBinding::new("cmd-x", Cut, None),
+        KeyBinding::new("cmd-c", Copy, None),
+        KeyBinding::new("cmd-v", Paste, None),
+        KeyBinding::new("cmd-a", SelectAll, None),
         KeyBinding::new("cmd-e", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("backspace", DeleteTreeItem, Some("RequestTree")),
     ]);
@@ -7024,6 +7176,7 @@ mod tests {
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
         response_viewer::ResponseViewerTab,
+        shell::PaneLayout,
         theme::Theme,
     };
 
@@ -7040,6 +7193,90 @@ mod tests {
     fn nested_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase16-bundled.yml")
+    }
+
+    #[test]
+    fn about_dialog_reports_the_packaged_version() {
+        let dialog = ApplicationDialog::About;
+
+        assert_eq!(dialog.title(), "Probe");
+        assert!(dialog.description().contains(env!("CARGO_PKG_VERSION")));
+        assert_eq!(dialog.action_specs().unwrap()[0].label, "Done");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_system_menu_delegates_services_to_the_operating_system() {
+        use gpui::{MenuItem, SystemMenuType};
+
+        let menus = super::system_menus(PaneLayout::Horizontal);
+
+        assert_eq!(
+            menus
+                .iter()
+                .map(|menu| menu.name.to_string())
+                .collect::<Vec<_>>(),
+            ["Probe", "File", "Edit", "View", "Window"]
+        );
+        assert!(menus[0].items.iter().any(|item| {
+            matches!(
+                item,
+                MenuItem::SystemMenu(menu) if menu.menu_type == SystemMenuType::Services
+            )
+        }));
+        assert!(menus[1].items.iter().any(|item| {
+            matches!(
+                item,
+                MenuItem::Submenu(menu)
+                    if menu.name == "Import"
+                        && matches!(
+                            menu.items.as_slice(),
+                            [MenuItem::Action { name, .. }] if name == "Yaak Export…"
+                        )
+            )
+        }));
+        assert!(matches!(
+            menus[3].items.as_slice(),
+            [
+                MenuItem::Action { name, .. },
+                MenuItem::Submenu(layout),
+                MenuItem::Separator,
+            ] if name == "Show/Hide Sidebar"
+                && layout.name == "Editor Layout"
+                && matches!(
+                    layout.items.as_slice(),
+                    [
+                        MenuItem::Action { name: vertical, .. },
+                        MenuItem::Action { name: horizontal, .. },
+                    ] if vertical == "Vertical" && horizontal == "Horizontal"
+                )
+        ));
+        let MenuItem::Submenu(layout) = &menus[3].items[1] else {
+            panic!("Editor Layout should be a submenu");
+        };
+        assert!(!layout.items[0].is_checked());
+        assert!(layout.items[1].is_checked());
+    }
+
+    #[gpui::test]
+    fn view_menu_state_changes_are_persisted(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.toggle_sidebar(cx);
+                view.set_pane_layout(PaneLayout::Horizontal, cx);
+
+                assert!(view.shell.sidebar_collapsed);
+                assert!(view.session.sidebar_collapsed);
+                assert_eq!(view.shell.pane_layout, PaneLayout::Horizontal);
+                assert!(view.session.horizontal_panes);
+            })
+            .expect("test window should remain open");
     }
 
     fn visible_tree_names(view: &ProbeApp) -> Vec<String> {
@@ -8032,7 +8269,7 @@ mod tests {
                 view.set_workspace(fixture, workspace);
                 view.session.open_tabs = vec![first_selector, second_selector.clone()];
                 view.session.active_tab = Some(second_selector);
-                view.restore_shell_state();
+                view.restore_shell_state(cx);
                 cx.notify();
             })
             .expect("test window should be open");
