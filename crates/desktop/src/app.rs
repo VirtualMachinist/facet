@@ -6401,7 +6401,7 @@ impl ProbeApp {
                     DesktopMenuItem::action("New Collection…", NewCollection),
                     DesktopMenuItem::action("Open Collection…", OpenWorkspace),
                     DesktopMenuItem::submenu(
-                        "Import",
+                        "Import From...",
                         DesktopSubmenu::Import,
                         DesktopMenuDefinition {
                             id: "desktop-import-menu-popup",
@@ -7767,9 +7767,9 @@ fn system_menus(pane_layout: PaneLayout) -> [Menu; 5] {
             MenuItem::action("Quit Probe", QuitApplication),
         ]),
         Menu::new("File").items([
-            MenuItem::action("New Collection", NewCollection),
+            MenuItem::action("New Collection...", NewCollection),
             MenuItem::action("Open Collection…", OpenWorkspace),
-            MenuItem::submenu(Menu::new("Import").items([
+            MenuItem::submenu(Menu::new("Import From...").items([
                 MenuItem::action("Postman Export…", ImportPostmanExport),
                 MenuItem::action("Yaak Export…", ImportYaakExport),
             ])),
