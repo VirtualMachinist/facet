@@ -76,6 +76,7 @@ use crate::{
 const APPLICATION_ID: &str = "dev.probe.desktop";
 const APPLICATION_NAME: &str = "Probe";
 const IMPORT_DIAGNOSTIC_GROUP_LIMIT: usize = 8;
+const WORKSPACE_SWITCHER_MENU_WIDTH: f32 = 300.0;
 
 fn suggested_collection_filename(name: &str) -> String {
     let stem = name
@@ -6492,16 +6493,19 @@ impl ProbeApp {
         let home_view = cx.weak_entity();
         let new_view = cx.weak_entity();
         let open_view = cx.weak_entity();
-        let import_state_view = cx.weak_entity();
-        let import_keyboard_view = cx.weak_entity();
+        let import_menu_view = cx.weak_entity();
         let import_postman_view = cx.weak_entity();
         let import_yaak_view = cx.weak_entity();
         let import_trigger_focus = self.workspace_import_trigger_focus.clone();
         let import_popup_focus = self.workspace_import_popup_focus.clone();
         let layout_view = cx.weak_entity();
         let collection_open = self.loaded_workspace.is_some();
-        let mut popup = components::popup_surface(theme, "workspace-switcher-popup", 300.0)
-            .aria_label("Workspaces");
+        let mut popup = components::popup_surface(
+            theme,
+            "workspace-switcher-popup",
+            WORKSPACE_SWITCHER_MENU_WIDTH,
+        )
+        .aria_label("Workspaces");
 
         if !self.session.recent_collections.is_empty() {
             popup = popup.child(
@@ -6549,6 +6553,7 @@ impl ProbeApp {
 
         let import_popup =
             components::popup_surface(theme, "workspace-switcher-import-popup", 180.0)
+                .debug_selector(|| "workspace-switcher-import-popup".into())
                 .aria_label("Import providers")
                 .track_focus(&self.workspace_import_popup_focus)
                 .key_context("ImportSubmenu")
@@ -6582,37 +6587,33 @@ impl ProbeApp {
                         });
                     },
                 ));
-        let import_menu = Popover::new("workspace-switcher-import-menu")
-            .anchor(Anchor::TopRight)
-            .open(self.workspace_import_submenu_open)
-            .track_focus(&self.workspace_import_popup_focus)
-            .on_open_change(move |open, _, cx| {
-                let _ = import_state_view.update(cx, |view, cx| {
-                    view.workspace_import_submenu_open = *open;
+        let import_trigger = components::import_submenu_menu_button(
+            theme,
+            "workspace-switcher-import-from",
+            "Import from…",
+            self.workspace_import_submenu_open,
+            &self.workspace_import_trigger_focus,
+            move |window, cx| {
+                let trigger_focus = import_trigger_focus.clone();
+                let popup_focus = import_popup_focus.clone();
+                let _ = import_menu_view.update(cx, |view, cx| {
+                    view.workspace_import_submenu_open = !view.workspace_import_submenu_open;
+                    if view.workspace_import_submenu_open {
+                        popup_focus.focus(window, cx);
+                    } else {
+                        trigger_focus.focus(window, cx);
+                    }
                     cx.notify();
                 });
-            })
-            .trigger(components::import_submenu_menu_button(
-                theme,
-                "workspace-switcher-import-from",
-                "Import from…",
-                self.workspace_import_submenu_open,
-                &self.workspace_import_trigger_focus,
-                move |window, cx| {
-                    let trigger_focus = import_trigger_focus.clone();
-                    let popup_focus = import_popup_focus.clone();
-                    let _ = import_keyboard_view.update(cx, |view, cx| {
-                        view.workspace_import_submenu_open = !view.workspace_import_submenu_open;
-                        if view.workspace_import_submenu_open {
-                            popup_focus.focus(window, cx);
-                        } else {
-                            trigger_focus.focus(window, cx);
-                        }
-                        cx.notify();
-                    });
-                },
-            ))
-            .content(move |_, _, _| import_popup);
+            },
+        );
+        let import_menu = components::positioned_cascading_menu(
+            theme,
+            self.workspace_import_submenu_open,
+            WORKSPACE_SWITCHER_MENU_WIDTH,
+            import_trigger,
+            import_popup.into_any_element(),
+        );
 
         popup = popup
             .child(components::menu_button(
@@ -9162,12 +9163,23 @@ mod tests {
         visual.run_until_parked();
         cx.run_until_parked();
 
+        let submenu = visual
+            .debug_bounds("workspace-switcher-import-popup")
+            .expect("workspace switcher import popup should render");
         visual
             .debug_bounds("workspace-switcher-import-postman")
             .expect("workspace switcher import menu should include Postman");
         visual
             .debug_bounds("workspace-switcher-import-yaak")
             .expect("workspace switcher import menu should include Yaak");
+        assert!(
+            submenu.left() >= import.right() - px(4.0),
+            "import submenu should open beside its trigger: trigger={import:?}, submenu={submenu:?}"
+        );
+        assert!(
+            (submenu.top() - import.top()).abs() <= px(4.0),
+            "import submenu should align with its trigger row: trigger={import:?}, submenu={submenu:?}"
+        );
     }
 
     #[gpui::test]
