@@ -113,6 +113,8 @@ probe folder rename ./api admin --name Administration --json
 
 probe collection validate ./api --quiet
 
+probe collection import postman ./postman-collection.json ./imported.yml --json
+
 probe collection import yaak ./yaak-export.json ./imported.yml --json
 
 probe collection import yaak ./yaak-sync ./imported.yml \
@@ -142,10 +144,11 @@ standalone Command Line Tools), because pinned GPUI compiles Metal shaders.
 The repository is a Cargo workspace. It currently includes OpenCollection parsing,
 bundled and unbundled filesystem loading, an indexed in-memory workspace, shared
 environment resolution, asynchronous HTTP execution, a versioned automation-safe CLI
-contract, Yaak export/directory-sync import, and a native GPUI desktop shell with semantic light/dark themes,
+contract, Postman Collection v2.0/v2.1 and Yaak export/directory-sync import, and a native GPUI desktop shell with semantic light/dark themes,
 OpenCollection-backed browsing, request tabs, resizable editor/response panes, and
-a title-bar workspace switcher. Empty workspaces can create a new bundled collection
-or open an existing one. The request editor updates method, URL, query and
+a title-bar workspace switcher. The workspace switcher, empty sidebar, and macOS
+`File > Import` menu expose the same Postman/Yaak import workflow. Empty workspaces
+can create a new bundled collection or open an existing one. The request editor updates method, URL, query and
 `:variableName` path parameters, headers, body, authentication, and environment selection in memory as
 the user works. Desktop Send and Cancel actions use the same asynchronous HTTP engine
 as the CLI, and completed responses expose status, duration, size, headers, and body

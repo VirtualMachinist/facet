@@ -4784,6 +4784,7 @@ dependencies = [
  "probe-core",
  "probe-http",
  "probe-opencollection",
+ "probe-postman",
  "probe-yaak",
  "serde_json",
  "tokio",
@@ -4808,6 +4809,7 @@ dependencies = [
  "probe-core",
  "probe-http",
  "probe-opencollection",
+ "probe-postman",
  "probe-yaak",
  "serde",
  "serde_json",
@@ -4834,6 +4836,16 @@ dependencies = [
  "probe-core",
  "serde",
  "serde_yaml_ng",
+]
+
+[[package]]
+name = "probe-postman"
+version = "0.1.0"
+dependencies = [
+ "probe-core",
+ "probe-opencollection",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,30 @@
+{
+  "info": {
+    "_postman_id": "pm_lossy",
+    "name": "Lossy",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [{ "listen": "prerequest", "script": { "exec": ["console.log('hi')"] } }],
+  "mystery": { "enabled": true },
+  "item": [
+    {
+      "id": "request_lossy",
+      "name": "Lossy Request",
+      "variable": [{ "key": "scoped", "value": "lost" }],
+      "request": {
+        "method": "GET",
+        "description": "A request description",
+        "proxy": { "host": "proxy.example.com" },
+        "auth": {
+          "type": "apikey",
+          "apikey": [
+            { "key": "key", "value": "X-API-Key", "type": "string" },
+            { "key": "value", "value": "{{$randomUUID}}", "type": "string" }
+          ]
+        },
+        "url": "https://api.example.com"
+      },
+      "response": [{ "name": "Example", "code": 200 }]
+    }
+  ]
+}

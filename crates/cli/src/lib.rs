@@ -9,8 +9,8 @@ use std::{
 };
 
 use probe_core::{
-    EnvironmentResolutionError, FolderKey, RequestUpdate, WorkspaceItemRef, resolve_environment,
-    resolve_request,
+    EnvironmentResolutionError, FolderKey, ImportDiagnostic, RequestUpdate, WorkspaceItemRef,
+    resolve_environment, resolve_request,
 };
 use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse};
 use probe_opencollection::{
@@ -18,7 +18,8 @@ use probe_opencollection::{
     create_bundled_workspace, create_bundled_workspace_from_collection, load_workspace,
     load_workspace_from_str,
 };
-use probe_yaak::{ImportDiagnostic, YaakImportError, inspect_yaak_source};
+use probe_postman::{PostmanImportError, inspect_postman_source};
+use probe_yaak::{YaakImportError, inspect_yaak_source};
 use serde_json::json;
 
 mod presentation;
@@ -100,7 +101,8 @@ pub const fn help() -> &'static str {
         "\n",
         "Commands:\n",
         "  collection create <path>            Create an empty bundled collection\n",
-        "  collection import yaak <source> <destination>  Import a Yaak workspace\n",
+        "  collection import postman <source> <destination>  Import a Postman collection\n",
+        "  collection import yaak <source> <destination>     Import a Yaak workspace\n",
         "  collection validate <path>          Validate an OpenCollection workspace\n",
         "  request list <path>                 List HTTP requests\n",
         "  request get <path> <selector>       Inspect an HTTP request\n",
@@ -125,7 +127,7 @@ pub const fn help() -> &'static str {
         "      --parent <selector>    Destination folder (omit for collection root)\n",
         "      --index <index>        Zero-based insertion position (omit to append)\n",
         "      --workspace <id>       Select a workspace from a multi-workspace import\n",
-        "      --allow-partial        Explicitly allow lossy Yaak conversion\n",
+        "      --allow-partial        Explicitly allow lossy import conversion\n",
         "      --json                Emit versioned deterministic JSON\n",
         "  -q, --quiet               Suppress successful command output\n",
         "  -h, --help                Print help\n",
@@ -137,13 +139,15 @@ const COLLECTION_HELP: &str = concat!(
     "\n",
     "Commands:\n",
     "  create <path> [--name <name>]  Create an empty bundled OpenCollection YAML file\n",
+    "  import postman <source.json> <destination> [--allow-partial]\n",
     "  import yaak <source> <destination> [--workspace <id>] [--allow-partial]\n",
     "  validate <path|->              Validate a bundled file, stdin (-), or unbundled directory\n",
     "\n",
     "create writes a new bundled collection and refuses to overwrite an existing path.\n",
     "When --name is omitted, the collection title is the file stem. A missing .yml\n",
     "extension is added. validate accepts a bundled YAML file, stdin (-), or an unbundled directory.\n",
-    "Yaak import accepts an official export JSON file or Directory Sync folder and never\n",
+    "Postman import accepts an official Collection v2.0 or v2.1 JSON export. Yaak import\n",
+    "accepts an official export JSON file or Directory Sync folder. Imports never\n",
     "overwrites an existing destination. Multi-workspace exports require --workspace.\n",
 );
 
@@ -278,6 +282,11 @@ enum Command {
         source: PathBuf,
         destination: PathBuf,
         workspace: Option<String>,
+        allow_partial: bool,
+    },
+    ImportPostman {
+        source: PathBuf,
+        destination: PathBuf,
         allow_partial: bool,
     },
     Validate {
@@ -591,6 +600,37 @@ impl CliError {
             },
         }
     }
+
+    fn postman(error: PostmanImportError) -> Self {
+        match error {
+            PostmanImportError::Unsupported(diagnostics) => Self {
+                category: "unsupported_import",
+                message: format!(
+                    "Postman collection contains {} lossy item(s); inspect diagnostics or pass --allow-partial",
+                    diagnostics
+                        .iter()
+                        .filter(|diagnostic| diagnostic.severity.as_str() == "lossy")
+                        .count()
+                ),
+                exit_code: IMPORT_EXIT_CODE,
+                details: Some(json!({
+                    "diagnostics": diagnostics.iter().map(import_diagnostic_json).collect::<Vec<_>>()
+                })),
+            },
+            PostmanImportError::Invalid(message) => Self {
+                category: "invalid_import",
+                message,
+                exit_code: INVALID_WORKSPACE_EXIT_CODE,
+                details: None,
+            },
+            PostmanImportError::Io { path, source } => Self {
+                category: "invalid_import",
+                message: format!("cannot read {}: {source}", path.display()),
+                exit_code: INVALID_WORKSPACE_EXIT_CODE,
+                details: None,
+            },
+        }
+    }
 }
 
 struct ParsedOptions {
@@ -718,9 +758,19 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
         [group, action, format, _, _]
             if group == "collection" && action == "import" && format == "yaak"
     );
-    if (workspace.is_some() || allow_partial) && !is_yaak_import {
+    let is_postman_import = matches!(
+        args,
+        [group, action, format, _, _]
+            if group == "collection" && action == "import" && format == "postman"
+    );
+    if workspace.is_some() && !is_yaak_import {
         return Err(CliError::invalid_arguments(
-            "--workspace and --allow-partial are only valid for Yaak import",
+            "--workspace is only valid for Yaak import",
+        ));
+    }
+    if allow_partial && !(is_yaak_import || is_postman_import) {
+        return Err(CliError::invalid_arguments(
+            "--allow-partial is only valid for collection import",
         ));
     }
     match args {
@@ -757,6 +807,25 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
                 source: PathBuf::from(source),
                 destination: PathBuf::from(destination),
                 workspace,
+                allow_partial,
+            })
+        }
+        [group, action, format, source, destination]
+            if group == "collection"
+                && action == "import"
+                && format == "postman"
+                && source != "-"
+                && destination != "-"
+                && environment.is_none()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.is_empty()
+                && value.is_none() =>
+        {
+            Ok(Command::ImportPostman {
+                source: PathBuf::from(source),
+                destination: PathBuf::from(destination),
                 allow_partial,
             })
         }
@@ -1070,6 +1139,11 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             workspace,
             allow_partial,
         } => import_yaak(source, destination, workspace.as_deref(), allow_partial),
+        Command::ImportPostman {
+            source,
+            destination,
+            allow_partial,
+        } => import_postman(source, destination, allow_partial),
         Command::Validate { input } => validate(&input, stdin),
         Command::ListRequests { input } => list_requests(&input, stdin),
         Command::ListFolders { input } => list_folders(&input, stdin),
@@ -1407,6 +1481,57 @@ fn import_yaak(
                 "id": imported.workspace.id,
                 "name": imported.workspace.name,
             },
+            "path": path,
+            "counts": {
+                "environments": workspace.environments().len(),
+                "folders": workspace.folder_count(),
+                "requests": workspace.request_count(),
+            },
+            "warnings": imported
+                .diagnostics
+                .iter()
+                .map(import_diagnostic_json)
+                .collect::<Vec<_>>(),
+        }),
+    })
+}
+
+fn import_postman(
+    source: PathBuf,
+    destination: PathBuf,
+    allow_partial: bool,
+) -> Result<CommandOutput, CliError> {
+    let preview = inspect_postman_source(&source).map_err(CliError::postman)?;
+    let source_format = preview.format();
+    let imported = preview.convert(allow_partial).map_err(CliError::postman)?;
+    let loaded = create_bundled_workspace_from_collection(&destination, &imported.collection)
+        .map_err(CliError::create)?;
+    let path = loaded
+        .source_path()
+        .map(PathBuf::from)
+        .unwrap_or(destination);
+    let workspace = loaded.workspace();
+    let warning_count = imported.diagnostics.len();
+    let environment = imported.collection_variables_environment.clone();
+    Ok(CommandOutput {
+        human: format!(
+            "Imported Postman collection\nName: {}\nPath: {}\nRequests: {}\nFolders: {}\nEnvironments: {}\nCollection variables environment: {}\nWarnings: {warning_count}\n",
+            imported.source.name,
+            path.display(),
+            workspace.request_count(),
+            workspace.folder_count(),
+            workspace.environments().len(),
+            environment.as_deref().unwrap_or("none"),
+        ),
+        json: json!({
+            "imported": true,
+            "partial": imported.partial,
+            "sourceFormat": source_format.as_str(),
+            "collection": {
+                "id": imported.source.id,
+                "name": imported.source.name,
+            },
+            "collectionVariablesEnvironment": environment,
             "path": path,
             "counts": {
                 "environments": workspace.environments().len(),

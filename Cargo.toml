@@ -5,6 +5,7 @@ members = [
     "crates/desktop",
     "crates/http",
     "crates/opencollection",
+    "crates/postman",
     "crates/yaak",
 ]
 resolver = "2"

@@ -3198,6 +3198,44 @@ pub(crate) fn submenu_menu_button(
         )
 }
 
+pub(crate) fn import_submenu_menu_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    open: bool,
+    on_keyboard_activate: impl Fn(&mut Window, &mut App) + 'static,
+) -> Button {
+    let id = id.into();
+    let debug_selector = id.to_string();
+    let label = label.into();
+    menu_row_button(
+        theme,
+        id,
+        open,
+        MenuButtonStyle::standard(theme),
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .child(truncated_label(label).flex_1())
+            .child(
+                library_icon(
+                    "lucide-chevron-right",
+                    &CHEVRON_RIGHT_SVG,
+                    theme.metrics.icon_small,
+                )
+                .text_color(theme.colors.text.muted),
+            ),
+    )
+    .debug_selector(move || debug_selector)
+    .key_context("ImportSubmenuTrigger")
+    .on_click(move |event, window, cx| {
+        if !matches!(event, ClickEvent::Mouse(_)) {
+            on_keyboard_activate(window, cx);
+        }
+    })
+}
+
 pub(crate) fn cascading_menu(
     theme: Theme,
     id: impl Into<ElementId>,
