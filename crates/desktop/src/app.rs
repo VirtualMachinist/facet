@@ -7980,7 +7980,7 @@ mod tests {
             matches!(
                 item,
                 MenuItem::Submenu(menu)
-                    if menu.name == "Import"
+                    if menu.name == "Import From..."
                         && matches!(
                             menu.items.as_slice(),
                             [
