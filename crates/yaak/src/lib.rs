@@ -21,6 +21,7 @@ use probe_core::{
     HttpRequest, ItemMetadata, MultipartPart, MultipartPartKind, MultipartValue, QueryParameter,
     RawBody, RawBodyKind, RequestBody, RequestSettings, Variable, VariableValue, VariableValueSet,
 };
+pub use probe_core::{ImportDiagnostic, ImportDiagnosticSeverity};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -42,43 +43,6 @@ impl YaakSourceFormat {
             Self::SyncDirectory => "yaak_sync",
         }
     }
-}
-
-/// Severity of an import diagnostic.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum ImportDiagnosticSeverity {
-    /// Data was preserved, but Probe cannot currently use all of it.
-    Warning,
-    /// Data would be omitted or changed and requires explicit partial import.
-    Lossy,
-}
-
-impl ImportDiagnosticSeverity {
-    /// Stable machine-readable severity name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Warning => "warning",
-            Self::Lossy => "lossy",
-        }
-    }
-}
-
-/// Deterministic explanation of an import compatibility issue.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImportDiagnostic {
-    /// Stable diagnostic code.
-    pub code: &'static str,
-    /// Whether the issue is informational or requires partial mode.
-    pub severity: ImportDiagnosticSeverity,
-    /// Yaak resource model, such as `http_request`.
-    pub resource_type: String,
-    /// Yaak resource ID, when available.
-    pub resource_id: Option<String>,
-    /// Affected source field, when available.
-    pub field: Option<String>,
-    /// Human-readable explanation.
-    pub message: String,
 }
 
 /// Workspace available inside a Yaak source.

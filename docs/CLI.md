@@ -7,6 +7,7 @@ diagnostics on stderr. Add `--json` to commands that return data or structured e
 
 ```text
 probe collection create <path> [--name <name>] [--json]
+probe collection import postman <source.json> <destination> [--allow-partial] [--json]
 probe collection import yaak <source> <destination> [--workspace <id>] [--allow-partial] [--json]
 probe collection validate <path> [--json]
 probe request list <path> [--json]
@@ -40,6 +41,12 @@ the shared import adapter and writes a new bundled OpenCollection YAML file atom
 The destination is never overwritten and stdin is not accepted. If a source contains
 multiple workspaces, pass the exact Yaak workspace ID with `--workspace`; JSON errors
 include the selectable IDs and names.
+
+`collection import postman` accepts one official Postman Collection v2.0 or v2.1 JSON
+file. It does not accept Postman environment exports, data dumps, or v3 YAML.
+Collection variables are stored in a `Postman Collection Variables` OpenCollection
+environment and the returned JSON names that environment when one was created.
+`--workspace` is Yaak-only and is rejected for Postman imports.
 
 Import is strict by default. Unsupported or unknown data returns
 `unsupported_import` without creating the destination. `--allow-partial` explicitly
@@ -168,6 +175,25 @@ change type without incrementing the version.
 }
 ```
 
+`collection import postman --json` returns:
+
+```json
+{
+  "schemaVersion": 1,
+  "collection": { "id": "8dcb...", "name": "Pets" },
+  "collectionVariablesEnvironment": "Postman Collection Variables",
+  "counts": { "environments": 1, "folders": 1, "requests": 2 },
+  "imported": true,
+  "partial": false,
+  "path": "/tmp/imported.yml",
+  "sourceFormat": "postman_collection_v2_1",
+  "warnings": []
+}
+```
+
+`collection.id`, `collection.name`, and `collectionVariablesEnvironment` are nullable.
+Postman v2.0 uses `postman_collection_v2_0` as `sourceFormat`.
+
 `request list --json` returns a `requests` array. Each entry has nullable `method`,
 `name`, and `url` fields plus a string `selector`.
 
@@ -269,10 +295,11 @@ Structural validation uses stable categories `folder_not_found`, `destination_no
 Missing request/folder selectors use exit code 4; invalid destinations, names, duplicates, and
 indices use exit code 2.
 
-Yaak compatibility failures use exit code 8 and category `unsupported_import`.
-Malformed sources use `invalid_import` and exit code 3; missing or ambiguous workspace
-selection and an existing destination use exit code 2. Other destination write failures
-use the existing persistence categories and exit code 7.
+Postman and Yaak compatibility failures use exit code 8 and category
+`unsupported_import`. Malformed or unsupported import schemas use `invalid_import` and
+exit code 3; a missing or ambiguous Yaak workspace selection, invalid provider-specific
+arguments, and an existing destination use exit code 2. Other destination write
+failures use the existing persistence categories and exit code 7.
 
 `collection validate` requires the OpenCollection `1.0.0` marker, explicit collection
 metadata, and a `bundled` flag matching whether the source is a bundled file/stdin document or

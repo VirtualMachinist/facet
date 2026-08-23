@@ -22,18 +22,22 @@ use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
 use probe_core::{
     AuthenticationKind, AuthenticationValue, Body, FileReference, FormField, Header, HttpRequest,
-    MultipartPart, MultipartPartKind, MultipartValue, QueryParameter, RawBodyKind, RequestBody,
-    RequestKey, Workspace, WorkspaceItemRef, add_path_parameter, ensure_path_parameters_from_url,
-    remove_path_parameter_at, rename_path_parameter_at, resolve_environment, resolve_request,
+    ImportDiagnostic, ImportDiagnosticSeverity, MultipartPart, MultipartPartKind, MultipartValue,
+    QueryParameter, RawBodyKind, RequestBody, RequestKey, Workspace, WorkspaceItemRef,
+    add_path_parameter, ensure_path_parameters_from_url, remove_path_parameter_at,
+    rename_path_parameter_at, resolve_environment, resolve_request,
 };
 use probe_http::{ExecutionOptions, HttpError, HttpResponse};
 use probe_opencollection::{
     ItemKind, LoadedWorkspace, StructureOperation, StructureResult, create_bundled_workspace,
     create_bundled_workspace_from_collection, load_workspace,
 };
+use probe_postman::{
+    ImportedPostmanCollection, PostmanImportError, PostmanImportPreview, inspect_postman_source,
+};
 use probe_yaak::{
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportedYaakWorkspace, YaakImportError,
-    YaakImportPreview, YaakWorkspaceSummary, inspect_yaak_source,
+    ImportedYaakWorkspace, YaakImportError, YaakImportPreview, YaakWorkspaceSummary,
+    inspect_yaak_source,
 };
 
 use crate::{
@@ -155,6 +159,7 @@ gpui::actions!(
     [
         OpenWorkspace,
         NewCollection,
+        ImportPostmanExport,
         ImportYaakExport,
         SaveRequest,
         CloseActiveTab,
@@ -187,11 +192,19 @@ gpui::actions!(
         CollapseTreeItem,
         ExpandTreeItem,
         ActivateTreeItem,
+        OpenImportSubmenu,
+        CloseImportSubmenu,
         CancelStructureDialog,
         CancelCreateEnvironmentDialog,
         CancelApplicationDialog
     ]
 );
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImportSource {
+    Postman,
+    Yaak,
+}
 
 enum PendingClose {
     Tab(RequestKey),
@@ -208,7 +221,7 @@ enum PendingClose {
     Create {
         path: PathBuf,
     },
-    ImportYaak,
+    Import(ImportSource),
 }
 
 enum ApplicationDialog {
@@ -234,6 +247,10 @@ enum ApplicationDialog {
     ConfirmPartialYaakImport {
         preview: YaakImportPreview,
         workspace_id: String,
+        detail: String,
+    },
+    ConfirmPartialPostmanImport {
+        preview: Box<PostmanImportPreview>,
         detail: String,
     },
 }
@@ -299,6 +316,9 @@ impl ApplicationDialog {
             Self::ConfirmPartialYaakImport { .. } => {
                 Cow::Borrowed("Some Yaak data cannot be represented")
             }
+            Self::ConfirmPartialPostmanImport { .. } => {
+                Cow::Borrowed("Some Postman data cannot be represented")
+            }
         }
     }
 
@@ -312,7 +332,8 @@ impl ApplicationDialog {
             Self::Unsaved { .. } => "Unsaved changes will be lost if you discard them.",
             Self::Delete { detail, .. }
             | Self::FilesystemConflict { detail, .. }
-            | Self::ConfirmPartialYaakImport { detail, .. } => detail,
+            | Self::ConfirmPartialYaakImport { detail, .. }
+            | Self::ConfirmPartialPostmanImport { detail, .. } => detail,
             Self::SelectYaakWorkspace { .. } => {
                 "Choose the workspace to import into a new Probe collection."
             }
@@ -321,9 +342,9 @@ impl ApplicationDialog {
 
     const fn width(&self) -> f32 {
         match self {
-            Self::SelectYaakWorkspace { .. } | Self::ConfirmPartialYaakImport { .. } => {
-                components::WIDE_DIALOG_WIDTH
-            }
+            Self::SelectYaakWorkspace { .. }
+            | Self::ConfirmPartialYaakImport { .. }
+            | Self::ConfirmPartialPostmanImport { .. } => components::WIDE_DIALOG_WIDTH,
             _ => components::COMPACT_DIALOG_WIDTH,
         }
     }
@@ -335,7 +356,9 @@ impl ApplicationDialog {
             Self::Delete { .. } => Some(DELETE_DIALOG_ACTIONS),
             Self::FilesystemConflict { .. } => Some(FILESYSTEM_CONFLICT_DIALOG_ACTIONS),
             Self::SelectYaakWorkspace { .. } => None,
-            Self::ConfirmPartialYaakImport { .. } => Some(PARTIAL_IMPORT_DIALOG_ACTIONS),
+            Self::ConfirmPartialYaakImport { .. } | Self::ConfirmPartialPostmanImport { .. } => {
+                Some(PARTIAL_IMPORT_DIALOG_ACTIONS)
+            }
         }
     }
 }
@@ -345,6 +368,15 @@ enum YaakConversionResult {
     NeedsPartialConfirmation {
         preview: YaakImportPreview,
         workspace_id: String,
+        detail: String,
+    },
+    Failed(String),
+}
+
+enum PostmanConversionResult {
+    Imported(Box<ImportedPostmanCollection>),
+    NeedsPartialConfirmation {
+        preview: Box<PostmanImportPreview>,
         detail: String,
     },
     Failed(String),
@@ -547,6 +579,12 @@ pub(crate) struct ProbeApp {
     desktop_menu_open: Option<DesktopMenu>,
     desktop_submenu_open: Option<DesktopSubmenu>,
     workspace_switcher_open: bool,
+    workspace_import_submenu_open: bool,
+    sidebar_import_menu_open: bool,
+    workspace_import_trigger_focus: FocusHandle,
+    workspace_import_popup_focus: FocusHandle,
+    sidebar_import_trigger_focus: FocusHandle,
+    sidebar_import_popup_focus: FocusHandle,
     structure_add_menu_open: bool,
     tree_context_menu: Option<WorkspaceItemRef>,
     tree_context_menu_position: Option<Point<Pixels>>,
@@ -613,6 +651,10 @@ impl ProbeApp {
         let structure_dialog_focus = cx.focus_handle();
         let create_environment_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
+        let workspace_import_trigger_focus = cx.focus_handle();
+        let workspace_import_popup_focus = cx.focus_handle();
+        let sidebar_import_trigger_focus = cx.focus_handle();
+        let sidebar_import_popup_focus = cx.focus_handle();
 
         Self {
             focus_handle,
@@ -639,6 +681,12 @@ impl ProbeApp {
             desktop_menu_open: None,
             desktop_submenu_open: None,
             workspace_switcher_open: false,
+            workspace_import_submenu_open: false,
+            sidebar_import_menu_open: false,
+            workspace_import_trigger_focus,
+            workspace_import_popup_focus,
+            sidebar_import_trigger_focus,
+            sidebar_import_popup_focus,
             structure_add_menu_open: false,
             tree_context_menu: None,
             tree_context_menu_position: None,
@@ -786,18 +834,30 @@ impl ProbeApp {
             .detach();
     }
 
-    fn request_import_yaak(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn request_import(
+        &mut self,
+        source: ImportSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let dirty = self.dirty_keys();
         if !dirty.is_empty() {
-            self.prompt_unsaved(dirty, PendingClose::ImportYaak, window, cx);
+            self.prompt_unsaved(dirty, PendingClose::Import(source), window, cx);
             return;
         }
         if self.has_pending_environment_work() {
-            self.pending_close = Some(PendingClose::ImportYaak);
+            self.pending_close = Some(PendingClose::Import(source));
             self.start_next_environment_save(window, cx);
             return;
         }
-        self.choose_yaak_import(window, cx);
+        self.choose_import(source, window, cx);
+    }
+
+    fn choose_import(&mut self, source: ImportSource, window: &mut Window, cx: &mut Context<Self>) {
+        match source {
+            ImportSource::Postman => self.choose_postman_import(window, cx),
+            ImportSource::Yaak => self.choose_yaak_import(window, cx),
+        }
     }
 
     fn choose_yaak_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -863,6 +923,185 @@ impl ProbeApp {
             .detach();
     }
 
+    fn choose_postman_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import from Postman".into()),
+        });
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let paths = match receiver.await {
+                    Ok(Ok(Some(paths))) => paths,
+                    Ok(Ok(None)) | Err(_) => return,
+                    Ok(Err(error)) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.message =
+                                Some(format!("Could not open the Postman source picker: {error}"));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let Some(source) = paths.into_iter().next() else {
+                    return;
+                };
+                let _ = view.update_in(cx, |view, _, cx| {
+                    view.loading = true;
+                    view.message = None;
+                    cx.notify();
+                });
+                let preview = match cx
+                    .background_spawn(async move { inspect_postman_source(source) })
+                    .await
+                {
+                    Ok(preview) => preview,
+                    Err(error) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            view.message = Some(format!("Could not inspect Postman data: {error}"));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let _ = view.update_in(cx, |view, window, cx| {
+                    view.convert_postman_import(preview, false, window, cx);
+                });
+            })
+            .detach();
+    }
+
+    fn convert_postman_import(
+        &mut self,
+        preview: PostmanImportPreview,
+        allow_partial: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.application_dialog = None;
+        self.loading = true;
+        cx.notify();
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let result = cx
+                    .background_spawn(async move {
+                        match preview.convert(allow_partial) {
+                            Ok(imported) => PostmanConversionResult::Imported(Box::new(imported)),
+                            Err(PostmanImportError::Unsupported(diagnostics)) if !allow_partial => {
+                                PostmanConversionResult::NeedsPartialConfirmation {
+                                    preview: Box::new(preview),
+                                    detail: format_import_diagnostics(&diagnostics),
+                                }
+                            }
+                            Err(error) => PostmanConversionResult::Failed(error.to_string()),
+                        }
+                    })
+                    .await;
+                let _ = view.update_in(cx, |view, window, cx| match result {
+                    PostmanConversionResult::Imported(imported) => {
+                        view.choose_postman_import_destination(*imported, window, cx);
+                    }
+                    PostmanConversionResult::NeedsPartialConfirmation { preview, detail } => {
+                        view.loading = false;
+                        view.show_application_dialog(
+                            ApplicationDialog::ConfirmPartialPostmanImport { preview, detail },
+                            window,
+                            cx,
+                        );
+                    }
+                    PostmanConversionResult::Failed(error) => {
+                        view.loading = false;
+                        view.message = Some(format!("Could not convert Postman data: {error}"));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+    }
+
+    fn choose_postman_import_destination(
+        &mut self,
+        imported: ImportedPostmanCollection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let filename = suggested_collection_filename(&imported.source.name);
+        let receiver = cx.prompt_for_new_path(&self.new_collection_directory(), Some(&filename));
+        let view = cx.weak_entity();
+        window
+            .spawn(cx, async move |cx| {
+                let destination = match receiver.await {
+                    Ok(Ok(Some(path))) => path,
+                    Ok(Ok(None)) | Err(_) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    Ok(Err(error)) => {
+                        let _ = view.update_in(cx, |view, _, cx| {
+                            view.loading = false;
+                            view.message = Some(format!(
+                                "Could not open the import destination picker: {error}"
+                            ));
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let warning_count = imported.diagnostics.len();
+                let selected_environment = imported.collection_variables_environment.clone();
+                let result = cx
+                    .background_spawn(async move {
+                        let workspace = create_bundled_workspace_from_collection(
+                            &destination,
+                            &imported.collection,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let canonical_path = workspace
+                            .source_path()
+                            .ok_or_else(|| {
+                                format!(
+                                    "imported collection at {} has no filesystem path",
+                                    destination.display()
+                                )
+                            })?
+                            .to_owned();
+                        Ok::<_, String>((canonical_path, workspace))
+                    })
+                    .await;
+                let _ = view.update_in(cx, |view, window, cx| {
+                    view.loading = false;
+                    match result {
+                        Ok((path, workspace)) => {
+                            view.set_workspace(path, workspace);
+                            if let Some(environment) = selected_environment {
+                                view.shell.select_environment(Some(environment));
+                                view.capture_selected_environment();
+                            }
+                            view.start_workspace_watcher(window, cx);
+                            view.persist_session(cx);
+                            if warning_count > 0 {
+                                view.message = Some(format!(
+                                    "Imported Postman collection with {warning_count} warning(s)."
+                                ));
+                            }
+                        }
+                        Err(error) => {
+                            view.message = Some(format!("Could not import Postman data: {error}"));
+                        }
+                    }
+                    cx.notify();
+                });
+            })
+            .detach();
+    }
+
     fn convert_yaak_import(
         &mut self,
         preview: YaakImportPreview,
@@ -901,6 +1140,7 @@ impl ProbeApp {
                         workspace_id,
                         detail,
                     } => {
+                        view.loading = false;
                         view.show_application_dialog(
                             ApplicationDialog::ConfirmPartialYaakImport {
                                 preview,
@@ -1268,7 +1508,7 @@ impl ProbeApp {
                 | PendingClose::Quit
                 | PendingClose::Open { .. }
                 | PendingClose::Create { .. }
-                | PendingClose::ImportYaak => self.dirty_keys(),
+                | PendingClose::Import(_) => self.dirty_keys(),
             };
             if dirty.is_empty() {
                 self.finish_pending_close(pending, window, cx);
@@ -1501,6 +1741,8 @@ impl ProbeApp {
         self.desktop_menu_open = None;
         self.desktop_submenu_open = None;
         self.workspace_switcher_open = false;
+        self.workspace_import_submenu_open = false;
+        self.sidebar_import_menu_open = false;
         self.structure_add_menu_open = false;
         self.tree_context_menu = None;
         self.tree_context_menu_position = None;
@@ -1580,8 +1822,13 @@ impl ProbeApp {
                 ApplicationDialogAction::ImportSupportedData,
             ) => self.convert_yaak_import(preview, workspace_id, true, window, cx),
             (
+                ApplicationDialog::ConfirmPartialPostmanImport { preview, .. },
+                ApplicationDialogAction::ImportSupportedData,
+            ) => self.convert_postman_import(*preview, true, window, cx),
+            (
                 ApplicationDialog::SelectYaakWorkspace { .. }
-                | ApplicationDialog::ConfirmPartialYaakImport { .. },
+                | ApplicationDialog::ConfirmPartialYaakImport { .. }
+                | ApplicationDialog::ConfirmPartialPostmanImport { .. },
                 ApplicationDialogAction::Cancel,
             ) => {
                 self.loading = false;
@@ -2781,7 +3028,7 @@ impl ProbeApp {
                 restored_state,
             } => self.load_workspace_path(path, restored_state, window, cx),
             PendingClose::Create { path } => self.create_workspace_path(path, window, cx),
-            PendingClose::ImportYaak => self.choose_yaak_import(window, cx),
+            PendingClose::Import(source) => self.choose_import(source, window, cx),
         }
     }
 
@@ -3630,7 +3877,12 @@ impl ProbeApp {
         let new_folder_view = cx.weak_entity();
         let new_collection_view = cx.weak_entity();
         let open_collection_view = cx.weak_entity();
-        let import_yaak_view = cx.weak_entity();
+        let sidebar_import_state_view = cx.weak_entity();
+        let sidebar_import_keyboard_view = cx.weak_entity();
+        let sidebar_import_postman_view = cx.weak_entity();
+        let sidebar_import_yaak_view = cx.weak_entity();
+        let sidebar_import_trigger_focus = self.sidebar_import_trigger_focus.clone();
+        let sidebar_import_popup_focus = self.sidebar_import_popup_focus.clone();
         let can_edit = self.loaded_workspace.is_some() && self.structure_task.is_none();
         let add_menu_state_view = cx.weak_entity();
         let add_popup = components::popup_surface(theme, "tree-add-menu-popup", 180.0)
@@ -3676,6 +3928,68 @@ impl ProbeApp {
         } else {
             add_trigger.into_any_element()
         };
+        let sidebar_import_popup =
+            components::popup_surface(theme, "sidebar-import-provider-popup", 180.0)
+                .aria_label("Import providers")
+                .track_focus(&self.sidebar_import_popup_focus)
+                .key_context("ImportSubmenu")
+                .child(components::menu_button(
+                    theme,
+                    "sidebar-import-postman",
+                    "Postman",
+                    None,
+                    move |window, cx| {
+                        let _ = sidebar_import_postman_view.update(cx, |view, cx| {
+                            view.sidebar_import_menu_open = false;
+                            if !view.loading {
+                                view.request_import(ImportSource::Postman, window, cx);
+                            }
+                        });
+                    },
+                ))
+                .child(components::menu_button(
+                    theme,
+                    "sidebar-import-yaak",
+                    "Yaak",
+                    None,
+                    move |window, cx| {
+                        let _ = sidebar_import_yaak_view.update(cx, |view, cx| {
+                            view.sidebar_import_menu_open = false;
+                            if !view.loading {
+                                view.request_import(ImportSource::Yaak, window, cx);
+                            }
+                        });
+                    },
+                ));
+        let sidebar_import_menu = Popover::new("sidebar-import-provider-menu")
+            .open(self.sidebar_import_menu_open)
+            .track_focus(&self.sidebar_import_popup_focus)
+            .on_open_change(move |open, _, cx| {
+                let _ = sidebar_import_state_view.update(cx, |view, cx| {
+                    view.sidebar_import_menu_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(components::secondary_menu_trigger(
+                theme,
+                "sidebar-import-from",
+                "Import from…",
+                &self.sidebar_import_trigger_focus,
+                move |window, cx| {
+                    let trigger_focus = sidebar_import_trigger_focus.clone();
+                    let popup_focus = sidebar_import_popup_focus.clone();
+                    let _ = sidebar_import_keyboard_view.update(cx, |view, cx| {
+                        view.sidebar_import_menu_open = !view.sidebar_import_menu_open;
+                        if view.sidebar_import_menu_open {
+                            popup_focus.focus(window, cx);
+                        } else {
+                            trigger_focus.focus(window, cx);
+                        }
+                        cx.notify();
+                    });
+                },
+            ))
+            .content(move |_, _, _| sidebar_import_popup);
         let search_view = cx.weak_entity();
         let tree = if self.loaded_workspace.is_some() {
             let row_count = self.visible_tree_rows.len() + 1;
@@ -3764,18 +4078,7 @@ impl ProbeApp {
                                 });
                             },
                         ))
-                        .child(components::secondary_button(
-                            theme,
-                            "sidebar-import-yaak",
-                            "Import from Yaak…",
-                            move |_, window, cx| {
-                                let _ = import_yaak_view.update(cx, |view, cx| {
-                                    if !view.loading {
-                                        view.request_import_yaak(window, cx);
-                                    }
-                                });
-                            },
-                        )),
+                        .child(sidebar_import_menu),
                 );
             if !self.session.recent_collections.is_empty() {
                 tree = tree.child(
@@ -6189,7 +6492,12 @@ impl ProbeApp {
         let home_view = cx.weak_entity();
         let new_view = cx.weak_entity();
         let open_view = cx.weak_entity();
+        let import_state_view = cx.weak_entity();
+        let import_keyboard_view = cx.weak_entity();
+        let import_postman_view = cx.weak_entity();
         let import_yaak_view = cx.weak_entity();
+        let import_trigger_focus = self.workspace_import_trigger_focus.clone();
+        let import_popup_focus = self.workspace_import_popup_focus.clone();
         let layout_view = cx.weak_entity();
         let collection_open = self.loaded_workspace.is_some();
         let mut popup = components::popup_surface(theme, "workspace-switcher-popup", 300.0)
@@ -6239,6 +6547,73 @@ impl ProbeApp {
             );
         }
 
+        let import_popup =
+            components::popup_surface(theme, "workspace-switcher-import-popup", 180.0)
+                .aria_label("Import providers")
+                .track_focus(&self.workspace_import_popup_focus)
+                .key_context("ImportSubmenu")
+                .child(components::menu_button(
+                    theme,
+                    "workspace-switcher-import-postman",
+                    "Postman",
+                    None,
+                    move |window, cx| {
+                        let _ = import_postman_view.update(cx, |view, cx| {
+                            view.workspace_import_submenu_open = false;
+                            view.workspace_switcher_open = false;
+                            if !view.loading {
+                                view.request_import(ImportSource::Postman, window, cx);
+                            }
+                        });
+                    },
+                ))
+                .child(components::menu_button(
+                    theme,
+                    "workspace-switcher-import-yaak",
+                    "Yaak",
+                    None,
+                    move |window, cx| {
+                        let _ = import_yaak_view.update(cx, |view, cx| {
+                            view.workspace_import_submenu_open = false;
+                            view.workspace_switcher_open = false;
+                            if !view.loading {
+                                view.request_import(ImportSource::Yaak, window, cx);
+                            }
+                        });
+                    },
+                ));
+        let import_menu = Popover::new("workspace-switcher-import-menu")
+            .anchor(Anchor::TopRight)
+            .open(self.workspace_import_submenu_open)
+            .track_focus(&self.workspace_import_popup_focus)
+            .on_open_change(move |open, _, cx| {
+                let _ = import_state_view.update(cx, |view, cx| {
+                    view.workspace_import_submenu_open = *open;
+                    cx.notify();
+                });
+            })
+            .trigger(components::import_submenu_menu_button(
+                theme,
+                "workspace-switcher-import-from",
+                "Import from…",
+                self.workspace_import_submenu_open,
+                &self.workspace_import_trigger_focus,
+                move |window, cx| {
+                    let trigger_focus = import_trigger_focus.clone();
+                    let popup_focus = import_popup_focus.clone();
+                    let _ = import_keyboard_view.update(cx, |view, cx| {
+                        view.workspace_import_submenu_open = !view.workspace_import_submenu_open;
+                        if view.workspace_import_submenu_open {
+                            popup_focus.focus(window, cx);
+                        } else {
+                            trigger_focus.focus(window, cx);
+                        }
+                        cx.notify();
+                    });
+                },
+            ))
+            .content(move |_, _, _| import_popup);
+
         popup = popup
             .child(components::menu_button(
                 theme,
@@ -6268,26 +6643,16 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::menu_button(
-                theme,
-                "workspace-switcher-import-yaak",
-                "Import from Yaak…",
-                None,
-                move |window, cx| {
-                    let _ = import_yaak_view.update(cx, |view, cx| {
-                        view.workspace_switcher_open = false;
-                        if !view.loading {
-                            view.request_import_yaak(window, cx);
-                        }
-                    });
-                },
-            ));
+            .child(import_menu);
 
         let switcher = Popover::new("workspace-switcher")
             .open(self.workspace_switcher_open)
             .on_open_change(move |open, _, cx| {
                 let _ = switcher_view.update(cx, |view, cx| {
                     view.workspace_switcher_open = *open;
+                    if !*open {
+                        view.workspace_import_submenu_open = false;
+                    }
                     cx.notify();
                 });
             })
@@ -6907,10 +7272,35 @@ impl Render for ProbeApp {
                     view.choose_new_workspace(window, cx);
                 }
             }))
+            .on_action(cx.listener(|view, _: &ImportPostmanExport, window, cx| {
+                if !view.loading && view.application_dialog.is_none() {
+                    view.request_import(ImportSource::Postman, window, cx);
+                }
+            }))
             .on_action(cx.listener(|view, _: &ImportYaakExport, window, cx| {
                 if !view.loading && view.application_dialog.is_none() {
-                    view.request_import_yaak(window, cx);
+                    view.request_import(ImportSource::Yaak, window, cx);
                 }
+            }))
+            .on_action(cx.listener(|view, _: &OpenImportSubmenu, window, cx| {
+                if view.workspace_switcher_open {
+                    view.workspace_import_submenu_open = true;
+                    view.workspace_import_popup_focus.focus(window, cx);
+                } else {
+                    view.sidebar_import_menu_open = true;
+                    view.sidebar_import_popup_focus.focus(window, cx);
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &CloseImportSubmenu, window, cx| {
+                if view.workspace_import_submenu_open {
+                    view.workspace_import_submenu_open = false;
+                    view.workspace_import_trigger_focus.focus(window, cx);
+                } else if view.sidebar_import_menu_open {
+                    view.sidebar_import_menu_open = false;
+                    view.sidebar_import_trigger_focus.focus(window, cx);
+                }
+                cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CloseActiveTab, window, cx| {
                 if view.application_dialog.is_none()
@@ -7379,9 +7769,10 @@ fn system_menus(pane_layout: PaneLayout) -> [Menu; 5] {
         Menu::new("File").items([
             MenuItem::action("New Collection", NewCollection),
             MenuItem::action("Open Collection…", OpenWorkspace),
-            MenuItem::submenu(
-                Menu::new("Import").items([MenuItem::action("Yaak Export…", ImportYaakExport)]),
-            ),
+            MenuItem::submenu(Menu::new("Import").items([
+                MenuItem::action("Postman Export…", ImportPostmanExport),
+                MenuItem::action("Yaak Export…", ImportYaakExport),
+            ])),
             MenuItem::separator(),
             MenuItem::action("Save Request", SaveRequest),
             MenuItem::separator(),
@@ -7431,6 +7822,9 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("right", ExpandTreeItem, Some("RequestTree")),
         KeyBinding::new("enter", ActivateTreeItem, Some("RequestTree")),
         KeyBinding::new("space", ActivateTreeItem, Some("RequestTree")),
+        KeyBinding::new("right", OpenImportSubmenu, Some("ImportSubmenuTrigger")),
+        KeyBinding::new("left", CloseImportSubmenu, Some("ImportSubmenu")),
+        KeyBinding::new("escape", CloseImportSubmenu, Some("ImportSubmenu")),
         KeyBinding::new("n", NewRequest, Some("RequestTree")),
         KeyBinding::new("shift-n", NewFolder, Some("RequestTree")),
         KeyBinding::new("m", MoveTreeItem, Some("RequestTree")),
@@ -7511,14 +7905,19 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px, size};
+    use gpui::{
+        KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext,
+        VisualTestContext, point, px, size,
+    };
     use probe_core::WorkspaceItemRef;
     use probe_http::{HttpResponse, ResponseHeader};
+    use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 
     use super::{
-        ApplicationDialog, ApplicationDialogAction, DesktopMenu, IMPORT_DIAGNOSTIC_GROUP_LIMIT,
-        OpenFileMenu, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
+        ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
+        IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
+        ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
     };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
@@ -7540,6 +7939,12 @@ mod tests {
     fn nested_fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase16-bundled.yml")
+    }
+
+    fn postman_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/postman")
+            .join(name)
     }
 
     #[test]
@@ -7578,7 +7983,10 @@ mod tests {
                     if menu.name == "Import"
                         && matches!(
                             menu.items.as_slice(),
-                            [MenuItem::Action { name, .. }] if name == "Yaak Export…"
+                            [
+                                MenuItem::Action { name: postman, .. },
+                                MenuItem::Action { name: yaak, .. },
+                            ] if postman == "Postman Export…" && yaak == "Yaak Export…"
                         )
             )
         }));
@@ -7716,6 +8124,216 @@ mod tests {
             detail.lines().filter(|line| line.starts_with('•')).count(),
             IMPORT_DIAGNOSTIC_GROUP_LIMIT + 1
         );
+    }
+
+    #[gpui::test]
+    fn postman_lossy_import_requires_desktop_confirmation(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let preview = inspect_postman_source(postman_fixture("collection-lossy.json")).unwrap();
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.convert_postman_import(preview, false, window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::ConfirmPartialPostmanImport { .. })
+                ));
+                assert!(!view.loading);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn successful_postman_import_selects_collection_variables_environment(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let imported = inspect_postman_source(postman_fixture("collection-v2.1.json"))
+            .unwrap()
+            .convert(false)
+            .unwrap();
+        let destination = std::env::temp_dir().join(format!(
+            "probe-desktop-postman-{}-{}.yml",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.choose_postman_import_destination(imported, window, cx);
+            })
+            .unwrap();
+        assert!(cx.did_prompt_for_new_path());
+        cx.simulate_new_path_selection({
+            let destination = destination.clone();
+            move |_| Some(destination)
+        });
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert_eq!(
+                    view.shell.selected_environment(),
+                    Some(COLLECTION_VARIABLES_ENVIRONMENT)
+                );
+                assert_eq!(
+                    view.workspace_path.as_deref(),
+                    Some(destination.canonicalize().unwrap().as_path())
+                );
+            })
+            .unwrap();
+        fs::remove_file(destination).unwrap();
+    }
+
+    #[gpui::test]
+    fn postman_import_protects_dirty_requests(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = bundled_fixture().canonicalize().unwrap();
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let key = workspace.requests()[0].key();
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.edit_request(
+                    key,
+                    |request| request.url = Some("https://dirty.example".to_owned()),
+                    cx,
+                );
+                view.request_import(ImportSource::Postman, window, cx);
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::Unsaved {
+                        pending: PendingClose::Import(ImportSource::Postman),
+                        ..
+                    })
+                ));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn import_submenu_actions_open_and_close_provider_state(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let workspace_trigger = visual
+            .debug_bounds("workspace-switcher-trigger")
+            .expect("workspace switcher trigger should render");
+        visual.simulate_click(workspace_trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        cx.dispatch_action(window.into(), OpenImportSubmenu);
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.workspace_import_submenu_open);
+                assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.workspace_import_popup_focus.clone())
+                );
+            })
+            .unwrap();
+        cx.dispatch_action(window.into(), CloseImportSubmenu);
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(!view.workspace_import_submenu_open);
+                assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.workspace_import_trigger_focus.clone())
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn sidebar_import_submenu_keyboard_activation_restores_trigger_focus(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual
+                .debug_bounds("sidebar-import-from")
+                .expect("sidebar import trigger should render");
+        }
+        window
+            .update(cx, |view, window, cx| {
+                view.sidebar_import_trigger_focus.focus(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let keystroke = Keystroke::parse("enter").unwrap();
+            visual.simulate_event(KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            visual.simulate_event(KeyUpEvent { keystroke });
+        }
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.sidebar_import_popup_focus.clone())
+                );
+            })
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| {
+                assert!(!view.sidebar_import_menu_open);
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.sidebar_import_trigger_focus.clone())
+                );
+            })
+            .unwrap();
     }
 
     fn environment_fixture() -> PathBuf {
@@ -8480,6 +9098,36 @@ mod tests {
     }
 
     #[gpui::test]
+    fn empty_sidebar_import_menu_lists_postman_and_yaak(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let trigger = visual
+            .debug_bounds("sidebar-import-from")
+            .expect("empty sidebar should include Import from");
+        visual.simulate_click(trigger.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        visual
+            .debug_bounds("sidebar-import-postman")
+            .expect("provider menu should include Postman");
+        visual
+            .debug_bounds("sidebar-import-yaak")
+            .expect("provider menu should include Yaak");
+    }
+
+    #[gpui::test]
     fn workspace_switcher_includes_new_collection(cx: &mut TestAppContext) {
         cx.update(Theme::init);
         let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
@@ -8507,9 +9155,19 @@ mod tests {
         visual
             .debug_bounds("workspace-switcher-open")
             .expect("workspace switcher should include Open Collection");
+        let import = visual
+            .debug_bounds("workspace-switcher-import-from")
+            .expect("workspace switcher should include Import from");
+        visual.simulate_click(import.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        visual
+            .debug_bounds("workspace-switcher-import-postman")
+            .expect("workspace switcher import menu should include Postman");
         visual
             .debug_bounds("workspace-switcher-import-yaak")
-            .expect("workspace switcher should include Import from Yaak");
+            .expect("workspace switcher import menu should include Yaak");
     }
 
     #[gpui::test]

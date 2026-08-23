@@ -1,0 +1,101 @@
+{
+  "info": {
+    "_postman_id": "pm_bodies",
+    "name": "Postman Bodies",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": [
+      { "key": "username", "value": "collection-user", "type": "string" },
+      { "key": "password", "value": "collection-password", "type": "string" }
+    ]
+  },
+  "item": [
+    {
+      "id": "folder_payloads",
+      "name": "Payloads",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "folder-token", "type": "string" }]
+      },
+      "item": [
+        {
+          "id": "raw_request",
+          "name": "Raw",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json", "disabled": true }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{name}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "https://wrong.example/ignored?q=wrong",
+              "protocol": "https",
+              "host": ["api", "example", "com"],
+              "path": ["pets", ":petId"],
+              "query": [{ "key": "q", "value": "right", "disabled": true }],
+              "variable": [{ "key": "petId", "value": "42", "disabled": true }]
+            }
+          }
+        },
+        {
+          "id": "urlencoded_request",
+          "name": "URL Encoded",
+          "request": {
+            "method": "POST",
+            "auth": { "type": "noauth" },
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [{ "key": "name", "value": "Mochi", "disabled": true }]
+            },
+            "url": "https://api.example.com/form"
+          }
+        },
+        {
+          "id": "multipart_request",
+          "name": "Multipart",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "caption", "value": "Pet", "type": "text" },
+                { "key": "photos", "src": ["a.png", "b.png"], "type": "file", "contentType": "image/png" }
+              ]
+            },
+            "url": "https://api.example.com/upload"
+          }
+        },
+        {
+          "id": "file_request",
+          "name": "File",
+          "request": {
+            "method": "PUT",
+            "body": { "mode": "file", "file": { "src": "payload.bin" } },
+            "url": "https://api.example.com/file"
+          }
+        },
+        {
+          "id": "graphql_request",
+          "name": "GraphQL",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "graphql",
+              "graphql": { "query": "query Pet { pet { id } }", "variables": "{}" }
+            },
+            "url": "https://api.example.com/graphql"
+          }
+        }
+      ]
+    },
+    {
+      "id": "string_request",
+      "name": "String URL",
+      "request": "https://api.example.com/string"
+    }
+  ]
+}

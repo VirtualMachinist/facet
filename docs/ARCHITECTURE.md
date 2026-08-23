@@ -40,22 +40,26 @@ over a shared core.
           ▼                  ▼                  ▼
         YAML              Network           Files/DB
 
-Portable import formats are inbound adapters. The Yaak adapter reads official export
-JSON or directory-sync models and produces the same domain `Collection` used by every
+Portable import formats are inbound adapters. The Postman adapter reads official
+Collection v2.0/v2.1 JSON, while the Yaak adapter reads official export JSON or
+directory-sync models. Both produce the same domain `Collection` used by every
 interface. OpenCollection remains the only canonical persistence representation:
 
-    Yaak export / sync directory
-                ↓
-       Yaak import adapter
-                ↓
-       Domain Collection
-                ↓
+    Postman JSON        Yaak export / sync directory
+          ↓                         ↓
+    Postman adapter             Yaak adapter
+          └────────────┬────────────┘
+                       ↓
+              Domain Collection
+                       ↓
     OpenCollection repository
-                ↓
+                       ↓
        Bundled YAML file
 
-The adapter does not own CLI prompts, GPUI state, or filesystem persistence. Both
-frontends invoke it and pass the converted domain value to the shared atomic writer.
+The adapters do not own CLI prompts, GPUI state, or filesystem persistence. Both
+frontends invoke them and pass the converted domain value to the shared atomic writer.
+Shared import diagnostics live in the core so strict and partial behavior remains
+identical across providers and interfaces.
 
 
 ## Fundamental Rule
@@ -538,9 +542,7 @@ Conceptually:
                          ▲
               ┌──────────┴──────────┐
               │                     │
- OpenCollectionRepository      future adapters
-                                      │
-                                   Yaak etc.
+ OpenCollectionRepository      other repositories
 
 Only OpenCollection is required initially.
 

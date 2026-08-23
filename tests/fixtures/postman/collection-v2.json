@@ -1,0 +1,23 @@
+{
+  "info": {
+    "_postman_id": "pm_v2",
+    "name": "Postman V2",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+  },
+  "auth": {
+    "type": "basic",
+    "basic": { "username": "demo", "password": "secret" }
+  },
+  "item": [
+    {
+      "id": "request_v2",
+      "name": "V2 Request",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "https://api.example.com/v2"
+      },
+      "response": []
+    }
+  ]
+}

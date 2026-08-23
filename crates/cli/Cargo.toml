@@ -17,6 +17,7 @@ harness = false
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
 probe-opencollection = { path = "../opencollection" }
+probe-postman = { path = "../postman" }
 probe-yaak = { path = "../yaak" }
 serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt", "time", "signal"] }

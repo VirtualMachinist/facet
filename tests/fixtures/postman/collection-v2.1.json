@@ -1,0 +1,51 @@
+{
+  "info": {
+    "_postman_id": "pm_v21",
+    "name": "Postman Pets",
+    "description": "Pet operations",
+    "version": { "major": 1, "minor": 2, "patch": 3, "identifier": "beta" },
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{token}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://api.example.com", "type": "string" },
+    { "key": "token", "value": "demo-token", "type": "string", "disabled": true },
+    { "key": "limit", "value": "25", "type": "number" },
+    { "key": "enabled", "value": "true", "type": "boolean" },
+    { "key": "config", "value": { "region": "hk" }, "type": "any" },
+    { "key": "nothing", "value": null, "type": "any" },
+    { "key": "endpoint", "value": "{{baseUrl}}/v1", "type": "string" }
+  ],
+  "item": [
+    {
+      "id": "folder_pets",
+      "name": "Pets",
+      "item": [
+        {
+          "id": "request_get_pet",
+          "name": "Get Pet",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"include\":true}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pets/:petId?expand=owner",
+              "host": ["{{baseUrl}}"],
+              "path": ["pets", ":petId"],
+              "query": [{ "key": "expand", "value": "owner" }],
+              "variable": [{ "key": "petId", "value": "42" }]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

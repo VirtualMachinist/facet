@@ -807,3 +807,25 @@ Requirements:
 - supported authentication remains stored even when current execution is unavailable
 - destination writes are atomic and never overwrite an existing path
 - fixture tests cover export, sync, strict/partial behavior, persistence, CLI JSON, and exit codes
+
+
+## Phase 28 — Postman Collection Import
+
+Add an inbound adapter for official Postman Collection v2.0 and v2.1 JSON. Normalize
+their authentication encodings, convert supported collection data into the shared
+domain model, and persist through the existing bundled OpenCollection writer.
+
+Requirements:
+
+- CLI and GPUI share conversion, strict/partial diagnostics, and persistence
+- preserve nested order, structured URL/query/path data, supported bodies, inherited
+  authentication, templates, and collection variables
+- create `Postman Collection Variables` when collection-scoped variables exist
+- diagnose scripts, examples, scoped variables, unsupported settings, dynamic
+  variables, unknown data, and execution-unsupported authentication
+- strict mode creates no destination; partial mode requires explicit user intent
+- CLI exposes `collection import postman` with deterministic JSON and exit codes
+- workspace switcher, empty sidebar, and macOS `File > Import` share one
+  provider-aware desktop workflow
+- fixture and integration tests cover v2/v2.1 conversion, persistence, CLI contracts,
+  desktop provider menus, and native system-menu ordering

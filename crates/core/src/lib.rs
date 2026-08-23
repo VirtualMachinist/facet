@@ -37,6 +37,43 @@ pub struct Collection {
     pub environments: Vec<Environment>,
 }
 
+/// Severity of a portable-import compatibility diagnostic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum ImportDiagnosticSeverity {
+    /// Data was preserved, but Probe cannot currently use all of it.
+    Warning,
+    /// Data would be omitted or changed and requires explicit partial import.
+    Lossy,
+}
+
+impl ImportDiagnosticSeverity {
+    /// Stable machine-readable severity name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warning => "warning",
+            Self::Lossy => "lossy",
+        }
+    }
+}
+
+/// Deterministic explanation of a portable-import compatibility issue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportDiagnostic {
+    /// Stable diagnostic code.
+    pub code: &'static str,
+    /// Whether the issue is informational or requires partial mode.
+    pub severity: ImportDiagnosticSeverity,
+    /// Source-format resource type, such as `http_request`.
+    pub resource_type: String,
+    /// Source-format resource identifier, when available.
+    pub resource_id: Option<String>,
+    /// Affected source field, when available.
+    pub field: Option<String>,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
 /// Collection-level metadata from OpenCollection's `info` object.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CollectionMetadata {
