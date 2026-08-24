@@ -7955,40 +7955,51 @@ fn render_windows_controls(_: Theme) -> gpui::Div {
 }
 
 pub fn run() {
-    gpui_platform::application().run(|cx: &mut App| {
+    let app = gpui_platform::application();
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_probe_window(cx);
+        } else if let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) {
+            let _ = window.update(cx, |_, window, _| window.activate_window());
+        }
+    });
+    app.run(|cx: &mut App| {
         cx.set_app_identity(APPLICATION_ID, APPLICATION_NAME);
         Theme::init(cx);
         bind_platform_hotkeys(cx);
         install_system_menu(cx);
 
-        let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: None,
-                    appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
-                    traffic_light_position: if cfg!(target_os = "macos") {
-                        Some(point(px(9.0), px(9.0)))
-                    } else {
-                        None
-                    },
-                }),
-                app_owns_titlebar_drag: cfg!(target_os = "macos"),
-                window_min_size: Some(size(px(760.0), px(560.0))),
-                app_id: Some(APPLICATION_ID.to_owned()),
-                ..Default::default()
-            },
-            |window, cx| {
-                let view = cx.new(|cx| ProbeApp::new(window, cx));
-                view.update(cx, |view, cx| view.restore_session(window, cx));
-                view
-            },
-        )
-        .expect("failed to open Probe's application window");
-
+        open_probe_window(cx);
         cx.activate(true);
     });
+}
+
+fn open_probe_window(cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(1180.0), px(780.0)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: None,
+                appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
+                traffic_light_position: if cfg!(target_os = "macos") {
+                    Some(point(px(9.0), px(9.0)))
+                } else {
+                    None
+                },
+            }),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
+            window_min_size: Some(size(px(760.0), px(560.0))),
+            app_id: Some(APPLICATION_ID.to_owned()),
+            ..Default::default()
+        },
+        |window, cx| {
+            let view = cx.new(|cx| ProbeApp::new(window, cx));
+            view.update(cx, |view, cx| view.restore_session(window, cx));
+            view
+        },
+    )
+    .expect("failed to open Probe's application window");
 }
 
 #[cfg(target_os = "macos")]
