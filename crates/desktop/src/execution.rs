@@ -29,6 +29,7 @@ pub(crate) struct ExecutionState {
     next_generation: u64,
     responses: BTreeMap<RequestKey, ResponseState>,
     active: BTreeMap<RequestKey, ActiveRequest>,
+    key_aliases: BTreeMap<RequestKey, RequestKey>,
 }
 
 impl ExecutionState {
@@ -53,6 +54,7 @@ impl ExecutionState {
         generation: u64,
         result: Result<HttpResponse, HttpError>,
     ) {
+        let key = self.resolve_key(key);
         if self
             .active
             .get(&key)
@@ -61,6 +63,7 @@ impl ExecutionState {
             return;
         }
         self.active.remove(&key);
+        self.key_aliases.retain(|_, target| *target != key);
         let response = match result {
             Ok(response) => ResponseState::Complete(response),
             Err(HttpError::Cancelled) => ResponseState::Cancelled,
@@ -70,14 +73,17 @@ impl ExecutionState {
     }
 
     pub(crate) fn fail(&mut self, key: RequestKey, message: String) {
+        let key = self.resolve_key(key);
         self.cancel(key);
         self.responses.insert(key, ResponseState::Failed(message));
     }
 
     pub(crate) fn cancel(&mut self, key: RequestKey) {
+        let key = self.resolve_key(key);
         if let Some(active) = self.active.remove(&key) {
             let _ = active.cancellation.send(());
             self.responses.insert(key, ResponseState::Cancelled);
+            self.key_aliases.retain(|_, target| *target != key);
         }
     }
 
@@ -85,6 +91,7 @@ impl ExecutionState {
         for (_, active) in std::mem::take(&mut self.active) {
             let _ = active.cancellation.send(());
         }
+        self.key_aliases.clear();
         for response in self.responses.values_mut() {
             if response.is_running() {
                 *response = ResponseState::Cancelled;
@@ -95,10 +102,52 @@ impl ExecutionState {
     pub(crate) fn clear(&mut self) {
         self.cancel_all();
         self.responses.clear();
+        self.key_aliases.clear();
     }
 
     pub(crate) fn response(&self, key: RequestKey) -> Option<&ResponseState> {
-        self.responses.get(&key)
+        self.responses.get(&self.resolve_key(key))
+    }
+
+    pub(crate) fn remap_requests(&mut self, key_remaps: &BTreeMap<RequestKey, RequestKey>) {
+        if key_remaps.is_empty() {
+            self.cancel_all();
+            self.responses.clear();
+            return;
+        }
+
+        self.key_aliases = self
+            .key_aliases
+            .iter()
+            .filter_map(|(alias, target)| key_remaps.get(target).map(|new| (*alias, *new)))
+            .collect();
+
+        self.responses = std::mem::take(&mut self.responses)
+            .into_iter()
+            .filter_map(|(key, response)| key_remaps.get(&key).map(|new| (*new, response)))
+            .collect();
+
+        let mut active = BTreeMap::new();
+        for (key, request) in std::mem::take(&mut self.active) {
+            if let Some(new_key) = key_remaps.get(&key).copied() {
+                self.key_aliases.insert(key, new_key);
+                active.insert(new_key, request);
+            } else {
+                let _ = request.cancellation.send(());
+            }
+        }
+        self.active = active;
+    }
+
+    fn resolve_key(&self, key: RequestKey) -> RequestKey {
+        let mut key = key;
+        while let Some(next) = self.key_aliases.get(&key).copied() {
+            if next == key {
+                break;
+            }
+            key = next;
+        }
+        key
     }
 }
 
@@ -162,7 +211,7 @@ pub(crate) fn format_size(size: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{collections::BTreeMap, time::Duration};
 
     use probe_core::HttpRequest;
     use probe_http::ExecutionOptions;
@@ -185,6 +234,23 @@ mod tests {
             panic!("expected request key");
         };
         key
+    }
+
+    fn two_keys() -> (probe_core::RequestKey, probe_core::RequestKey) {
+        let workspace = probe_core::Workspace::from_collection(probe_core::Collection {
+            items: vec![
+                probe_core::CollectionItem::HttpRequest(probe_core::HttpRequest::default()),
+                probe_core::CollectionItem::HttpRequest(probe_core::HttpRequest::default()),
+            ],
+            ..probe_core::Collection::default()
+        });
+        let probe_core::WorkspaceItemRef::Request(first) = workspace.root_items()[0] else {
+            panic!("expected first request key");
+        };
+        let probe_core::WorkspaceItemRef::Request(second) = workspace.root_items()[1] else {
+            panic!("expected second request key");
+        };
+        (first, second)
     }
 
     #[test]
@@ -216,6 +282,28 @@ mod tests {
         assert_eq!(state.response(key), Some(&ResponseState::Cancelled));
         state.finish(key, generation, Err(HttpError::Cancelled));
         assert_eq!(state.response(key), Some(&ResponseState::Cancelled));
+    }
+
+    #[test]
+    fn reloaded_workspace_keeps_in_flight_execution_completable() {
+        let (old_key, new_key) = two_keys();
+        let mut state = ExecutionState::default();
+        let (sender, mut receiver) = oneshot::channel();
+        let generation = state.begin(old_key, sender);
+
+        state.remap_requests(&BTreeMap::from([(old_key, new_key)]));
+
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(state.response(new_key), Some(&ResponseState::Running));
+        assert_eq!(state.response(old_key), Some(&ResponseState::Running));
+
+        state.finish(old_key, generation, Ok(response(202)));
+
+        assert!(matches!(
+            state.response(new_key),
+            Some(ResponseState::Complete(response)) if response.status == 202
+        ));
+        assert!(state.response(old_key).is_none());
     }
 
     #[test]

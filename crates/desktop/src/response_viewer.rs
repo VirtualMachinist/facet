@@ -96,6 +96,17 @@ impl ResponseViewerState {
         self.tab = ResponseViewerTab::default();
     }
 
+    pub(crate) fn remap_requests(
+        &mut self,
+        key_remaps: &std::collections::BTreeMap<probe_core::RequestKey, probe_core::RequestKey>,
+    ) {
+        self.documents = std::mem::take(&mut self.documents)
+            .into_iter()
+            .filter_map(|(key, document)| key_remaps.get(&key).map(|new| (*new, document)))
+            .collect();
+        self.active_match = 0;
+    }
+
     pub(crate) fn set_tab(&mut self, tab: ResponseViewerTab) {
         if self.tab != tab {
             self.tab = tab;

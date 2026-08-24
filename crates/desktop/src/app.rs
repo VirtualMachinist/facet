@@ -1974,8 +1974,8 @@ impl ProbeApp {
         self.persistence.reset(baselines);
         self.loaded_workspace = Some(workspace);
         self.shell.reset_for_workspace();
-        self.execution.clear();
-        self.response_viewer.clear();
+        self.execution.remap_requests(key_remaps);
+        self.response_viewer.remap_requests(key_remaps);
         self.request_editor.remap_requests(key_remaps);
     }
 
@@ -7883,6 +7883,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::PathBuf,
         time::{Duration, SystemTime, UNIX_EPOCH},
@@ -7896,11 +7897,12 @@ mod tests {
     use probe_http::{HttpResponse, ResponseHeader};
     use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
+    use tokio::sync::oneshot;
 
     use super::{
         ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
         IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
-        ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
+        ProbeApp, bind_platform_hotkeys, format_import_diagnostics, request_key_remaps,
     };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
@@ -8780,6 +8782,58 @@ mod tests {
                 .as_deref(),
             Some("https://saved.example/pets")
         );
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn workspace_reload_preserves_running_request_execution(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_environment_fixture("reload-running-execution");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+
+                let old = view.loaded_workspace.as_ref().unwrap();
+                let old_key = old.requests()[0].key();
+                let (sender, mut receiver) = oneshot::channel();
+                view.execution.begin(old_key, sender);
+
+                let fresh = probe_opencollection::load_workspace(&fixture).unwrap();
+                let selector_remaps = old
+                    .requests()
+                    .iter()
+                    .map(|located| (located.selector().to_owned(), located.selector().to_owned()))
+                    .collect::<BTreeMap<_, _>>();
+                let key_remaps = request_key_remaps(old, &fresh, &selector_remaps);
+                let baselines = fresh
+                    .requests()
+                    .iter()
+                    .filter_map(|located| {
+                        fresh
+                            .workspace()
+                            .request(located.key())
+                            .cloned()
+                            .map(|request| (located.key(), request))
+                    })
+                    .collect::<Vec<_>>();
+                let new_key = key_remaps[&old_key];
+
+                view.install_reloaded_workspace(fresh, baselines, &key_remaps);
+
+                assert!(receiver.try_recv().is_err());
+                assert!(matches!(
+                    view.execution.response(new_key),
+                    Some(crate::execution::ResponseState::Running)
+                ));
+                cx.notify();
+            })
+            .unwrap();
+
         fs::remove_file(fixture).unwrap();
     }
 
