@@ -211,6 +211,10 @@ gpui::actions!(
         ActivateTreeItem,
         OpenImportSubmenu,
         CloseImportSubmenu,
+        SubmitStructureDialog,
+        SubmitCreateEnvironmentDialog,
+        SubmitApplicationDialog,
+        SubmitApplicationDialogDestructive,
         CancelStructureDialog,
         CancelCreateEnvironmentDialog,
         CancelApplicationDialog
@@ -378,6 +382,18 @@ impl ApplicationDialog {
             }
         }
     }
+
+    fn primary_action(&self) -> Option<ApplicationDialogAction> {
+        self.action_specs()?.iter().find_map(|spec| {
+            (spec.style == components::DialogActionStyle::Primary).then_some(spec.action)
+        })
+    }
+
+    fn destructive_action(&self) -> Option<ApplicationDialogAction> {
+        self.action_specs()?.iter().find_map(|spec| {
+            (spec.style == components::DialogActionStyle::Destructive).then_some(spec.action)
+        })
+    }
 }
 
 enum YaakConversionResult {
@@ -399,7 +415,7 @@ enum PostmanConversionResult {
     Failed(String),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ApplicationDialogAction {
     Cancel,
     Save,
@@ -2602,6 +2618,32 @@ impl ProbeApp {
                 cx.notify();
             }
         }
+    }
+
+    fn submit_application_dialog_primary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(action) = self
+            .application_dialog
+            .as_ref()
+            .and_then(ApplicationDialog::primary_action)
+        else {
+            return;
+        };
+        self.handle_application_dialog_action(action, window, cx);
+    }
+
+    fn submit_application_dialog_destructive(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(action) = self
+            .application_dialog
+            .as_ref()
+            .and_then(ApplicationDialog::destructive_action)
+        else {
+            return;
+        };
+        self.handle_application_dialog_action(action, window, cx);
     }
 
     fn apply_structure(
@@ -6909,16 +6951,35 @@ impl ProbeApp {
     fn render_application_dialog_actions(
         theme: Theme,
         specs: &[DialogActionSpec],
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let mut actions = components::dialog_actions(theme);
         for spec in specs.iter().copied() {
             let view = cx.weak_entity();
+            let shortcut_hint = match spec.style {
+                components::DialogActionStyle::Primary => {
+                    components::shortcut_label_for_action_in_context(
+                        window,
+                        &SubmitApplicationDialog,
+                        "ApplicationDialog",
+                    )
+                }
+                components::DialogActionStyle::Secondary => None,
+                components::DialogActionStyle::Destructive => {
+                    components::shortcut_label_for_action_in_context(
+                        window,
+                        &SubmitApplicationDialogDestructive,
+                        "ApplicationDialog",
+                    )
+                }
+            };
             actions = actions.child(components::dialog_action_button(
                 theme,
                 spec.id,
                 spec.label,
                 spec.style,
+                shortcut_hint,
                 move |_, window, cx| {
                     let _ = view.update(cx, |view, cx| {
                         view.handle_application_dialog_action(spec.action, window, cx);
@@ -6929,7 +6990,12 @@ impl ProbeApp {
         actions
     }
 
-    fn render_application_dialog(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_application_dialog(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let Some(dialog) = self.application_dialog.as_ref() else {
             return div().into_any_element();
         };
@@ -6945,7 +7011,9 @@ impl ProbeApp {
             );
 
         if let Some(specs) = dialog.action_specs() {
-            content = content.child(Self::render_application_dialog_actions(theme, specs, cx));
+            content = content.child(Self::render_application_dialog_actions(
+                theme, specs, window, cx,
+            ));
         } else if let ApplicationDialog::SelectYaakWorkspace { workspaces, .. } = dialog {
             let mut choices = div()
                 .id("application-dialog-workspaces")
@@ -6977,6 +7045,7 @@ impl ProbeApp {
                 .child(Self::render_application_dialog_actions(
                     theme,
                     &[CANCEL_DIALOG_ACTION],
+                    window,
                     cx,
                 ));
         }
@@ -6990,7 +7059,12 @@ impl ProbeApp {
         .into_any_element()
     }
 
-    fn render_structure_dialog(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_structure_dialog(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let Some(dialog) = self.structure_dialog.as_ref() else {
             return div().into_any_element();
         };
@@ -7118,6 +7192,7 @@ impl ProbeApp {
                             "structure-cancel",
                             "Cancel",
                             components::DialogActionStyle::Secondary,
+                            None,
                             move |_, window, cx| {
                                 let _ = cancel_view.update(cx, |view, cx| {
                                     view.structure_dialog = None;
@@ -7131,6 +7206,11 @@ impl ProbeApp {
                             "structure-submit",
                             submit_label,
                             components::DialogActionStyle::Primary,
+                            components::shortcut_label_for_action_in_context(
+                                window,
+                                &SubmitStructureDialog,
+                                "StructureDialog",
+                            ),
                             move |_, window, cx| {
                                 let _ = submit_view.update(cx, |view, cx| {
                                     view.submit_structure_dialog(window, cx);
@@ -7151,6 +7231,7 @@ impl ProbeApp {
     fn render_create_environment_dialog(
         &self,
         theme: Theme,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some(name) = self.create_environment_dialog.as_ref() else {
@@ -7207,6 +7288,7 @@ impl ProbeApp {
                     "create-environment-cancel",
                     "Cancel",
                     components::DialogActionStyle::Secondary,
+                    None,
                     move |_, window, cx| {
                         let _ = cancel_view.update(cx, |view, cx| {
                             view.close_create_environment_dialog(window, cx);
@@ -7218,6 +7300,11 @@ impl ProbeApp {
                     "create-environment-submit",
                     "Create",
                     components::DialogActionStyle::Primary,
+                    components::shortcut_label_for_action_in_context(
+                        window,
+                        &SubmitCreateEnvironmentDialog,
+                        "CreateEnvironmentDialog",
+                    ),
                     move |_, window, cx| {
                         let _ = submit_view.update(cx, |view, cx| {
                             view.submit_create_environment_dialog(window, cx);
@@ -7546,6 +7633,24 @@ impl Render for ProbeApp {
             .on_action(cx.listener(|view, _: &ActivateTreeItem, _, cx| {
                 view.activate_selected_tree_item(cx);
             }))
+            .on_action(cx.listener(|view, _: &SubmitStructureDialog, window, cx| {
+                view.submit_structure_dialog(window, cx);
+            }))
+            .on_action(
+                cx.listener(|view, _: &SubmitCreateEnvironmentDialog, window, cx| {
+                    view.submit_create_environment_dialog(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &SubmitApplicationDialog, window, cx| {
+                    view.submit_application_dialog_primary(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &SubmitApplicationDialogDestructive, window, cx| {
+                    view.submit_application_dialog_destructive(window, cx);
+                }),
+            )
             .on_action(cx.listener(|view, _: &CancelStructureDialog, window, cx| {
                 view.structure_dialog = None;
                 view.focus_handle.focus(window, cx);
@@ -7652,9 +7757,9 @@ impl Render for ProbeApp {
                             .child(self.render_editor_response(theme, cx)),
                     ),
             )
-            .child(self.render_structure_dialog(theme, cx))
-            .child(self.render_create_environment_dialog(theme, cx))
-            .child(self.render_application_dialog(theme, cx))
+            .child(self.render_structure_dialog(theme, window, cx))
+            .child(self.render_create_environment_dialog(theme, window, cx))
+            .child(self.render_application_dialog(theme, window, cx))
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
     }
@@ -7973,6 +8078,13 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("m", MoveTreeItem, Some("RequestTree")),
         KeyBinding::new("alt-up", MoveTreeItemUp, Some("RequestTree")),
         KeyBinding::new("alt-down", MoveTreeItemDown, Some("RequestTree")),
+        KeyBinding::new("enter", SubmitStructureDialog, Some("StructureDialog")),
+        KeyBinding::new(
+            "enter",
+            SubmitCreateEnvironmentDialog,
+            Some("CreateEnvironmentDialog"),
+        ),
+        KeyBinding::new("enter", SubmitApplicationDialog, Some("ApplicationDialog")),
         KeyBinding::new("escape", CancelStructureDialog, Some("StructureDialog")),
         KeyBinding::new(
             "escape",
@@ -8002,6 +8114,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("cmd-d", DuplicateRequest, Some("RequestTree")),
         KeyBinding::new("cmd-e", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("backspace", DeleteTreeItem, Some("RequestTree")),
+        KeyBinding::new(
+            "cmd-backspace",
+            SubmitApplicationDialogDestructive,
+            Some("ApplicationDialog"),
+        ),
     ]);
 
     #[cfg(not(target_os = "macos"))]
@@ -8021,6 +8138,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-d", DuplicateRequest, Some("RequestTree")),
         KeyBinding::new("f2", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("delete", DeleteTreeItem, Some("RequestTree")),
+        KeyBinding::new(
+            "ctrl-delete",
+            SubmitApplicationDialogDestructive,
+            Some("ApplicationDialog"),
+        ),
     ]);
 
     #[cfg(target_os = "windows")]
@@ -8101,6 +8223,37 @@ mod tests {
         assert_eq!(dialog.title(), "Probe");
         assert!(dialog.description().contains(env!("CARGO_PKG_VERSION")));
         assert_eq!(dialog.action_specs().unwrap()[0].label, "Done");
+        assert_eq!(
+            dialog.primary_action(),
+            Some(ApplicationDialogAction::Cancel)
+        );
+        assert_eq!(dialog.destructive_action(), None);
+    }
+
+    #[test]
+    fn destructive_only_dialogs_do_not_take_enter_as_primary_action() {
+        let dialog = ApplicationDialog::Delete {
+            kind: probe_opencollection::ItemKind::Request,
+            selector: "products/list".to_owned(),
+            name: "List products".to_owned(),
+            detail: "This cannot be undone.".to_owned(),
+        };
+
+        assert_eq!(dialog.primary_action(), None);
+        assert_eq!(
+            dialog.destructive_action(),
+            Some(ApplicationDialogAction::Delete)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    fn destructive_dialog_shortcut() -> &'static str {
+        "cmd-backspace"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn destructive_dialog_shortcut() -> &'static str {
+        "ctrl-delete"
     }
 
     #[cfg(target_os = "macos")]
@@ -9050,9 +9203,7 @@ mod tests {
         let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
             ProbeApp::new(window, cx)
         });
-        let fixture = bundled_fixture()
-            .canonicalize()
-            .expect("fixture should exist");
+        let fixture = writable_bundled_fixture("enter-create-environment");
         let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
         let key = workspace.requests()[0].key();
         window
@@ -9087,6 +9238,121 @@ mod tests {
                 assert!(view.application_dialog.is_none());
                 assert!(view.shell.tabs().contains(&key));
                 assert!(view.request_is_dirty(key));
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn enter_triggers_application_dialog_primary_action(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+
+        window
+            .update(cx, |view, window, cx| {
+                view.show_application_dialog(ApplicationDialog::About, window, cx);
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::About)
+                ));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.application_dialog.is_none());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn enter_triggers_create_environment_dialog_primary_action(cx: &mut TestAppContext) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_bundled_fixture("enter-create-environment");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.open_create_environment_dialog(window, cx);
+                if let Some(name) = view.create_environment_dialog.as_mut() {
+                    *name = "Staging".to_owned();
+                }
+                assert!(view.create_environment_dialog.is_some());
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.create_environment_dialog.is_none());
+                assert!(
+                    view.loaded_workspace
+                        .as_ref()
+                        .unwrap()
+                        .workspace()
+                        .environments()
+                        .iter()
+                        .any(|environment| environment.name == "Staging")
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn destructive_shortcut_triggers_application_dialog_destructive_action(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_bundled_fixture("destructive-shortcut");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let key = workspace.requests()[0].key();
+
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture, workspace);
+                view.select_request(key, cx);
+                view.edit_request(
+                    key,
+                    |request| request.url = Some("https://discard.example".to_owned()),
+                    cx,
+                );
+                view.request_close_tab(key, window, cx);
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::Unsaved { .. })
+                ));
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        cx.simulate_keystrokes(window.into(), destructive_dialog_shortcut());
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.application_dialog.is_none());
+                assert!(!view.shell.tabs().contains(&key));
+                assert!(!view.request_is_dirty(key));
             })
             .unwrap();
     }

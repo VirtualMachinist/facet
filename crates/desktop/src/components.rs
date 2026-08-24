@@ -848,7 +848,7 @@ pub(crate) fn primary_button(
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    action_button(theme, id, label, ActionButtonKind::Primary, on_click)
+    action_button(theme, id, label, ActionButtonKind::Primary, None, on_click)
 }
 
 pub(crate) fn secondary_button(
@@ -857,7 +857,14 @@ pub(crate) fn secondary_button(
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    action_button(theme, id, label, ActionButtonKind::Secondary, on_click)
+    action_button(
+        theme,
+        id,
+        label,
+        ActionButtonKind::Secondary,
+        None,
+        on_click,
+    )
 }
 
 pub(crate) fn secondary_menu_trigger(
@@ -884,7 +891,7 @@ enum ActionButtonKind {
     Destructive,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DialogActionStyle {
     Primary,
     Secondary,
@@ -896,8 +903,10 @@ fn action_button(
     id: &'static str,
     label: impl Into<String>,
     kind: ActionButtonKind,
+    shortcut_hint: Option<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
+    let label = label.into();
     let button = Button::new(id)
         .debug_selector(|| id.into())
         .h(px(theme.metrics.control_height))
@@ -936,7 +945,7 @@ fn action_button(
                 })
             })
             .on_click(on_click)
-            .child(label.into()),
+            .child(action_button_label(theme, label, kind, shortcut_hint)),
         ActionButtonKind::Secondary => button
             .text_color(theme.colors.text.primary)
             .bg(theme.colors.surfaces.raised)
@@ -959,7 +968,7 @@ fn action_button(
                 })
             })
             .on_click(on_click)
-            .child(label.into()),
+            .child(action_button_label(theme, label, kind, shortcut_hint)),
         ActionButtonKind::DialogSecondary => button
             .text_color(theme.colors.text.secondary)
             .bg(gpui::transparent_black())
@@ -987,38 +996,98 @@ fn action_button(
                 })
             })
             .on_click(on_click)
-            .child(label.into()),
-        ActionButtonKind::Destructive => button
-            .text_color(theme.colors.status.error)
-            .bg(gpui::transparent_black())
-            .border_color(theme.colors.borders.standard)
-            .hover(move |button| {
-                let mut hover: Hsla = theme.colors.status.error.into();
-                hover.a = match theme.appearance {
-                    crate::theme::ThemeAppearance::Light => 0.09,
-                    crate::theme::ThemeAppearance::Dark => 0.14,
-                };
-                button.bg(hover).border_color(theme.colors.borders.standard)
-            })
-            .focus(move |button| {
-                button
-                    .border_color(theme.colors.status.error)
-                    .shadow(focus_ring_shadow(
-                        theme.colors.status.error.into(),
-                        theme.colors.surfaces.overlay.into(),
-                    ))
-            })
-            .styles(move |styles| {
-                styles.disabled(move |button| {
-                    button
-                        .bg(gpui::transparent_black())
-                        .text_color(theme.colors.actions.disabled_foreground)
-                        .border_color(theme.colors.borders.subtle)
+            .child(action_button_label(theme, label, kind, shortcut_hint)),
+        ActionButtonKind::Destructive => {
+            let mut border: Hsla = theme.colors.status.error.into();
+            border.a = match theme.appearance {
+                crate::theme::ThemeAppearance::Light => 0.42,
+                crate::theme::ThemeAppearance::Dark => 0.52,
+            };
+            button
+                .text_color(theme.colors.status.error)
+                .bg(gpui::transparent_black())
+                .border_color(border)
+                .hover(move |button| {
+                    let mut hover: Hsla = theme.colors.status.error.into();
+                    hover.a = match theme.appearance {
+                        crate::theme::ThemeAppearance::Light => 0.09,
+                        crate::theme::ThemeAppearance::Dark => 0.14,
+                    };
+                    button.bg(hover).border_color(theme.colors.status.error)
                 })
-            })
-            .on_click(on_click)
-            .child(label.into()),
+                .focus(move |button| {
+                    button
+                        .border_color(theme.colors.status.error)
+                        .shadow(focus_ring_shadow(
+                            theme.colors.status.error.into(),
+                            theme.colors.surfaces.overlay.into(),
+                        ))
+                })
+                .styles(move |styles| {
+                    styles.disabled(move |button| {
+                        button
+                            .bg(gpui::transparent_black())
+                            .text_color(theme.colors.actions.disabled_foreground)
+                            .border_color(theme.colors.borders.subtle)
+                    })
+                })
+                .on_click(on_click)
+                .child(action_button_label(theme, label, kind, shortcut_hint))
+        }
     }
+}
+
+fn action_button_label(
+    theme: Theme,
+    label: String,
+    kind: ActionButtonKind,
+    shortcut_hint: Option<String>,
+) -> impl IntoElement {
+    let Some(shortcut_hint) = shortcut_hint else {
+        return div().child(label);
+    };
+
+    let key_color: Hsla = match kind {
+        ActionButtonKind::Primary => theme.colors.text.inverse.into(),
+        ActionButtonKind::Destructive => theme.colors.status.error.into(),
+        ActionButtonKind::Secondary | ActionButtonKind::DialogSecondary => {
+            theme.colors.text.muted.into()
+        }
+    };
+    let mut hint_color = key_color;
+    hint_color.a = 0.9;
+    let mut hint_background = key_color;
+    hint_background.a = match kind {
+        ActionButtonKind::Primary => 0.16,
+        ActionButtonKind::Destructive => 0.08,
+        ActionButtonKind::Secondary | ActionButtonKind::DialogSecondary => 0.08,
+    };
+    let mut hint_border = key_color;
+    hint_border.a = match kind {
+        ActionButtonKind::Primary => 0.36,
+        ActionButtonKind::Destructive => 0.26,
+        ActionButtonKind::Secondary | ActionButtonKind::DialogSecondary => 0.22,
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap(px(theme.metrics.spacing_2))
+        .child(div().child(label))
+        .child(
+            div()
+                .flex_none()
+                .h(px(20.0))
+                .px(px(theme.metrics.spacing_1))
+                .flex()
+                .items_center()
+                .rounded(px(theme.metrics.radius_small))
+                .border_1()
+                .bg(hint_background)
+                .border_color(hint_border)
+                .text_size(px(theme.typography.caption_size))
+                .text_color(hint_color)
+                .child(shortcut_hint),
+        )
 }
 
 pub(crate) fn dialog_action_button(
@@ -1026,6 +1095,7 @@ pub(crate) fn dialog_action_button(
     id: &'static str,
     label: impl Into<String>,
     style: DialogActionStyle,
+    shortcut_hint: Option<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let kind = match style {
@@ -1033,7 +1103,7 @@ pub(crate) fn dialog_action_button(
         DialogActionStyle::Secondary => ActionButtonKind::DialogSecondary,
         DialogActionStyle::Destructive => ActionButtonKind::Destructive,
     };
-    action_button(theme, id, label, kind, on_click)
+    action_button(theme, id, label, kind, shortcut_hint, on_click)
 }
 
 pub(crate) fn dialog_choice_button(
