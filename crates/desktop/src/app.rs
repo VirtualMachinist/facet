@@ -20,7 +20,9 @@ use gpui::{
 #[cfg(target_os = "macos")]
 use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
 use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use gpui_base::{AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Tab, Tabs};
+use gpui_base::{
+    AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Scrollbar, ScrollbarMode, Tab, Tabs,
+};
 use probe_core::{
     AuthenticationKind, AuthenticationValue, Body, FileReference, FormField, Header, HttpRequest,
     ImportDiagnostic, ImportDiagnosticSeverity, MultipartPart, MultipartPartKind, MultipartValue,
@@ -4044,7 +4046,7 @@ impl ProbeApp {
             let row_count = self.visible_tree_rows.len() + 1;
             let drag_view = cx.weak_entity();
             let drop_view = cx.weak_entity();
-            uniform_list("request-tree", row_count, {
+            let list = uniform_list("request-tree", row_count, {
                 cx.processor(move |view, range: std::ops::Range<usize>, _, cx| {
                     #[cfg(test)]
                     {
@@ -4064,8 +4066,7 @@ impl ProbeApp {
                         .collect::<Vec<_>>()
                 })
             })
-            .flex_1()
-            .min_h(px(0.0))
+            .size_full()
             .track_scroll(&self.tree_scroll)
             .px(px(theme.metrics.spacing_1))
             .py(px(TREE_LIST_PADDING_Y))
@@ -4079,8 +4080,18 @@ impl ProbeApp {
                     view.drop_tree_item(drag, window, cx);
                 });
             })
-            .can_drop(|value, _, _| value.downcast_ref::<TreeDrag>().is_some())
-            .into_any_element()
+            .can_drop(|value, _, _| value.downcast_ref::<TreeDrag>().is_some());
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(list)
+                .child(
+                    Scrollbar::vertical(&self.tree_scroll)
+                        .id("request-tree-scrollbar")
+                        .mode(ScrollbarMode::Scrolling),
+                )
+                .into_any_element()
         } else {
             let mut tree = div()
                 .id("request-tree")
