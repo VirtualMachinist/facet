@@ -235,6 +235,38 @@ async fn executes_json_with_headers_query_bearer_auth_and_response_metadata() {
 }
 
 #[tokio::test]
+async fn strips_json_body_comments_before_sending() {
+    let (base_url, captured) = serve_once("200 OK", &[], b"ok").await.unwrap();
+    let mut request = request("POST", format!("{base_url}/comments"));
+    request.body = Some(RequestBody::Single(Body::Raw(RawBody {
+        kind: RawBodyKind::Json,
+        data: r#"{
+  // editor-only line comment
+  "url": "https://example.com/a//b",
+  "literal": "/* not a comment */",
+  /* editor-only block
+     comment */
+  "name": "Café"
+}"#
+        .to_owned(),
+    })));
+
+    HttpEngine::new()
+        .unwrap()
+        .execute(&request, &ExecutionOptions::default())
+        .await
+        .unwrap();
+    let captured = captured.await.unwrap().unwrap();
+    let body = String::from_utf8(captured.body).unwrap();
+
+    assert!(!body.contains("editor-only line comment"));
+    assert!(!body.contains("editor-only block"));
+    assert!(body.contains(r#""url": "https://example.com/a//b""#));
+    assert!(body.contains(r#""literal": "/* not a comment */""#));
+    assert!(body.contains(r#""name": "Café""#));
+}
+
+#[tokio::test]
 async fn supports_all_phase_five_methods() {
     for method in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
         let (base_url, captured) = serve_once("204 No Content", &[], b"").await.unwrap();
@@ -307,7 +339,7 @@ async fn sends_text_body_with_default_content_type() {
     let mut request = request("PATCH", format!("{base_url}/text"));
     request.body = Some(RequestBody::Single(Body::Raw(RawBody {
         kind: RawBodyKind::Text,
-        data: "plain text".to_owned(),
+        data: "plain text // keep this".to_owned(),
     })));
 
     HttpEngine::new()
@@ -320,7 +352,7 @@ async fn sends_text_body_with_default_content_type() {
         captured.header("content-type"),
         Some("text/plain; charset=utf-8")
     );
-    assert_eq!(captured.body, b"plain text");
+    assert_eq!(captured.body, b"plain text // keep this");
 }
 
 #[tokio::test]

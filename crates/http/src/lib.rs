@@ -14,7 +14,7 @@ use std::{
 
 use probe_core::{
     Authentication, AuthenticationKind, AuthenticationValue, Body, HttpRequest, MultipartPartKind,
-    MultipartValue, RawBodyKind, RequestBody, RequestSettings,
+    MultipartValue, RawBody, RawBodyKind, RequestBody, RequestSettings,
 };
 use reqwest::{
     Client, Method, RequestBuilder, Response,
@@ -534,7 +534,7 @@ async fn apply_body(
             if !has_content_type {
                 builder = builder.header(CONTENT_TYPE, raw_content_type(&body.kind));
             }
-            Ok(builder.body(body.data.clone()))
+            Ok(builder.body(raw_body_data(body)))
         }
         Body::FormUrlEncoded(fields) => {
             let fields: Vec<_> = fields
@@ -671,6 +671,93 @@ const fn raw_content_type(kind: &RawBodyKind) -> &'static str {
         RawBodyKind::Xml => "application/xml",
         RawBodyKind::Sparql => "application/sparql-query",
     }
+}
+
+fn raw_body_data(body: &RawBody) -> String {
+    match body.kind {
+        RawBodyKind::Json => strip_json_comments(&body.data),
+        RawBodyKind::Text | RawBodyKind::Xml | RawBodyKind::Sparql => body.data.clone(),
+    }
+}
+
+fn strip_json_comments(source: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        String { escaped: bool },
+        LineComment,
+        BlockComment { previous_was_star: bool },
+    }
+
+    let mut stripped = String::with_capacity(source.len());
+    let mut chars = source.chars().peekable();
+    let mut state = State::Normal;
+
+    while let Some(character) = chars.next() {
+        match state {
+            State::Normal => match character {
+                '"' => {
+                    stripped.push('"');
+                    state = State::String { escaped: false };
+                }
+                '/' => match chars.peek() {
+                    Some('/') => {
+                        let _ = chars.next();
+                        stripped.push(' ');
+                        stripped.push(' ');
+                        state = State::LineComment;
+                    }
+                    Some('*') => {
+                        let _ = chars.next();
+                        stripped.push(' ');
+                        stripped.push(' ');
+                        state = State::BlockComment {
+                            previous_was_star: false,
+                        };
+                    }
+                    _ => stripped.push('/'),
+                },
+                _ => stripped.push(character),
+            },
+            State::String { escaped } => {
+                stripped.push(character);
+                state = match (escaped, character) {
+                    (true, _) => State::String { escaped: false },
+                    (false, '\\') => State::String { escaped: true },
+                    (false, '"') => State::Normal,
+                    (false, _) => State::String { escaped: false },
+                };
+            }
+            State::LineComment => {
+                if character == '\n' {
+                    stripped.push('\n');
+                    state = State::Normal;
+                } else if character == '\r' {
+                    stripped.push('\r');
+                } else {
+                    stripped.push(' ');
+                }
+            }
+            State::BlockComment { previous_was_star } => {
+                if character == '\n' {
+                    stripped.push('\n');
+                } else if character == '\r' {
+                    stripped.push('\r');
+                } else {
+                    stripped.push(' ');
+                }
+                state = if previous_was_star && character == '/' {
+                    State::Normal
+                } else {
+                    State::BlockComment {
+                        previous_was_star: character == '*',
+                    }
+                };
+            }
+        }
+    }
+
+    stripped
 }
 
 fn response_headers(headers: &HeaderMap) -> Vec<ResponseHeader> {
