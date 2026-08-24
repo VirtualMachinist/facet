@@ -177,6 +177,19 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
+## Releases
+
+Release builds are created by GitHub Actions when a version tag such as `v0.2.0`
+is pushed. Use the release helper from a clean worktree:
+
+```bash
+scripts/release.sh 0.2.0
+```
+
+The script updates the workspace version in `Cargo.toml`, runs the release checks,
+commits the version bump, creates an annotated tag, and pushes the branch and tag
+to `origin`. The tag then triggers CLI and desktop release artifacts.
+
 Core performance baselines cover parsing, workspace construction, request lookup,
 CLI startup, and practical peak-memory profiling at 100, 1,000, and 10,000 requests.
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for reproducible commands and fixture
