@@ -3730,9 +3730,9 @@ impl ProbeApp {
                         .child(
                             components::truncated_label(label.to_owned())
                                 .flex_1()
-                                .h_full()
-                                .flex()
-                                .items_center()
+                                .when(selected, |label| {
+                                    label.text_color(theme.colors.selection.active_foreground)
+                                })
                                 .when(selected, |label| {
                                     label.debug_selector(|| "request-tree-label".into())
                                 }),
