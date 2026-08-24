@@ -189,10 +189,11 @@ impl Theme {
         let muted: Hsla = theme.colors.text.muted.into();
         let border: Hsla = theme.colors.borders.standard.into();
         let primary: Hsla = theme.colors.text.primary.into();
+        let thumb_radius = px(theme.metrics.radius_small);
         gpui_theme.scrollbar.styles = ScrollbarStyles::default()
-            .thumb(|thumb| thumb.bg(muted))
-            .thumb_hover(|thumb| thumb.bg(border))
-            .thumb_active(|thumb| thumb.bg(primary));
+            .thumb(|thumb| thumb.bg(muted).radius(thumb_radius))
+            .thumb_hover(|thumb| thumb.bg(border).radius(thumb_radius))
+            .thumb_active(|thumb| thumb.bg(primary).radius(thumb_radius));
         gpui_theme.resizable.handle = theme.colors.borders.subtle.into();
         gpui_theme.resizable.active_handle = theme.colors.borders.focused.into();
     }
