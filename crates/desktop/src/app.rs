@@ -3525,7 +3525,7 @@ impl ProbeApp {
             theme,
             "tab-context-close",
             "Close Tab",
-            shortcut_label_for_action(window, &CloseActiveTab),
+            components::shortcut_label_for_action(window, &CloseActiveTab),
             move |window, cx| {
                 let _ = close_view.update(cx, |view, cx| {
                     view.request_close_tab(key, window, cx);
@@ -3584,7 +3584,11 @@ impl ProbeApp {
             theme,
             rename_id,
             "Rename",
-            shortcut_label_for_action_in_context(window, &RenameTreeItem, "RequestTree"),
+            components::shortcut_label_for_action_in_context(
+                window,
+                &RenameTreeItem,
+                "RequestTree",
+            ),
             move |window, cx| {
                 let _ = rename_view.update(cx, |view, cx| {
                     view.tree_context_menu = None;
@@ -3598,7 +3602,11 @@ impl ProbeApp {
             theme,
             delete_id,
             "Delete",
-            shortcut_label_for_action_in_context(window, &DeleteTreeItem, "RequestTree"),
+            components::shortcut_label_for_action_in_context(
+                window,
+                &DeleteTreeItem,
+                "RequestTree",
+            ),
             move |window, cx| {
                 let _ = delete_view.update(cx, |view, cx| {
                     view.tree_context_menu = None;
@@ -6255,7 +6263,7 @@ impl ProbeApp {
             .into_any_element();
         }
 
-        let shortcut = shortcut_label_for_action(window, action.as_ref());
+        let shortcut = components::shortcut_label_for_action(window, action.as_ref());
         let view = cx.weak_entity();
         components::menu_button(theme, id, label, shortcut, move |window, cx| {
             let _ = view.update(cx, |view, cx| {
@@ -6620,7 +6628,7 @@ impl ProbeApp {
                 theme,
                 "workspace-switcher-new",
                 "New Collection…",
-                shortcut_label_for_action(window, &NewCollection),
+                components::shortcut_label_for_action(window, &NewCollection),
                 move |window, cx| {
                     let _ = new_view.update(cx, |view, cx| {
                         view.workspace_switcher_open = false;
@@ -6634,7 +6642,7 @@ impl ProbeApp {
                 theme,
                 "workspace-switcher-open",
                 "Open Collection…",
-                shortcut_label_for_action(window, &OpenWorkspace),
+                components::shortcut_label_for_action(window, &OpenWorkspace),
                 move |window, cx| {
                     let _ = open_view.update(cx, |view, cx| {
                         view.workspace_switcher_open = false;
@@ -7490,32 +7498,6 @@ impl Render for ProbeApp {
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
     }
-}
-
-fn shortcut_label_for_action(window: &Window, action: &dyn gpui::Action) -> Option<String> {
-    window
-        .highest_precedence_binding_for_action(action)
-        .map(|binding| shortcut_label_for_binding(&binding))
-}
-
-fn shortcut_label_for_action_in_context(
-    window: &Window,
-    action: &dyn gpui::Action,
-    context: &str,
-) -> Option<String> {
-    let context = gpui::KeyContext::parse(context).ok()?;
-    window
-        .highest_precedence_binding_for_action_in_context(action, context)
-        .map(|binding| shortcut_label_for_binding(&binding))
-}
-
-fn shortcut_label_for_binding(binding: &KeyBinding) -> String {
-    binding
-        .keystrokes()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn tree_row_button(

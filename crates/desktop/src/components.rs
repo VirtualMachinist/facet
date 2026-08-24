@@ -13,12 +13,12 @@ use crate::response_viewer::{SearchMatch, join_header_lines};
 use crate::shell::PaneLayout;
 use crate::theme::Theme;
 use gpui::{
-    App, AppContext as _, Bounds, BoxShadow, ClickEvent, ContentMask, Context, Element, ElementId,
-    Entity, EntityId, FocusHandle, Focusable, FontWeight, GlobalElementId, HighlightStyle, Hsla,
-    InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, MouseButton,
-    ParentElement as _, Pixels, Point, Render, RenderOnce, Role, ShapedLine, SharedString,
-    StatefulInteractiveElement as _, Style, Styled as _, Subscription, Task, TextAlign, TextRun,
-    TransformationMatrix, Window, canvas, deferred, div, fill, font, point,
+    Anchor, App, AppContext as _, Bounds, BoxShadow, ClickEvent, ContentMask, Context, Element,
+    ElementId, Entity, EntityId, FocusHandle, Focusable, FontWeight, GlobalElementId,
+    HighlightStyle, Hsla, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId,
+    MouseButton, ParentElement as _, Pixels, Point, Render, RenderOnce, Role, ShapedLine,
+    SharedString, StatefulInteractiveElement as _, Style, Styled as _, Subscription, Task,
+    TextAlign, TextRun, TransformationMatrix, Window, canvas, deferred, div, fill, font, point,
     prelude::FluentBuilder as _, px, relative, size, transparent_black,
 };
 use gpui_base::{
@@ -27,8 +27,8 @@ use gpui_base::{
     ToggleGroup,
     actions::{Cancel, Confirm, SelectDown, SelectUp},
     input::{
-        EditorState, InputEditorStyle, InputEvent, InputState, TextDecoration,
-        TextDecorationCollection,
+        Copy, Cut, EditorState, InputContextMenuCapabilities, InputEditorStyle, InputEvent,
+        InputState, Paste, SelectAll, TextDecoration, TextDecorationCollection,
     },
 };
 use probe_core::path_variable_ranges;
@@ -99,6 +99,150 @@ pub(crate) fn context_menu_surface(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .on_mouse_down_out(move |_, _, cx| on_dismiss(cx))
+}
+
+#[derive(Default)]
+struct TextContextMenuState {
+    position: Option<Point<Pixels>>,
+    capabilities: InputContextMenuCapabilities,
+    target_focus: Option<FocusHandle>,
+}
+
+fn text_context_menu_id(id: &ElementId, child: &'static str) -> ElementId {
+    ElementId::NamedChild(Arc::new(id.clone()), SharedString::from(child))
+}
+
+fn text_context_menu_action(
+    theme: Theme,
+    id: ElementId,
+    label: &'static str,
+    enabled: bool,
+    state: Entity<TextContextMenuState>,
+    window: &Window,
+    action: fn() -> Box<dyn gpui::Action>,
+) -> impl IntoElement {
+    let shortcut = shortcut_label_for_action(window, action().as_ref());
+    menu_button_with_style(
+        theme,
+        id,
+        label,
+        shortcut,
+        enabled,
+        MenuButtonStyle::standard(theme),
+        move |window, cx| {
+            let target_focus = state.read(cx).target_focus.clone();
+            state.update(cx, |state, cx| {
+                state.position = None;
+                cx.notify();
+            });
+            if let Some(target_focus) = target_focus {
+                target_focus.focus(window, cx);
+            }
+            window.dispatch_action(action(), cx);
+        },
+    )
+}
+
+fn clipboard_has_pasteable_text(cx: &App) -> bool {
+    cx.read_from_clipboard()
+        .and_then(|item| item.text())
+        .is_some()
+}
+
+fn with_text_context_menu(
+    theme: Theme,
+    id: &ElementId,
+    state: Entity<TextContextMenuState>,
+    content: impl IntoElement,
+    fill_parent: bool,
+    window: &Window,
+    cx: &App,
+) -> gpui::AnyElement {
+    let mut wrapper = div()
+        .relative()
+        .min_w(px(0.0))
+        .when(fill_parent, |wrapper| wrapper.size_full().min_h(px(0.0)))
+        .when(!fill_parent, |wrapper| wrapper.w_full())
+        .child(content);
+    let Some(position) = state.read(cx).position else {
+        return wrapper.into_any_element();
+    };
+
+    let capabilities = state.read(cx).capabilities;
+    let has_selection = capabilities.has_selection();
+    let editable = capabilities.is_editable();
+    let can_paste = editable && clipboard_has_pasteable_text(cx);
+    let menu_id = text_context_menu_id(id, "context-menu");
+    let dismiss_state = state.clone();
+    let mut menu = context_menu_surface(theme, menu_id.clone(), 180.0, move |cx| {
+        dismiss_state.update(cx, |state, cx| {
+            state.position = None;
+            cx.notify();
+        });
+    })
+    .debug_selector(|| "text-context-menu".into());
+
+    if !capabilities.is_readonly() {
+        menu = menu
+            .child(text_context_menu_action(
+                theme,
+                "text-context-cut".into(),
+                "Cut",
+                editable && has_selection,
+                state.clone(),
+                window,
+                || Box::new(Cut),
+            ))
+            .child(text_context_menu_action(
+                theme,
+                "text-context-copy".into(),
+                "Copy",
+                has_selection,
+                state.clone(),
+                window,
+                || Box::new(Copy),
+            ))
+            .child(text_context_menu_action(
+                theme,
+                "text-context-paste".into(),
+                "Paste",
+                can_paste,
+                state.clone(),
+                window,
+                || Box::new(Paste),
+            ))
+            .child(context_menu_separator(theme));
+    } else {
+        menu = menu.child(text_context_menu_action(
+            theme,
+            "text-context-copy".into(),
+            "Copy",
+            has_selection,
+            state.clone(),
+            window,
+            || Box::new(Copy),
+        ));
+    }
+
+    menu = menu.child(text_context_menu_action(
+        theme,
+        "text-context-select-all".into(),
+        "Select All",
+        true,
+        state,
+        window,
+        || Box::new(SelectAll),
+    ));
+
+    wrapper = wrapper.child(
+        deferred(
+            Positioner::corner(Anchor::TopLeft, position)
+                .margin(px(8.0))
+                .child(menu),
+        )
+        .with_priority(POPUP_PRIORITY),
+    );
+    wrapper.into_any_element()
 }
 
 pub(crate) fn dialog_field_label(theme: Theme, label: impl Into<String>) -> gpui::Div {
@@ -1245,6 +1389,12 @@ struct ProbeTextInput {
 
 impl RenderOnce for ProbeTextInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let component_id = self.id.clone();
+        let context_menu = window.use_keyed_state(
+            text_context_menu_id(&component_id, "context-menu-state"),
+            cx,
+            |_, _| TextContextMenuState::default(),
+        );
         let overlay_paints_text = self.variable_overlay
             && !input_variable_ranges(&self.value, self.highlight_path_variables).is_empty();
         let placeholder = self.placeholder.clone();
@@ -1284,10 +1434,21 @@ impl RenderOnce for ProbeTextInput {
             field.read(cx).state.clone()
         };
         let focused = state.read(cx).focus_handle(cx).is_focused(window);
+        let context_focus = state.read(cx).focus_handle(cx);
+        let open_context_menu = context_menu.clone();
         state.update(cx, |input, cx| {
             input.set_editor_style(editor_paint_style(self.theme));
             input.set_readonly(self.readonly, cx);
             input.set_placeholder(placeholder, window, cx);
+            input.on_context_menu(Rc::new(move |_, capabilities, position, window, cx| {
+                context_focus.focus(window, cx);
+                open_context_menu.update(cx, |state, cx| {
+                    state.position = Some(position);
+                    state.capabilities = capabilities;
+                    state.target_focus = Some(context_focus.clone());
+                    cx.notify();
+                });
+            }));
             if !focused && input.value() != self.value {
                 input.set_value(self.value.clone(), window, cx);
             }
@@ -1356,17 +1517,27 @@ impl RenderOnce for ProbeTextInput {
             })
             .when_some(self.leading_icon, |input, icon| input.child(icon))
             .child(Input::new(&state));
-        if !self.variable_overlay {
-            return input.into_any_element();
-        }
-        variable_input_overlay(
+        let input = if self.variable_overlay {
+            variable_input_overlay(
+                self.theme,
+                state,
+                tooltip_id,
+                input,
+                self.value,
+                self.variables,
+                self.highlight_path_variables,
+                window,
+                cx,
+            )
+        } else {
+            input.into_any_element()
+        };
+        with_text_context_menu(
             self.theme,
-            state,
-            tooltip_id,
+            &component_id,
+            context_menu,
             input,
-            self.value,
-            self.variables,
-            self.highlight_path_variables,
+            false,
             window,
             cx,
         )
@@ -2228,6 +2399,12 @@ struct ProbeEditor {
 
 impl RenderOnce for ProbeEditor {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let component_id = self.id.clone();
+        let context_menu = window.use_keyed_state(
+            text_context_menu_id(&component_id, "context-menu-state"),
+            cx,
+            |_, _| TextContextMenuState::default(),
+        );
         let placeholder = self.placeholder.clone();
         let on_change = self.on_change.clone();
         let soft_wrap = self.soft_wrap;
@@ -2268,9 +2445,20 @@ impl RenderOnce for ProbeEditor {
             if language_changed {
                 field.language = self.language.clone();
             }
+            let context_focus = field.state.read(cx).focus_handle(cx);
+            let open_context_menu = context_menu.clone();
             field.state.update(cx, |editor, cx| {
                 editor.set_editor_style(editor_paint_style(self.theme));
                 editor.set_readonly(self.readonly, cx);
+                editor.on_context_menu(Rc::new(move |_, capabilities, position, window, cx| {
+                    context_focus.focus(window, cx);
+                    open_context_menu.update(cx, |state, cx| {
+                        state.position = Some(position);
+                        state.capabilities = capabilities;
+                        state.target_focus = Some(context_focus.clone());
+                        cx.notify();
+                    });
+                }));
                 if language_changed {
                     editor.set_highlighter(self.language.clone(), cx);
                 }
@@ -2342,19 +2530,21 @@ impl RenderOnce for ProbeEditor {
             editor,
             self.search_matches,
         );
-        let Some(variables) = self.variables else {
-            return editor;
+        let editor = if let Some(variables) = self.variables {
+            variable_editor_overlay(
+                theme,
+                state,
+                ElementId::NamedChild(Arc::new(editor_id), SharedString::from("variable-tooltip")),
+                editor,
+                self.value,
+                variables,
+                window,
+                cx,
+            )
+        } else {
+            editor
         };
-        variable_editor_overlay(
-            theme,
-            state,
-            ElementId::NamedChild(Arc::new(editor_id), SharedString::from("variable-tooltip")),
-            editor,
-            self.value,
-            variables,
-            window,
-            cx,
-        )
+        with_text_context_menu(theme, &component_id, context_menu, editor, true, window, cx)
     }
 }
 
@@ -3110,6 +3300,7 @@ pub(crate) fn menu_button(
         id,
         label,
         shortcut,
+        true,
         MenuButtonStyle {
             padding_x: theme.metrics.spacing_2,
             text_color: theme.colors.text.primary,
@@ -3117,6 +3308,35 @@ pub(crate) fn menu_button(
         },
         on_activate,
     )
+}
+
+pub(crate) fn shortcut_label_for_action(
+    window: &Window,
+    action: &dyn gpui::Action,
+) -> Option<String> {
+    window
+        .highest_precedence_binding_for_action(action)
+        .map(|binding| shortcut_label_for_binding(&binding))
+}
+
+pub(crate) fn shortcut_label_for_action_in_context(
+    window: &Window,
+    action: &dyn gpui::Action,
+    context: &str,
+) -> Option<String> {
+    let context = gpui::KeyContext::parse(context).ok()?;
+    window
+        .highest_precedence_binding_for_action_in_context(action, context)
+        .map(|binding| shortcut_label_for_binding(&binding))
+}
+
+fn shortcut_label_for_binding(binding: &gpui::KeyBinding) -> String {
+    binding
+        .keystrokes()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn app_menu_trigger(
@@ -3356,6 +3576,14 @@ pub(crate) fn menu_separator(theme: Theme) -> gpui::Div {
         .bg(theme.colors.borders.subtle)
 }
 
+fn context_menu_separator(theme: Theme) -> gpui::Div {
+    div()
+        .mx(px(theme.metrics.spacing_2))
+        .h(px(1.0))
+        .flex_none()
+        .bg(theme.colors.borders.subtle)
+}
+
 pub(crate) fn destructive_menu_button(
     theme: Theme,
     id: impl Into<ElementId>,
@@ -3368,6 +3596,7 @@ pub(crate) fn destructive_menu_button(
         id,
         label,
         shortcut,
+        true,
         MenuButtonStyle {
             padding_x: theme.metrics.spacing_2,
             text_color: theme.colors.status.error,
@@ -3399,6 +3628,7 @@ fn menu_button_with_style(
     id: impl Into<ElementId>,
     label: impl Into<String>,
     shortcut: Option<String>,
+    enabled: bool,
     style: MenuButtonStyle,
     on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
@@ -3417,7 +3647,9 @@ fn menu_button_with_style(
         .w_full()
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
             cx.stop_propagation();
-            pointer_activate(window, cx);
+            if enabled {
+                pointer_activate(window, cx);
+            }
         })
         .child(
             menu_row_button(
@@ -3441,9 +3673,17 @@ fn menu_button_with_style(
                         )
                     }),
             )
+            .disabled(!enabled)
+            .styles(move |styles| {
+                styles.disabled(move |button| {
+                    button
+                        .text_color(theme.colors.actions.disabled)
+                        .cursor_default()
+                })
+            })
             .debug_selector(move || debug_selector)
             .on_click(move |event, window, cx| {
-                if !matches!(event, ClickEvent::Mouse(_)) {
+                if enabled && !matches!(event, ClickEvent::Mouse(_)) {
                     keyboard_activate(window, cx);
                 }
             }),
@@ -3579,16 +3819,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use gpui::{
-        AppContext as _, Context, Entity, IntoElement, Modifiers, Render, SharedString,
-        TestAppContext, VisualTestContext, div, hsla, point, prelude::*, px, size,
-        transparent_black,
+        AppContext as _, ClipboardItem, Context, Entity, Image, IntoElement, KeyBinding, Modifiers,
+        MouseButton, Render, SharedString, TestAppContext, VisualTestContext, div, hsla, point,
+        prelude::*, px, size, transparent_black,
     };
-    use gpui_base::{Button, Input, InputBase, Popover, input::InputState};
+    use gpui_base::{
+        Button, Input, InputBase, Popover,
+        input::{Copy, Cut, InputState, Paste, SelectAll},
+    };
 
     use super::{
-        VariableContext, VariableHighlightElement, body_text_highlights, dropdown,
-        editor_paint_style, input_text_scroll_offset, menu_button, single_line,
-        variable_highlight_runs, variable_ranges, variable_span_layout,
+        ProbeEditor, VariableContext, VariableHighlightElement, body_text_highlights,
+        clipboard_has_pasteable_text, dropdown, editor_paint_style, input_text_scroll_offset,
+        menu_button, single_line, variable_highlight_runs, variable_ranges, variable_span_layout,
         variable_tooltip_presentation,
     };
     use crate::theme::Theme;
@@ -3597,6 +3840,217 @@ mod tests {
     struct MenuTestView {
         open: bool,
         activations: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    enum TextContextMenuHarnessKind {
+        Input,
+        BodyEditor,
+        ResponseEditor,
+    }
+
+    struct TextContextMenuHarness {
+        kind: TextContextMenuHarnessKind,
+        input: Option<Entity<InputState>>,
+    }
+
+    impl Render for TextContextMenuHarness {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut Context<Self>,
+        ) -> impl IntoElement {
+            let theme = Theme::light();
+            let content = match self.kind {
+                TextContextMenuHarnessKind::Input => {
+                    let mut input = super::text_input_base(
+                        theme,
+                        "context-input",
+                        "https://api.example.com",
+                        "URL",
+                    );
+                    input.debug_selector = Some("context-input");
+                    input.shared_input = self.input.clone();
+                    input.into_any_element()
+                }
+                TextContextMenuHarnessKind::BodyEditor => ProbeEditor {
+                    theme,
+                    id: "context-body-editor".into(),
+                    value: "{\"ok\":true}".into(),
+                    placeholder: "Body content".into(),
+                    decorations: Vec::new(),
+                    language: "json".into(),
+                    readonly: false,
+                    min_height: Some(120.0),
+                    padded: true,
+                    soft_wrap: true,
+                    text_color: theme.colors.text.primary,
+                    scroll_to_offset: None,
+                    search_matches: Vec::new(),
+                    on_change: None,
+                    on_visible_range: None,
+                    debug_selector: Some("context-body-editor"),
+                    variables: Some(VariableContext::default()),
+                }
+                .into_any_element(),
+                TextContextMenuHarnessKind::ResponseEditor => ProbeEditor {
+                    theme,
+                    id: "context-response-editor".into(),
+                    value: "{\"ok\":true}".into(),
+                    placeholder: SharedString::default(),
+                    decorations: Vec::new(),
+                    language: "json".into(),
+                    readonly: true,
+                    min_height: Some(120.0),
+                    padded: true,
+                    soft_wrap: false,
+                    text_color: theme.colors.text.primary,
+                    scroll_to_offset: None,
+                    search_matches: Vec::new(),
+                    on_change: None,
+                    on_visible_range: None,
+                    debug_selector: Some("context-response-editor"),
+                    variables: None,
+                }
+                .into_any_element(),
+            };
+            div()
+                .size_full()
+                .p(px(20.0))
+                .child(div().w_full().h(px(140.0)).child(content))
+        }
+    }
+
+    fn open_text_context_menu(
+        cx: &mut TestAppContext,
+        kind: TextContextMenuHarnessKind,
+        target: &'static str,
+    ) -> gpui::WindowHandle<TextContextMenuHarness> {
+        let window = cx.open_window(size(px(420.0), px(220.0)), |window, cx| {
+            TextContextMenuHarness {
+                kind,
+                input: (matches!(kind, TextContextMenuHarnessKind::Input))
+                    .then(|| cx.new(|cx| InputState::new(window, cx))),
+            }
+        });
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let target = visual
+            .debug_bounds(target)
+            .expect("text context-menu target should render");
+        visual.simulate_mouse_down(target.center(), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(target.center(), MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+        window
+    }
+
+    #[gpui::test]
+    fn editable_input_and_body_editor_show_editing_context_menu(cx: &mut TestAppContext) {
+        cx.update(crate::theme::Theme::init);
+        cx.update(|cx| {
+            cx.bind_keys([
+                KeyBinding::new("ctrl-x", Cut, None),
+                KeyBinding::new("ctrl-c", Copy, None),
+                KeyBinding::new("ctrl-v", Paste, None),
+                KeyBinding::new("ctrl-a", SelectAll, None),
+            ]);
+        });
+        for (kind, target) in [
+            (TextContextMenuHarnessKind::Input, "context-input"),
+            (
+                TextContextMenuHarnessKind::BodyEditor,
+                "context-body-editor",
+            ),
+        ] {
+            let window = open_text_context_menu(cx, kind, target);
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            assert!(visual.debug_bounds("text-context-menu").is_some());
+            assert!(visual.debug_bounds("text-context-cut").is_some());
+            assert!(visual.debug_bounds("text-context-copy").is_some());
+            assert!(visual.debug_bounds("text-context-paste").is_some());
+            assert!(visual.debug_bounds("text-context-select-all").is_some());
+            let shortcuts = window
+                .update(cx, |_, window, _| {
+                    [
+                        super::shortcut_label_for_action(window, &Cut),
+                        super::shortcut_label_for_action(window, &Copy),
+                        super::shortcut_label_for_action(window, &Paste),
+                        super::shortcut_label_for_action(window, &SelectAll),
+                    ]
+                })
+                .expect("text context-menu window should remain open");
+            assert!(shortcuts.iter().all(Option::is_some));
+        }
+    }
+
+    #[gpui::test]
+    fn readonly_response_editor_shows_copy_context_menu(cx: &mut TestAppContext) {
+        cx.update(crate::theme::Theme::init);
+        let window = open_text_context_menu(
+            cx,
+            TextContextMenuHarnessKind::ResponseEditor,
+            "context-response-editor",
+        );
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("text-context-menu").is_some());
+        assert!(visual.debug_bounds("text-context-copy").is_some());
+        assert!(visual.debug_bounds("text-context-select-all").is_some());
+        assert!(visual.debug_bounds("text-context-cut").is_none());
+        assert!(visual.debug_bounds("text-context-paste").is_none());
+    }
+
+    #[gpui::test]
+    fn text_context_menu_only_enables_paste_for_text_clipboard_content(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            cx.write_to_clipboard(ClipboardItem::new_image(&Image::empty()));
+            assert!(!clipboard_has_pasteable_text(cx));
+
+            cx.write_to_clipboard(ClipboardItem::new_string("request body".into()));
+            assert!(clipboard_has_pasteable_text(cx));
+        });
+    }
+
+    #[gpui::test]
+    fn context_menu_actions_apply_to_the_target_input(cx: &mut TestAppContext) {
+        cx.update(crate::theme::Theme::init);
+        let window = open_text_context_menu(cx, TextContextMenuHarnessKind::Input, "context-input");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let select_all = visual
+            .debug_bounds("text-context-select-all")
+            .expect("Select All should render");
+        visual.simulate_click(select_all.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        let input = window
+            .update(cx, |view, _, _| {
+                view.input.clone().expect("input state should exist")
+            })
+            .expect("test window should remain open");
+        assert_eq!(
+            input.read_with(cx, |input, _| input.selected_range()),
+            0..23
+        );
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let target = visual
+            .debug_bounds("context-input")
+            .expect("input should remain rendered");
+        let selected_text = point(target.left() + px(40.0), target.center().y);
+        visual.simulate_mouse_down(selected_text, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(selected_text, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let cut = visual
+            .debug_bounds("text-context-cut")
+            .expect("Cut should render");
+        visual.simulate_click(cut.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+        assert_eq!(input.read_with(cx, |input, _| input.value()), "");
     }
 
     impl Render for MenuTestView {
