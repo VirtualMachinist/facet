@@ -3892,7 +3892,9 @@ impl ProbeApp {
                     .bg(theme.colors.selection.inactive_background)
             })
             .child(button)
-            .child(tree_hierarchy_guides(theme, depth, selected))
+            .when(depth > 0, |row| {
+                row.child(tree_hierarchy_guides(theme, depth, selected))
+            })
             .when(show_before, |row| row.child(line(true)))
             .when(show_after, |row| row.child(line(false)))
             .into_any_element()
