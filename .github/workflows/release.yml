@@ -107,23 +107,144 @@ jobs:
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cli-${{ matrix.platform }}
+          name: release-cli-${{ matrix.platform }}
+          path: dist/${{ steps.metadata.outputs.asset_name }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            exe: ""
+            archive: zip
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            exe: ".exe"
+            archive: zip
+          - platform: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            exe: ""
+            archive: tar.gz
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install GPUI Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            clang \
+            libasound2-dev \
+            libfontconfig-dev \
+            libglib2.0-dev \
+            libssl-dev \
+            libvulkan1 \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxkbcommon-x11-dev
+      - name: Set package metadata
+        id: metadata
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset_name="probe-desktop-${version}-${{ matrix.platform }}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+      - name: Install cargo-bundle
+        if: runner.os == 'macOS'
+        run: cargo install cargo-bundle --version 0.11.0 --locked
+      - name: Build macOS app bundle
+        if: runner.os == 'macOS'
+        run: cargo bundle --release -p probe-desktop --format osx --target ${{ matrix.target }}
+      - name: Ad-hoc sign macOS app bundle
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - "target/${{ matrix.target }}/release/bundle/osx/Probe.app"
+      - name: Package macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent \
+            "target/${{ matrix.target }}/release/bundle/osx/Probe.app" \
+            "dist/${{ steps.metadata.outputs.asset_name }}.zip"
+      - name: Build desktop binary
+        if: runner.os != 'macOS'
+        run: cargo build --release -p probe-desktop --target ${{ matrix.target }}
+      - name: Prepare desktop package directory
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+          cp "target/${{ matrix.target }}/release/probe-desktop${{ matrix.exe }}" dist/package/
+          cp README.md dist/package/
+      - name: Add Linux desktop assets
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package/share/applications
+          mkdir -p dist/package/share/icons
+          cp -R crates/desktop/assets/app-icon/linux/hicolor dist/package/share/icons/
+          cat > dist/package/share/applications/dev.probe.desktop.desktop <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Probe
+          Comment=A fast, native, local-first API client
+          Exec=probe-desktop
+          Icon=dev.probe.desktop
+          Categories=Development;
+          StartupWMClass=dev.probe.desktop
+          EOF
+      - name: Create desktop tarball
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf "dist/${{ steps.metadata.outputs.asset_name }}.tar.gz" -C dist/package .
+      - name: Create desktop zip
+        if: runner.os != 'macOS' && matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist/package/*" `
+            -DestinationPath "dist/${{ steps.metadata.outputs.asset_name }}.zip" `
+            -Force
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-desktop-${{ matrix.platform }}
           path: dist/${{ steps.metadata.outputs.asset_name }}.${{ matrix.archive }}
           if-no-files-found: error
 
   publish:
     name: Publish GitHub Release
-    needs: build-cli
+    needs:
+      - build-cli
+      - build-desktop
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v4
-      - name: Download CLI artifacts
+      - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: cli-*
+          pattern: release-*
           path: dist
           merge-multiple: true
       - name: Generate checksums
@@ -141,6 +262,6 @@ jobs:
             gh release create "$GITHUB_REF_NAME" \
               --verify-tag \
               --title "Probe $GITHUB_REF_NAME" \
-              --notes "CLI release for Probe $GITHUB_REF_NAME." \
+              --notes "Release for Probe $GITHUB_REF_NAME." \
               dist/*
           fi
