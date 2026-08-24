@@ -6088,6 +6088,7 @@ impl ProbeApp {
                     .debug_selector(|| "response-search-count".into())
                     .text_size(px(theme.typography.caption_size))
                     .text_color(theme.colors.text.muted)
+                    .mr(px(theme.metrics.spacing_1))
                     .child(search_label),
             )
             .child(components::search_input(
@@ -6108,7 +6109,7 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::icon_button(
+            .child(components::compact_icon_button(
                 theme,
                 "response-search-previous",
                 "Previous search result",
@@ -6120,7 +6121,7 @@ impl ProbeApp {
                     });
                 },
             ))
-            .child(components::icon_button(
+            .child(components::compact_icon_button(
                 theme,
                 "response-search-next",
                 "Next search result",
@@ -9600,6 +9601,18 @@ mod tests {
         assert!(match_count >= 1);
         {
             let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let search_bounds = visual
+                .debug_bounds("response-search")
+                .expect("response search input should render");
+            let previous_bounds = visual
+                .debug_bounds("response-search-previous")
+                .expect("previous search result button should render");
+            let next_bounds = visual
+                .debug_bounds("response-search-next")
+                .expect("next search result button should render");
+            assert!(search_bounds.size.width <= px(140.0));
+            assert_eq!(previous_bounds.size.width, previous_bounds.size.height);
+            assert_eq!(next_bounds.size.width, next_bounds.size.height);
             assert!(visual.debug_bounds("response-search-count").is_some());
             assert!(visual.debug_bounds("response-body").is_some());
         }

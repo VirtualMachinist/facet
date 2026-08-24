@@ -1655,8 +1655,14 @@ pub(crate) fn search_input(
 ) -> impl IntoElement {
     let mut input = text_input_base(theme, id, value, placeholder);
     input.height = theme.metrics.control_height - 2.0;
-    input.width = Some(180.0);
+    input.width = Some(132.0);
+    input.text_size = theme.typography.caption_size;
     input.debug_selector = Some("response-search");
+    input.content_gap = theme.metrics.spacing_1;
+    input.leading_icon = Some(
+        library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
+            .text_color(theme.colors.text.muted),
+    );
     input.on_change = Some(Rc::new(on_value_change));
     input.on_enter = Some(Rc::new(on_enter));
     input
@@ -1865,6 +1871,37 @@ pub(crate) fn icon_button(
         .focus(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
         .child(icon)
+}
+
+pub(crate) fn compact_icon_button(
+    theme: Theme,
+    id: &'static str,
+    aria_label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let size = theme.metrics.control_height - 2.0;
+    div()
+        .debug_selector(move || id.into())
+        .size(px(size))
+        .flex_none()
+        .child(
+            Button::new(id)
+                .accessibility_label(aria_label)
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme.metrics.radius_small))
+                .bg(transparent_black())
+                .border_1()
+                .border_color(transparent_black())
+                .cursor_pointer()
+                .hover(move |button| button.bg(theme.colors.selection.inactive_background))
+                .focus(move |button| button.border_color(theme.colors.borders.focused))
+                .on_click(on_click)
+                .child(icon),
+        )
 }
 
 fn folder_open_icon(color: gpui::Rgba) -> gpui::Div {
