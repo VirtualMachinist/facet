@@ -706,7 +706,7 @@ fn bundled_duplicate_request_copies_request_after_original() {
         .workspace()
         .request(reloaded.request_key("items/1").unwrap())
         .unwrap();
-    assert_eq!(copy.metadata.name.as_deref(), Some("AlphaCopied"));
+    assert_eq!(copy.metadata.name.as_deref(), Some("Alpha Copied"));
     assert_eq!(copy.method.as_deref(), Some("GET"));
     assert_eq!(copy.url.as_deref(), Some("https://example.com/alpha"));
     let saved = fs::read_to_string(&path).unwrap();
@@ -857,7 +857,7 @@ fn unbundled_duplicate_request_copies_request_after_original() {
         })
         .unwrap();
 
-    assert_eq!(duplicated.selector.as_deref(), Some("alphacopied.yml"));
+    assert_eq!(duplicated.selector.as_deref(), Some("alpha-copied.yml"));
     assert_eq!(duplicated.index, Some(1));
     assert_eq!(
         duplicated
@@ -870,12 +870,12 @@ fn unbundled_duplicate_request_copies_request_after_original() {
     let reloaded = load_workspace(&root).unwrap();
     let copy = reloaded
         .workspace()
-        .request(reloaded.request_key("alphacopied.yml").unwrap())
+        .request(reloaded.request_key("alpha-copied.yml").unwrap())
         .unwrap();
-    assert_eq!(copy.metadata.name.as_deref(), Some("AlphaCopied"));
+    assert_eq!(copy.metadata.name.as_deref(), Some("Alpha Copied"));
     assert_eq!(copy.method.as_deref(), Some("GET"));
     assert_eq!(copy.url.as_deref(), Some("https://example.com/alpha"));
-    let saved = fs::read_to_string(root.join("alphacopied.yml")).unwrap();
+    let saved = fs::read_to_string(root.join("alpha-copied.yml")).unwrap();
     assert!(saved.contains("x-request: retained"));
     assert!(saved.contains("seq: 2"));
     fs::remove_dir_all(root).unwrap();
