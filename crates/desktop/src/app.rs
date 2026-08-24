@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     thread,
+    time::Duration,
 };
 
 use gpui::{
@@ -77,6 +78,18 @@ const APPLICATION_ID: &str = "dev.probe.desktop";
 const APPLICATION_NAME: &str = "Probe";
 const IMPORT_DIAGNOSTIC_GROUP_LIMIT: usize = 8;
 const WORKSPACE_SWITCHER_MENU_WIDTH: f32 = 300.0;
+const RESPONSE_ELAPSED_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+
+fn response_status_color(theme: Theme, status: u16) -> gpui::Rgba {
+    match status {
+        100..=199 => theme.colors.responses.informational,
+        200..=299 => theme.colors.responses.success,
+        300..=399 => theme.colors.responses.redirect,
+        400..=499 => theme.colors.responses.client_error,
+        500..=599 => theme.colors.responses.server_error,
+        _ => theme.colors.text.muted,
+    }
+}
 
 fn suggested_collection_filename(name: &str) -> String {
     let stem = name
@@ -614,6 +627,7 @@ pub(crate) struct ProbeApp {
     #[cfg(test)]
     rendered_response_rows: usize,
     _caret_blink: Task<()>,
+    _response_elapsed_refresh: Task<()>,
     _keystrokes: gpui::Subscription,
     _quit_subscription: gpui::Subscription,
 }
@@ -716,6 +730,7 @@ impl ProbeApp {
             #[cfg(test)]
             rendered_response_rows: 0,
             _caret_blink: Self::spawn_caret_blink(cx),
+            _response_elapsed_refresh: Self::spawn_response_elapsed_refresh(cx),
             _keystrokes: keystrokes,
             _quit_subscription: quit_subscription,
         }
@@ -731,6 +746,31 @@ impl ProbeApp {
                     .update(cx, |_, cx| {
                         crate::caret::CaretBlink::toggle(cx);
                         cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    }
+
+    fn spawn_response_elapsed_refresh(cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(RESPONSE_ELAPSED_REFRESH_INTERVAL)
+                    .await;
+                if this
+                    .update(cx, |view, cx| {
+                        if view
+                            .shell
+                            .active_tab()
+                            .and_then(|key| view.execution.response(key))
+                            .is_some_and(ResponseState::is_running)
+                        {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -5829,8 +5869,20 @@ impl ProbeApp {
         let active_key = self.shell.active_tab();
         let state = active_key.and_then(|key| self.execution.response(key));
         let (summary, content) = match state {
-            Some(ResponseState::Running) => (
-                "Sending…".to_owned(),
+            Some(state @ ResponseState::Running { .. }) => (
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(
+                        components::truncated_label(format!(
+                            "Sending… • {}",
+                            format_duration(state.elapsed().unwrap_or_default())
+                        ))
+                        .text_color(theme.colors.text.muted),
+                    )
+                    .into_any_element(),
                 div()
                     .flex_1()
                     .flex()
@@ -5841,7 +5893,16 @@ impl ProbeApp {
                     .into_any_element(),
             ),
             Some(ResponseState::Cancelled) => (
-                "Cancelled".to_owned(),
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(
+                        components::truncated_label("Cancelled")
+                            .text_color(theme.colors.text.muted),
+                    )
+                    .into_any_element(),
                 div()
                     .flex_1()
                     .flex()
@@ -5852,7 +5913,15 @@ impl ProbeApp {
                     .into_any_element(),
             ),
             Some(ResponseState::Failed(error)) => (
-                "Failed".to_owned(),
+                div()
+                    .min_w(px(0.0))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .child(
+                        components::truncated_label("Failed").text_color(theme.colors.status.error),
+                    )
+                    .into_any_element(),
                 div()
                     .id("response-error-scroll")
                     .flex_1()
@@ -5864,17 +5933,41 @@ impl ProbeApp {
             ),
             Some(ResponseState::Complete(response)) => {
                 let status = format!("{} {}", response.status, response.reason);
-                let summary = format!(
-                    "{}  •  {}  •  {}",
-                    status.trim_end(),
+                let metadata = format!(
+                    "• {} • {}",
                     format_duration(response.duration),
-                    format_size(response.size)
+                    format_size(response.size),
                 );
                 let document = active_key.and_then(|key| self.response_viewer.document(key));
-                (summary, self.render_response_document(theme, document, cx))
+                (
+                    div()
+                        .min_w(px(0.0))
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(theme.metrics.spacing_1))
+                        .child(
+                            components::truncated_label(status.trim_end().to_owned())
+                                .id("response-status-code")
+                                .debug_selector(|| "response-status-code".into())
+                                .flex_none()
+                                .max_w(px(220.0))
+                                .text_color(response_status_color(theme, response.status)),
+                        )
+                        .child(
+                            div()
+                                .id("response-metadata")
+                                .debug_selector(|| "response-metadata".into())
+                                .flex_none()
+                                .text_color(theme.colors.text.muted)
+                                .child(metadata),
+                        )
+                        .into_any_element(),
+                    self.render_response_document(theme, document, cx),
+                )
             }
             None => (
-                String::new(),
+                div().into_any_element(),
                 div()
                     .flex_1()
                     .flex()
@@ -5909,12 +6002,13 @@ impl ProbeApp {
                     .border_color(theme.colors.borders.subtle)
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Response"))
                     .child(
-                        components::truncated_label(summary)
+                        div()
                             .id("response-status")
                             .debug_selector(|| "response-status".into())
                             .flex_1()
+                            .min_w(px(0.0))
                             .text_size(px(theme.typography.caption_size))
-                            .text_color(theme.colors.text.muted),
+                            .child(summary),
                     ),
             )
             .child(content)
@@ -8828,7 +8922,7 @@ mod tests {
                 assert!(receiver.try_recv().is_err());
                 assert!(matches!(
                     view.execution.response(new_key),
-                    Some(crate::execution::ResponseState::Running)
+                    Some(crate::execution::ResponseState::Running { .. })
                 ));
                 cx.notify();
             })
@@ -9467,6 +9561,8 @@ mod tests {
         {
             let mut visual = VisualTestContext::from_window(window.into(), cx);
             assert!(visual.debug_bounds("response-status").is_some());
+            assert!(visual.debug_bounds("response-status-code").is_some());
+            assert!(visual.debug_bounds("response-metadata").is_some());
             assert!(visual.debug_bounds("response-tab-pretty").is_some());
             assert!(visual.debug_bounds("response-tab-raw").is_some());
             assert!(visual.debug_bounds("response-tab-headers").is_some());

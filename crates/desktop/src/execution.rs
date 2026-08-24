@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use crate::filesystem::workspace_base_directory;
 use probe_core::{HttpRequest, RequestKey};
@@ -7,7 +11,7 @@ use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ResponseState {
-    Running,
+    Running { started_at: Instant },
     Complete(HttpResponse),
     Failed(String),
     Cancelled,
@@ -15,7 +19,15 @@ pub(crate) enum ResponseState {
 
 impl ResponseState {
     pub(crate) const fn is_running(&self) -> bool {
-        matches!(self, Self::Running)
+        matches!(self, Self::Running { .. })
+    }
+
+    pub(crate) fn elapsed(&self) -> Option<Duration> {
+        match self {
+            Self::Running { started_at } => Some(started_at.elapsed()),
+            Self::Complete(response) => Some(response.duration),
+            Self::Failed(_) | Self::Cancelled => None,
+        }
     }
 }
 
@@ -44,7 +56,12 @@ impl ExecutionState {
                 cancellation,
             },
         );
-        self.responses.insert(key, ResponseState::Running);
+        self.responses.insert(
+            key,
+            ResponseState::Running {
+                started_at: Instant::now(),
+            },
+        );
         generation
     }
 
@@ -263,7 +280,10 @@ mod tests {
         let second_generation = state.begin(key, second);
 
         state.finish(key, first_generation, Ok(response(201)));
-        assert_eq!(state.response(key), Some(&ResponseState::Running));
+        assert!(matches!(
+            state.response(key),
+            Some(ResponseState::Running { .. })
+        ));
         state.finish(key, second_generation, Ok(response(204)));
         assert!(matches!(
             state.response(key),
@@ -294,8 +314,14 @@ mod tests {
         state.remap_requests(&BTreeMap::from([(old_key, new_key)]));
 
         assert!(receiver.try_recv().is_err());
-        assert_eq!(state.response(new_key), Some(&ResponseState::Running));
-        assert_eq!(state.response(old_key), Some(&ResponseState::Running));
+        assert!(matches!(
+            state.response(new_key),
+            Some(ResponseState::Running { .. })
+        ));
+        assert!(matches!(
+            state.response(old_key),
+            Some(ResponseState::Running { .. })
+        ));
 
         state.finish(old_key, generation, Ok(response(202)));
 
@@ -312,6 +338,20 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(1250)), "1.25 s");
         assert_eq!(format_size(812), "812 B");
         assert_eq!(format_size(2048), "2.0 KB");
+    }
+
+    #[test]
+    fn running_response_tracks_elapsed_time() {
+        let key = key();
+        let mut state = ExecutionState::default();
+        let (sender, _) = oneshot::channel();
+
+        state.begin(key, sender);
+
+        assert!(matches!(
+            state.response(key).and_then(ResponseState::elapsed),
+            Some(elapsed) if elapsed >= Duration::ZERO
+        ));
     }
 
     #[test]
