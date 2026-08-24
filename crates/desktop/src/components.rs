@@ -2323,7 +2323,7 @@ fn response_editor(
         readonly: true,
         min_height: None,
         padded: true,
-        soft_wrap: false,
+        soft_wrap: true,
         text_color: presentation.text_color,
         scroll_to_offset: presentation.scroll_to_offset,
         search_matches: presentation.search_matches,
@@ -2450,6 +2450,7 @@ impl RenderOnce for ProbeEditor {
             field.state.update(cx, |editor, cx| {
                 editor.set_editor_style(editor_paint_style(self.theme));
                 editor.set_readonly(self.readonly, cx);
+                editor.set_soft_wrap(self.soft_wrap, window, cx);
                 editor.on_context_menu(Rc::new(move |_, capabilities, position, window, cx| {
                     context_focus.focus(window, cx);
                     open_context_menu.update(cx, |state, cx| {
