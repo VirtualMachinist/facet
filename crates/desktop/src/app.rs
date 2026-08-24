@@ -198,6 +198,7 @@ gpui::actions!(
         FocusPreviousControl,
         NewRequest,
         NewFolder,
+        DuplicateRequest,
         RenameTreeItem,
         DeleteTreeItem,
         MoveTreeItem,
@@ -2517,6 +2518,20 @@ impl ProbeApp {
         self.apply_structure(operation, window, cx);
     }
 
+    fn duplicate_selected_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.structure_task.is_some() {
+            return;
+        }
+        let Some((ItemKind::Request, selector, _)) = self.selected_item_details() else {
+            return;
+        };
+        self.apply_structure(
+            StructureOperation::DuplicateRequest { selector },
+            window,
+            cx,
+        );
+    }
+
     fn request_delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.structure_task.is_some() {
             return;
@@ -2707,6 +2722,15 @@ impl ProbeApp {
             .collect::<Vec<_>>();
         self.install_reloaded_workspace(workspace, baselines, &key_remaps);
         self.restore_shell_selectors(&result.selector_remaps, selectors);
+        if matches!(operation, StructureOperation::DuplicateRequest { .. })
+            && let Some(selector) = result.selector.as_deref()
+        {
+            let loaded = self
+                .loaded_workspace
+                .as_ref()
+                .expect("workspace was replaced after structural edit");
+            self.selected_tree_item = loaded.request_key(selector).map(WorkspaceItemRef::Request);
+        }
         if self.selected_tree_item.is_none()
             && let Some(selector) = result.selector.as_deref()
         {
@@ -3614,7 +3638,12 @@ impl ProbeApp {
             WorkspaceItemRef::Request(key) => ("tree-context-delete", key.slot()),
             WorkspaceItemRef::Folder(key) => ("tree-context-delete", key.slot()),
         };
+        let duplicate_id = match item {
+            WorkspaceItemRef::Request(key) => Some(("tree-context-duplicate", key.slot())),
+            WorkspaceItemRef::Folder(_) => None,
+        };
         let rename_view = cx.weak_entity();
+        let duplicate_view = cx.weak_entity();
         let delete_view = cx.weak_entity();
         let dismiss_view = cx.weak_entity();
         let menu = components::context_menu_surface(theme, "tree-context-menu", 200.0, move |cx| {
@@ -3640,6 +3669,26 @@ impl ProbeApp {
                 });
             },
         ))
+        .when_some(duplicate_id, |menu, duplicate_id| {
+            menu.child(components::menu_button(
+                theme,
+                duplicate_id,
+                "Duplicate",
+                components::shortcut_label_for_action_in_context(
+                    window,
+                    &DuplicateRequest,
+                    "RequestTree",
+                ),
+                move |window, cx| {
+                    let _ = duplicate_view.update(cx, |view, cx| {
+                        view.tree_context_menu = None;
+                        view.tree_context_menu_position = None;
+                        view.select_tree_item(item, cx);
+                        view.duplicate_selected_request(window, cx);
+                    });
+                },
+            ))
+        })
         .child(components::destructive_menu_button(
             theme,
             delete_id,
@@ -7464,6 +7513,9 @@ impl Render for ProbeApp {
             .on_action(cx.listener(|view, _: &NewFolder, window, cx| {
                 view.open_create_folder_dialog(window, cx);
             }))
+            .on_action(cx.listener(|view, _: &DuplicateRequest, window, cx| {
+                view.duplicate_selected_request(window, cx);
+            }))
             .on_action(cx.listener(|view, _: &RenameTreeItem, window, cx| {
                 view.open_rename_dialog(window, cx);
             }))
@@ -7947,6 +7999,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("cmd-c", Copy, None),
         KeyBinding::new("cmd-v", Paste, None),
         KeyBinding::new("cmd-a", SelectAll, None),
+        KeyBinding::new("cmd-d", DuplicateRequest, Some("RequestTree")),
         KeyBinding::new("cmd-e", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("backspace", DeleteTreeItem, Some("RequestTree")),
     ]);
@@ -7965,6 +8018,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-v", Paste, None),
         KeyBinding::new("ctrl-a", SelectAll, None),
         KeyBinding::new("ctrl-shift-w", CloseWindow, None),
+        KeyBinding::new("ctrl-d", DuplicateRequest, Some("RequestTree")),
         KeyBinding::new("f2", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("delete", DeleteTreeItem, Some("RequestTree")),
     ]);

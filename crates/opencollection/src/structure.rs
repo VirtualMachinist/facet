@@ -65,6 +65,8 @@ pub enum StructureOperation {
     RenameFolder { selector: String, name: String },
     /// Deletes a request.
     DeleteRequest { selector: String },
+    /// Duplicates a request after the original sibling.
+    DuplicateRequest { selector: String },
     /// Deletes a folder and its descendants.
     DeleteFolder { selector: String },
     /// Moves or reorders a request.
@@ -376,6 +378,7 @@ fn validate_operation_selectors(
     let source = match operation {
         StructureOperation::RenameRequest { selector, .. }
         | StructureOperation::DeleteRequest { selector }
+        | StructureOperation::DuplicateRequest { selector }
         | StructureOperation::MoveRequest { selector, .. }
         | StructureOperation::ReorderRequest { selector, .. } => {
             Some((ItemKind::Request, selector))
@@ -483,6 +486,7 @@ fn bundled_selector_remaps(
         operation,
         StructureOperation::CreateRequest { .. }
             | StructureOperation::CreateFolder { .. }
+            | StructureOperation::DuplicateRequest { .. }
             | StructureOperation::MoveRequest { .. }
             | StructureOperation::MoveFolder { .. }
             | StructureOperation::ReorderRequest { .. }
@@ -539,7 +543,9 @@ fn operation_source(operation: &StructureOperation) -> Option<(&str, ItemKind)> 
         | StructureOperation::DeleteFolder { selector }
         | StructureOperation::MoveFolder { selector, .. }
         | StructureOperation::ReorderFolder { selector, .. } => Some((selector, ItemKind::Folder)),
-        StructureOperation::CreateRequest { .. } | StructureOperation::CreateFolder { .. } => None,
+        StructureOperation::CreateRequest { .. }
+        | StructureOperation::CreateFolder { .. }
+        | StructureOperation::DuplicateRequest { .. } => None,
     }
 }
 
@@ -627,6 +633,7 @@ fn mutate_bundled(
         StructureOperation::DeleteRequest { selector } => {
             delete_bundled(document, &selector, ItemKind::Request)
         }
+        StructureOperation::DuplicateRequest { selector } => duplicate_bundled(document, selector),
         StructureOperation::DeleteFolder { selector } => {
             delete_bundled(document, &selector, ItemKind::Folder)
         }
@@ -741,6 +748,7 @@ fn mutate_unbundled(
         StructureOperation::DeleteRequest { selector } => {
             delete_unbundled(root, selector, ItemKind::Request)
         }
+        StructureOperation::DuplicateRequest { selector } => duplicate_unbundled(root, selector),
         StructureOperation::DeleteFolder { selector } => {
             delete_unbundled(root, selector, ItemKind::Folder)
         }
@@ -856,6 +864,48 @@ fn delete_unbundled(
             fs::remove_file(path)
         }
     })
+}
+
+fn duplicate_unbundled(root: &Path, selector: String) -> Result<StructureResult, StructureError> {
+    let source = existing_path(root, &selector, ItemKind::Request)?;
+    let parent = source.parent().expect("workspace item must have a parent");
+    let source_index = direct_children(parent)?
+        .iter()
+        .position(|child| child.path == source)
+        .expect("validated request must be an orderable child");
+    let original = fs::read(&source).map_err(|source_error| io_error(&source, source_error))?;
+    let mut value: Value = serde_yaml_ng::from_slice(&original)
+        .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
+    ensure_kind(&value, ItemKind::Request, &selector)?;
+    let name = copied_request_name(&value)?;
+    set_info_field(&mut value, "name", Value::String(name.clone()))?;
+    let path = parent.join(format!("{}.yml", slug(&name)?));
+    ensure_absent(root, &path)?;
+    create_atomic(
+        &path,
+        serde_yaml_ng::to_string(&value)
+            .map_err(|error| StructureError::InvalidDocument(error.to_string()))?
+            .as_bytes(),
+    )?;
+    let index = match reorder_directories(&[(parent, Some((&path, Some(source_index + 1))))]) {
+        Ok(indices) => indices[0],
+        Err(error) => {
+            if let Err(cleanup) = fs::remove_file(&path) {
+                return Err(StructureError::RecoveryRequired(format!(
+                    "could not remove failed request duplicate {}: {cleanup}",
+                    path.display()
+                )));
+            }
+            return Err(error);
+        }
+    };
+    Ok(unbundled_result(
+        root,
+        ItemKind::Request,
+        None,
+        &path,
+        index,
+    ))
 }
 
 fn deletion_tombstone(root: &Path) -> Result<PathBuf, StructureError> {
@@ -1312,6 +1362,36 @@ fn delete_bundled(
     })
 }
 
+fn duplicate_bundled(
+    document: &mut Value,
+    selector: String,
+) -> Result<StructureResult, StructureError> {
+    let path = parse_selector(&selector)?;
+    let index = *path
+        .last()
+        .ok_or_else(|| StructureError::InvalidDocument("empty selector".to_owned()))?;
+    let parent_path = &path[..path.len() - 1];
+    let mut duplicate = item(document, &path)
+        .ok_or_else(|| StructureError::ItemNotFound {
+            kind: ItemKind::Request,
+            selector: selector.clone(),
+        })?
+        .clone();
+    ensure_kind(&duplicate, ItemKind::Request, &selector)?;
+    let name = copied_request_name(&duplicate)?;
+    set_info_field(&mut duplicate, "name", Value::String(name))?;
+    let items = items_mut(document, parent_path)?;
+    let insertion_index = index + 1;
+    items.insert(insertion_index, duplicate);
+    Ok(result(
+        ItemKind::Request,
+        None,
+        selector_from_path(parent_path),
+        insertion_index,
+        parent_path,
+    ))
+}
+
 fn rename_bundled(
     document: &mut Value,
     selector: &str,
@@ -1325,6 +1405,17 @@ fn rename_bundled(
     })?;
     ensure_kind(item, kind, selector)?;
     set_info_field(item, "name", Value::String(name.to_owned()))
+}
+
+fn copied_request_name(value: &Value) -> Result<String, StructureError> {
+    let original = value
+        .get("info")
+        .and_then(|info| info.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or("Untitled request");
+    let name = format!("{original} Copied");
+    validate_name(&name)?;
+    Ok(name)
 }
 
 fn destination_path(

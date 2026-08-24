@@ -667,6 +667,54 @@ fn bundled_move_handles_reordering_and_destination_index_shifts() {
 }
 
 #[test]
+fn bundled_duplicate_request_copies_request_after_original() {
+    let path = temporary_path("phase16-bundled-duplicate.yml");
+    fs::copy(fixture("phase16-bundled.yml"), &path).unwrap();
+    let mut loaded = load_workspace(&path).unwrap();
+
+    let duplicated = loaded
+        .apply_structure(StructureOperation::DuplicateRequest {
+            selector: "items/0".to_owned(),
+        })
+        .unwrap();
+
+    assert_eq!(duplicated.selector.as_deref(), Some("items/1"));
+    assert_eq!(
+        duplicated
+            .selector_remaps
+            .get("items/0")
+            .map(String::as_str),
+        Some("items/0")
+    );
+    assert_eq!(
+        duplicated
+            .selector_remaps
+            .get("items/1")
+            .map(String::as_str),
+        Some("items/2")
+    );
+    assert_eq!(
+        duplicated
+            .selector_remaps
+            .get("items/1/items/0")
+            .map(String::as_str),
+        Some("items/2/items/0")
+    );
+
+    let reloaded = load_workspace(&path).unwrap();
+    let copy = reloaded
+        .workspace()
+        .request(reloaded.request_key("items/1").unwrap())
+        .unwrap();
+    assert_eq!(copy.metadata.name.as_deref(), Some("AlphaCopied"));
+    assert_eq!(copy.method.as_deref(), Some("GET"));
+    assert_eq!(copy.url.as_deref(), Some("https://example.com/alpha"));
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("x-request: retained"));
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn unbundled_structure_edits_persist_paths_order_and_unknown_fields() {
     let root = temporary_path("phase16-unbundled");
     copy_directory(&fixture("phase16-unbundled"), &root);
@@ -794,6 +842,42 @@ fn unbundled_folder_edits_and_explicit_reordering_survive_reload() {
     assert_eq!(reloaded.folders()[0].selector(), "destination");
     assert_eq!(reloaded.workspace().folder_count(), 1);
     assert_eq!(reloaded.workspace().request_count(), 1);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unbundled_duplicate_request_copies_request_after_original() {
+    let root = temporary_path("phase16-unbundled-duplicate");
+    copy_directory(&fixture("phase16-unbundled"), &root);
+    let mut loaded = load_workspace(&root).unwrap();
+
+    let duplicated = loaded
+        .apply_structure(StructureOperation::DuplicateRequest {
+            selector: "alpha.yml".to_owned(),
+        })
+        .unwrap();
+
+    assert_eq!(duplicated.selector.as_deref(), Some("alphacopied.yml"));
+    assert_eq!(duplicated.index, Some(1));
+    assert_eq!(
+        duplicated
+            .selector_remaps
+            .get("alpha.yml")
+            .map(String::as_str),
+        Some("alpha.yml")
+    );
+
+    let reloaded = load_workspace(&root).unwrap();
+    let copy = reloaded
+        .workspace()
+        .request(reloaded.request_key("alphacopied.yml").unwrap())
+        .unwrap();
+    assert_eq!(copy.metadata.name.as_deref(), Some("AlphaCopied"));
+    assert_eq!(copy.method.as_deref(), Some("GET"));
+    assert_eq!(copy.url.as_deref(), Some("https://example.com/alpha"));
+    let saved = fs::read_to_string(root.join("alphacopied.yml")).unwrap();
+    assert!(saved.contains("x-request: retained"));
+    assert!(saved.contains("seq: 2"));
     fs::remove_dir_all(root).unwrap();
 }
 
