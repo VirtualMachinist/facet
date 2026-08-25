@@ -5060,7 +5060,7 @@ impl ProbeApp {
                             } else {
                                 "Remove query parameter"
                             },
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
                                         key,
@@ -5073,6 +5073,7 @@ impl ProbeApp {
                                         },
                                         cx,
                                     );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -5202,7 +5203,7 @@ impl ProbeApp {
                             theme,
                             ("remove-header", index),
                             "Remove header",
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
                                         key,
@@ -5213,6 +5214,7 @@ impl ProbeApp {
                                         },
                                         cx,
                                     );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -5451,7 +5453,7 @@ impl ProbeApp {
                             theme,
                             ("remove-form-field", index),
                             "Remove form field",
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
                                         key,
@@ -5466,6 +5468,7 @@ impl ProbeApp {
                                         },
                                         cx,
                                     );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -5681,7 +5684,7 @@ impl ProbeApp {
                             theme,
                             ("remove-multipart-part", index),
                             "Remove multipart part",
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
                                     key,
@@ -5695,6 +5698,7 @@ impl ProbeApp {
                                     },
                                     cx,
                                 );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -5845,7 +5849,7 @@ impl ProbeApp {
                             theme,
                             ("remove-body-file", index),
                             "Remove file",
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
                                         key,
@@ -5859,6 +5863,7 @@ impl ProbeApp {
                                         },
                                         cx,
                                     );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -6015,7 +6020,7 @@ impl ProbeApp {
                             theme,
                             ("remove-authentication-property", index),
                             "Remove authentication property",
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 let remove_name = remove_name.clone();
                                 let _ = remove_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -6029,6 +6034,7 @@ impl ProbeApp {
                                         },
                                         cx,
                                     );
+                                    view.focus_handle.focus(window, cx);
                                 });
                             },
                         )),
@@ -8610,7 +8616,7 @@ mod tests {
         KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext,
         VisualTestContext, point, px, size,
     };
-    use probe_core::WorkspaceItemRef;
+    use probe_core::{HttpRequest, QueryParameter, WorkspaceItemRef};
     use probe_http::{HttpResponse, ResponseHeader};
     use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
     use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
@@ -8689,6 +8695,89 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn destructive_dialog_shortcut() -> &'static str {
         "ctrl-delete"
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_shortcut() -> &'static str {
+        "cmd-s"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_shortcut() -> &'static str {
+        "ctrl-s"
+    }
+
+    fn assert_save_shortcut_after_clicking_remove_row_persists_removal(
+        cx: &mut TestAppContext,
+        fixture_name: &str,
+        section: EditorSection,
+        add_selector: &'static str,
+        remove_selector: &'static str,
+        assert_request: impl FnOnce(&HttpRequest),
+    ) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_bundled_fixture(fixture_name);
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let key = workspace.requests()[0].key();
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.select_request(key, cx);
+                view.request_editor.section = section;
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let add = visual
+            .debug_bounds(add_selector)
+            .expect("add row button should render");
+        visual.simulate_click(add.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.run_until_parked();
+        window
+            .update(cx, |view, window, cx| view.save_active_request(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let remove = visual
+            .debug_bounds(remove_selector)
+            .expect("remove row button should render");
+        visual.simulate_click(remove.center(), Modifiers::default());
+        visual.run_until_parked();
+        cx.simulate_keystrokes(window.into(), save_shortcut());
+        cx.run_until_parked();
+
+        let (dirty, message) = window
+            .update(cx, |view, _, _| {
+                let request = view
+                    .loaded_workspace
+                    .as_ref()
+                    .unwrap()
+                    .workspace()
+                    .request(key)
+                    .unwrap();
+                (
+                    view.persistence.is_dirty(key, request),
+                    view.message.clone(),
+                )
+            })
+            .unwrap();
+        assert!(!dirty, "save failed: {message:?}");
+        let reloaded = probe_opencollection::load_workspace(&fixture).unwrap();
+        let request = reloaded
+            .workspace()
+            .request(reloaded.requests()[0].key())
+            .unwrap();
+        assert_request(request);
+        fs::remove_file(fixture).unwrap();
     }
 
     #[cfg(target_os = "macos")]
@@ -9536,6 +9625,37 @@ mod tests {
     }
 
     #[gpui::test]
+    fn save_shortcut_after_clicking_remove_query_row_persists_removal(cx: &mut TestAppContext) {
+        assert_save_shortcut_after_clicking_remove_row_persists_removal(
+            cx,
+            "remove-query-row-shortcut-save",
+            EditorSection::Query,
+            "add-query-parameter",
+            "remove-query-1",
+            |request| {
+                assert_eq!(request.query_parameters.len(), 1);
+                assert_eq!(request.query_parameters[0].name, "limit");
+            },
+        );
+    }
+
+    #[gpui::test]
+    fn save_shortcut_after_clicking_remove_header_row_persists_removal(cx: &mut TestAppContext) {
+        assert_save_shortcut_after_clicking_remove_row_persists_removal(
+            cx,
+            "remove-header-row-shortcut-save",
+            EditorSection::Headers,
+            "add-header",
+            "remove-header-2",
+            |request| {
+                assert_eq!(request.headers.len(), 2);
+                assert_eq!(request.headers[0].name, "Accept");
+                assert_eq!(request.headers[1].name, "X-Debug");
+            },
+        );
+    }
+
+    #[gpui::test]
     fn workspace_reload_preserves_running_request_execution(cx: &mut TestAppContext) {
         cx.update(Theme::init);
         let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
@@ -9584,6 +9704,86 @@ mod tests {
             })
             .unwrap();
 
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn saving_after_removing_empty_query_parameter_during_in_flight_save_clears_dirty_state(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_bundled_fixture("save-empty-query-removal");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let key = workspace.requests()[0].key();
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.select_request(key, cx);
+                view.edit_request(
+                    key,
+                    |request| {
+                        request.query_parameters.push(QueryParameter {
+                            name: String::new(),
+                            value: String::new(),
+                            disabled: false,
+                        });
+                    },
+                    cx,
+                );
+                view.save_active_request(window, cx);
+                view.edit_request(
+                    key,
+                    |request| {
+                        request.query_parameters.retain(|parameter| {
+                            !parameter.name.is_empty() || !parameter.value.is_empty()
+                        });
+                    },
+                    cx,
+                );
+                assert!(
+                    view.persistence.is_dirty(
+                        key,
+                        view.loaded_workspace
+                            .as_ref()
+                            .unwrap()
+                            .workspace()
+                            .request(key)
+                            .unwrap()
+                    ),
+                    "removing a saved empty parameter should make the request dirty before save"
+                );
+                view.save_active_request(window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let (dirty, message) = window
+            .update(cx, |view, _, _| {
+                let request = view
+                    .loaded_workspace
+                    .as_ref()
+                    .unwrap()
+                    .workspace()
+                    .request(key)
+                    .unwrap();
+                (
+                    view.persistence.is_dirty(key, request),
+                    view.message.clone(),
+                )
+            })
+            .unwrap();
+        assert!(!dirty, "save failed: {message:?}");
+        let reloaded = probe_opencollection::load_workspace(&fixture).unwrap();
+        let request = reloaded
+            .workspace()
+            .request(reloaded.requests()[0].key())
+            .unwrap();
+        assert_eq!(request.query_parameters.len(), 1);
+        assert_eq!(request.query_parameters[0].name, "limit");
         fs::remove_file(fixture).unwrap();
     }
 

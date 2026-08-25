@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use probe_core::{HttpRequest, RequestKey, RequestUpdate};
 
@@ -6,7 +6,7 @@ use probe_core::{HttpRequest, RequestKey, RequestUpdate};
 pub(crate) struct PersistenceState {
     saved: BTreeMap<RequestKey, HttpRequest>,
     revisions: BTreeMap<RequestKey, u64>,
-    saving: HashSet<RequestKey>,
+    saving: BTreeMap<RequestKey, u64>,
     queue: VecDeque<RequestKey>,
 }
 
@@ -32,6 +32,11 @@ impl PersistenceState {
 
     pub(crate) fn is_dirty(&self, key: RequestKey, request: &HttpRequest) -> bool {
         self.saved.get(&key) != Some(request)
+            || self.saving.get(&key).is_some_and(|revision| {
+                self.revisions
+                    .get(&key)
+                    .is_some_and(|current| current > revision)
+            })
     }
 
     pub(crate) fn dirty_keys<'a>(
@@ -46,7 +51,7 @@ impl PersistenceState {
 
     pub(crate) fn enqueue(&mut self, keys: impl IntoIterator<Item = RequestKey>) {
         for key in keys {
-            if !self.saving.contains(&key) && !self.queue.contains(&key) {
+            if !self.queue.contains(&key) {
                 self.queue.push_back(key);
             }
         }
@@ -54,7 +59,8 @@ impl PersistenceState {
 
     pub(crate) fn next(&mut self) -> Option<RequestKey> {
         let key = self.queue.pop_front()?;
-        self.saving.insert(key);
+        self.saving
+            .insert(key, self.revisions.get(&key).copied().unwrap_or_default());
         Some(key)
     }
 
@@ -166,5 +172,19 @@ mod tests {
         assert!(update.method.is_none());
         assert!(update.headers.is_none());
         assert!(update.body.is_none());
+    }
+
+    #[test]
+    fn enqueue_keeps_a_follow_up_save_for_a_request_that_is_already_saving() {
+        let key = request_key();
+        let mut state = PersistenceState::default();
+        state.reset([(key, HttpRequest::default())]);
+
+        state.enqueue([key]);
+        assert_eq!(state.next(), Some(key));
+        state.enqueue([key]);
+        state.complete(key, HttpRequest::default());
+
+        assert_eq!(state.next(), Some(key));
     }
 }

@@ -1899,7 +1899,10 @@ fn editor_button_base(
     selected: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
+    let id = id.into();
+    let debug_id = id.to_string();
     Button::new(id)
+        .debug_selector(move || debug_id.clone())
         .selected(selected)
         .h(px(theme.metrics.control_height))
         .px(px(theme.metrics.spacing_3))
@@ -2080,7 +2083,10 @@ pub(crate) fn icon_button(
     icon: impl IntoElement,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
+    let id = id.into();
+    let debug_id = id.to_string();
     Button::new(id)
+        .debug_selector(move || debug_id.clone())
         .accessibility_label(aria_label)
         .w(px(30.0))
         .h(px(theme.metrics.control_height))
