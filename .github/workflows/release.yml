@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -64,7 +64,7 @@ jobs:
             archive: tar.gz
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -105,7 +105,7 @@ jobs:
             -DestinationPath "dist/${{ steps.metadata.outputs.asset_name }}.zip" `
             -Force
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-cli-${{ matrix.platform }}
           path: dist/${{ steps.metadata.outputs.asset_name }}.${{ matrix.archive }}
@@ -136,7 +136,7 @@ jobs:
             archive: tar.gz
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
@@ -224,7 +224,7 @@ jobs:
             -DestinationPath "dist/${{ steps.metadata.outputs.asset_name }}.zip" `
             -Force
       - name: Upload desktop artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-desktop-${{ matrix.platform }}
           path: dist/${{ steps.metadata.outputs.asset_name }}.${{ matrix.archive }}
@@ -240,9 +240,9 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-*
           path: dist
