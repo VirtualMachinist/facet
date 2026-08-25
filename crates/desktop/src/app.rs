@@ -67,9 +67,9 @@ use crate::{
     session::{SessionState, SessionStore},
     shell::{PaneLayout, ResizePane, ShellState},
     structure_editor::{
-        DropIndicator, DropReject, ROOT_PARENT, StructureDialog, TreeDropIntent,
-        descendant_requests, drop_intent, drop_zone, hovered_row_index, item_position,
-        structure_operation_for_drop, validate_tree_drop, would_duplicate_path,
+        DropIndicator, DropReject, ROOT_PARENT, StructureDialog, StructureDialogMode,
+        TreeDropIntent, descendant_requests, drop_intent, drop_zone, hovered_row_index,
+        item_position, structure_operation_for_drop, validate_tree_drop, would_duplicate_path,
     },
     synchronization::{
         LocalRequestState, ReconcileResult, ReconciledWorkspace, SynchronizationConflict, reconcile,
@@ -661,6 +661,7 @@ impl Render for TreeDrag {
 
 pub(crate) struct ProbeApp {
     focus_handle: FocusHandle,
+    tree_focus_handle: FocusHandle,
     structure_dialog_focus: FocusHandle,
     create_environment_dialog_focus: FocusHandle,
     application_dialog_focus: FocusHandle,
@@ -759,6 +760,7 @@ impl ProbeApp {
         });
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let tree_focus_handle = cx.focus_handle();
         let structure_dialog_focus = cx.focus_handle();
         let create_environment_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
@@ -769,6 +771,7 @@ impl ProbeApp {
 
         Self {
             focus_handle,
+            tree_focus_handle,
             structure_dialog_focus,
             create_environment_dialog_focus,
             application_dialog_focus,
@@ -2120,6 +2123,45 @@ impl ProbeApp {
         self.request_editor.remap_requests(key_remaps);
     }
 
+    fn remap_structure_dialog(&mut self, remaps: &BTreeMap<String, String>) {
+        let Some(dialog) = self.structure_dialog.as_mut() else {
+            return;
+        };
+        let Some(loaded) = self.loaded_workspace.as_ref() else {
+            self.structure_dialog = None;
+            return;
+        };
+
+        let mut target_exists = true;
+        match &mut dialog.mode {
+            StructureDialogMode::CreateRequest | StructureDialogMode::CreateFolder => {}
+            StructureDialogMode::Rename { kind, selector }
+            | StructureDialogMode::Move { kind, selector } => {
+                if let Some(mapped) = remaps.get(selector) {
+                    selector.clone_from(mapped);
+                }
+                target_exists = match kind {
+                    ItemKind::Request => loaded.request_key(selector).is_some(),
+                    ItemKind::Folder => loaded.folder_key(selector).is_some(),
+                };
+            }
+        }
+
+        if !target_exists {
+            self.structure_dialog = None;
+            return;
+        }
+
+        if !dialog.parent.is_empty() {
+            if let Some(mapped) = remaps.get(&dialog.parent) {
+                dialog.parent.clone_from(mapped);
+            }
+            if loaded.folder_key(&dialog.parent).is_none() {
+                self.structure_dialog = None;
+            }
+        }
+    }
+
     fn restore_shell_selectors(
         &mut self,
         remaps: &BTreeMap<String, String>,
@@ -2190,7 +2232,7 @@ impl ProbeApp {
             .collect::<Vec<_>>();
         self.install_reloaded_workspace(reconciled.workspace, baselines, &key_remaps);
         self.restore_shell_selectors(&reconciled.selector_remaps, selectors);
-        self.structure_dialog = None;
+        self.remap_structure_dialog(&reconciled.selector_remaps);
         self.create_environment_dialog = None;
         if self.shell.selected_environment().is_some_and(|name| {
             !self
@@ -2762,7 +2804,7 @@ impl ProbeApp {
                     Ok::<_, String>((workspace, disk_workspace, structure_result))
                 })
                 .await;
-            let _ = view.update_in(window, |view, _, cx| {
+            let _ = view.update_in(window, |view, window, cx| {
                 view.structure_task = None;
                 view.loading = false;
                 match result {
@@ -2772,6 +2814,7 @@ impl ProbeApp {
                             disk_workspace,
                             result,
                             &operation,
+                            window,
                             cx,
                         );
                     }
@@ -2792,6 +2835,7 @@ impl ProbeApp {
         disk_workspace: LoadedWorkspace,
         result: StructureResult,
         operation: &StructureOperation,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(old) = self.loaded_workspace.as_ref() else {
@@ -2854,6 +2898,9 @@ impl ProbeApp {
                 .as_ref()
                 .expect("workspace was replaced after structural edit");
             self.selected_tree_item = loaded.request_key(selector).map(WorkspaceItemRef::Request);
+            if self.structure_dialog.is_none() {
+                self.tree_focus_handle.focus(window, cx);
+            }
         }
         if self.selected_tree_item.is_none()
             && let Some(selector) = result.selector.as_deref()
@@ -4281,6 +4328,8 @@ impl ProbeApp {
                 .relative()
                 .flex_1()
                 .min_h(px(0.0))
+                .track_focus(&self.tree_focus_handle)
+                .key_context("RequestTree")
                 .child(list)
                 .child(
                     Scrollbar::vertical(&self.tree_scroll)
@@ -8633,6 +8682,8 @@ mod tests {
         response_inspector::InspectSelection,
         response_viewer::ResponseViewerTab,
         shell::PaneLayout,
+        structure_editor::StructureDialogMode,
+        synchronization::ReconciledWorkspace,
         theme::Theme,
     };
 
@@ -8695,6 +8746,26 @@ mod tests {
     #[cfg(not(target_os = "macos"))]
     fn destructive_dialog_shortcut() -> &'static str {
         "ctrl-delete"
+    }
+
+    #[cfg(target_os = "macos")]
+    fn tree_delete_shortcut() -> &'static str {
+        "backspace"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn tree_delete_shortcut() -> &'static str {
+        "delete"
+    }
+
+    #[cfg(target_os = "macos")]
+    fn rename_shortcut() -> &'static str {
+        "cmd-e"
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn rename_shortcut() -> &'static str {
+        "f2"
     }
 
     #[cfg(target_os = "macos")]
@@ -11390,6 +11461,184 @@ mod tests {
             .expect("test window should remain open");
         assert_eq!(tabs, vec![second]);
         assert_eq!(active, Some(second));
+    }
+
+    #[gpui::test]
+    fn tree_context_menu_duplicate_restores_tree_focus_for_delete_shortcut(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_structure_fixture("context-duplicate-focus");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let request = workspace.request_key("items/0").unwrap();
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.select_tree_item(WorkspaceItemRef::Request(request), cx);
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let row = {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual
+                .debug_bounds("tree-row-items/0")
+                .expect("request row should render")
+        };
+        window
+            .update(cx, |view, _, cx| {
+                view.open_tree_context_menu(WorkspaceItemRef::Request(request), row.center(), cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let duplicate = visual
+                .debug_bounds("tree-context-duplicate-0")
+                .expect("duplicate menu item should render");
+            visual.simulate_click(duplicate.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, window, cx| {
+                assert!(view.structure_task.is_none(), "{:?}", view.message);
+                assert_eq!(window.focused(cx), Some(view.tree_focus_handle.clone()));
+                let selected = view
+                    .selected_tree_item
+                    .expect("duplicated request should be selected");
+                assert_ne!(selected, WorkspaceItemRef::Request(request));
+                let loaded = view.loaded_workspace.as_ref().unwrap();
+                assert!(matches!(
+                    selected,
+                    WorkspaceItemRef::Request(key) if loaded.workspace().request(key).is_some()
+                ));
+            })
+            .expect("test window should remain open");
+
+        cx.simulate_keystrokes(window.into(), tree_delete_shortcut());
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(matches!(
+                    view.application_dialog,
+                    Some(ApplicationDialog::Delete { .. })
+                ));
+            })
+            .expect("test window should remain open");
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn tree_context_menu_duplicate_keeps_keyboard_rename_dialog_open_after_reconcile(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        cx.update(bind_platform_hotkeys);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_structure_fixture("context-duplicate-rename-focus");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let request = workspace.request_key("items/0").unwrap();
+        window
+            .update(cx, |view, _, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.select_tree_item(WorkspaceItemRef::Request(request), cx);
+                cx.notify();
+            })
+            .expect("test window should be open");
+        cx.run_until_parked();
+
+        let row = {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            visual
+                .debug_bounds("tree-row-items/0")
+                .expect("request row should render")
+        };
+        window
+            .update(cx, |view, _, cx| {
+                view.open_tree_context_menu(WorkspaceItemRef::Request(request), row.center(), cx);
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let duplicate = visual
+                .debug_bounds("tree-context-duplicate-0")
+                .expect("duplicate menu item should render");
+            visual.simulate_click(duplicate.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), rename_shortcut());
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, cx| {
+                assert!(matches!(
+                    view.structure_dialog,
+                    Some(crate::structure_editor::StructureDialog {
+                        mode: StructureDialogMode::Rename { .. },
+                        ..
+                    })
+                ));
+                let fresh = probe_opencollection::load_workspace(&fixture).unwrap();
+                let disk_baselines = fresh
+                    .requests()
+                    .iter()
+                    .filter_map(|located| {
+                        fresh
+                            .workspace()
+                            .request(located.key())
+                            .cloned()
+                            .map(|request| (located.selector().to_owned(), request))
+                    })
+                    .collect();
+                let selector_remaps = fresh
+                    .requests()
+                    .iter()
+                    .map(|located| (located.selector().to_owned(), located.selector().to_owned()))
+                    .chain(fresh.folders().iter().map(|located| {
+                        (located.selector().to_owned(), located.selector().to_owned())
+                    }))
+                    .collect();
+                view.apply_reconciled_workspace(
+                    ReconciledWorkspace {
+                        workspace: fresh,
+                        disk_baselines,
+                        selector_remaps,
+                    },
+                    cx,
+                );
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, window, cx| {
+                assert!(matches!(
+                    view.structure_dialog,
+                    Some(crate::structure_editor::StructureDialog {
+                        mode: StructureDialogMode::Rename { .. },
+                        ..
+                    })
+                ));
+                assert_ne!(window.focused(cx), Some(view.tree_focus_handle.clone()));
+            })
+            .expect("test window should remain open");
+        fs::remove_file(fixture).unwrap();
     }
 
     #[gpui::test]
