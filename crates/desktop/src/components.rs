@@ -13,8 +13,8 @@ use crate::response_viewer::{SearchMatch, join_header_lines};
 use crate::shell::PaneLayout;
 use crate::theme::Theme;
 use gpui::{
-    Anchor, App, AppContext as _, Bounds, BoxShadow, ClickEvent, ContentMask, Context, Element,
-    ElementId, Entity, EntityId, FocusHandle, Focusable, FontWeight, GlobalElementId,
+    Anchor, App, AppContext as _, Bounds, BoxShadow, ClickEvent, ContentMask, Context, Edges,
+    Element, ElementId, Entity, EntityId, FocusHandle, Focusable, FontWeight, GlobalElementId,
     HighlightStyle, Hsla, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId,
     MouseButton, ParentElement as _, Pixels, Point, Render, RenderOnce, Role, ShapedLine,
     SharedString, StatefulInteractiveElement as _, Style, Styled as _, Subscription, Task,
@@ -387,6 +387,7 @@ static SEARCH_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata:
 static SAVE_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuSave));
 static CLOSE_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuX));
 static TRASH_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuTrash2));
+static LOCATE_SVG: LazyLock<Vec<u8>> = LazyLock::new(|| icon_svg_bytes(icondata::LuLocateFixed));
 static SIDEBAR_COLLAPSE_SVG: LazyLock<Vec<u8>> =
     LazyLock::new(|| icon_svg_bytes(icondata::LuPanelLeftClose));
 static SIDEBAR_EXPAND_SVG: LazyLock<Vec<u8>> =
@@ -519,6 +520,15 @@ pub(crate) fn save_icon(theme: Theme) -> gpui::Div {
 pub(crate) fn close_icon(theme: Theme) -> gpui::Div {
     library_icon("lucide-x", &CLOSE_SVG, theme.metrics.icon_standard)
         .text_color(theme.colors.text.secondary)
+}
+
+pub(crate) fn locate_icon(theme: Theme) -> gpui::Div {
+    library_icon(
+        "lucide-locate-fixed",
+        &LOCATE_SVG,
+        theme.metrics.icon_standard,
+    )
+    .text_color(theme.colors.text.secondary)
 }
 
 fn sidebar_icon(theme: Theme, collapsed: bool) -> gpui::Div {
@@ -1198,6 +1208,44 @@ type TextContextActionHandler = Rc<dyn Fn(Option<String>, usize, &mut Window, &m
 type TextContextEnableHandler = Rc<dyn Fn(Option<&str>, usize) -> bool>;
 type DropdownChangeHandler<T> = Rc<dyn Fn(Option<&T>, &mut Window, &mut App)>;
 type DropdownActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+type EditorMouseDownHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[derive(Clone, Copy)]
+struct EditorInsets {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+impl EditorInsets {
+    fn standard(theme: Theme) -> Self {
+        Self {
+            top: theme.metrics.spacing_2,
+            right: theme.metrics.spacing_2,
+            bottom: theme.metrics.spacing_2,
+            left: theme.metrics.spacing_2,
+        }
+    }
+
+    fn response(theme: Theme) -> Self {
+        Self {
+            top: theme.metrics.spacing_2,
+            right: 2.0,
+            bottom: theme.metrics.spacing_2,
+            left: theme.metrics.spacing_1,
+        }
+    }
+
+    fn edges(self) -> Edges<Pixels> {
+        Edges {
+            top: px(self.top),
+            right: px(self.right),
+            bottom: px(self.bottom),
+            left: px(self.left),
+        }
+    }
+}
 
 #[derive(Clone)]
 struct TextContextMenuExtraAction {
@@ -1206,6 +1254,48 @@ struct TextContextMenuExtraAction {
     requires_selection: bool,
     is_enabled: TextContextEnableHandler,
     on_click: TextContextActionHandler,
+}
+
+pub(crate) struct ResponseBodyInputOptions<'a> {
+    matches: &'a [SearchMatch],
+    active_match: usize,
+    inspection_reveal: Option<(Range<usize>, bool)>,
+    language: SharedString,
+    on_visible_range: VisibleRangeHandler,
+    on_mouse_down: EditorMouseDownHandler,
+    inspect_enabled: TextContextEnableHandler,
+    on_inspect: TextContextActionHandler,
+}
+
+impl<'a> ResponseBodyInputOptions<'a> {
+    pub(crate) fn new(
+        matches: &'a [SearchMatch],
+        active_match: usize,
+        language: impl Into<SharedString>,
+        on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+        on_mouse_down: impl Fn(&mut Window, &mut App) + 'static,
+        inspect_enabled: impl Fn(Option<&str>, usize) -> bool + 'static,
+        on_inspect: impl Fn(Option<String>, usize, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            matches,
+            active_match,
+            inspection_reveal: None,
+            language: language.into(),
+            on_visible_range: Rc::new(on_visible_range),
+            on_mouse_down: Rc::new(on_mouse_down),
+            inspect_enabled: Rc::new(inspect_enabled),
+            on_inspect: Rc::new(on_inspect),
+        }
+    }
+
+    pub(crate) fn inspection_reveal(
+        mut self,
+        inspection_reveal: Option<(Range<usize>, bool)>,
+    ) -> Self {
+        self.inspection_reveal = inspection_reveal;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -2372,12 +2462,13 @@ pub(crate) fn body_text_input(
         },
         readonly: false,
         min_height: Some(120.0),
-        padded: true,
+        padding: EditorInsets::standard(theme),
         soft_wrap: true,
         text_color: theme.colors.text.primary,
-        scroll_to_offset: None,
+        scroll_to_range: None,
         search_matches: Vec::new(),
         on_change: Some(Rc::new(on_value_change)),
+        on_mouse_down: None,
         on_visible_range: None,
         extra_context_menu_actions: Vec::new(),
         debug_selector: None,
@@ -2386,37 +2477,43 @@ pub(crate) fn body_text_input(
     .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn response_body_input(
     theme: Theme,
     id: impl Into<ElementId>,
     text: &str,
-    matches: &[SearchMatch],
-    active_match: usize,
-    language: impl Into<SharedString>,
-    on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
-    inspect_enabled: impl Fn(Option<&str>, usize) -> bool + 'static,
-    on_inspect: impl Fn(Option<String>, usize, &mut Window, &mut App) + 'static,
+    options: ResponseBodyInputOptions<'_>,
 ) -> gpui::AnyElement {
-    let (decorations, scroll_to_offset) = response_search_decorations(theme, matches, active_match);
+    let inspection_reveal = options.inspection_reveal;
+    let search_matches = response_highlights(
+        options.matches,
+        options.active_match,
+        inspection_reveal.as_ref(),
+    );
+    let (decorations, scroll_to_range) = response_decorations(
+        theme,
+        options.matches,
+        options.active_match,
+        inspection_reveal,
+    );
     response_editor(
         theme,
         id,
         ResponseEditorPresentation {
             value: text.into(),
             decorations,
-            language: language.into(),
+            language: options.language,
             text_color: theme.colors.syntax.plain,
-            scroll_to_offset,
-            search_matches: search_highlights(matches, active_match),
+            scroll_to_range,
+            search_matches,
         },
-        on_visible_range,
+        options.on_visible_range,
+        Some(options.on_mouse_down),
         vec![TextContextMenuExtraAction {
             id: "inspect",
             label: "Inspect",
             requires_selection: false,
-            is_enabled: Rc::new(inspect_enabled),
-            on_click: Rc::new(on_inspect),
+            is_enabled: options.inspect_enabled,
+            on_click: options.on_inspect,
         }],
     )
 }
@@ -2438,8 +2535,8 @@ pub(crate) fn response_headers_input(
             None,
         ));
     }
-    let (search_decorations, scroll_to_offset) =
-        response_search_decorations(theme, matches, active_match);
+    let (search_decorations, scroll_to_range) =
+        response_decorations(theme, matches, active_match, None);
     decorations.extend(search_decorations);
     response_editor(
         theme,
@@ -2449,10 +2546,11 @@ pub(crate) fn response_headers_input(
             decorations,
             language: SharedString::default(),
             text_color: theme.colors.text.primary,
-            scroll_to_offset,
-            search_matches: search_highlights(matches, active_match),
+            scroll_to_range,
+            search_matches: response_highlights(matches, active_match, None),
         },
-        on_visible_range,
+        Rc::new(on_visible_range),
+        None,
         Vec::new(),
     )
 }
@@ -2471,37 +2569,54 @@ pub(crate) fn response_inspector_input(
             decorations: Vec::new(),
             language: SharedString::default(),
             text_color: theme.colors.text.primary,
-            scroll_to_offset: None,
+            scroll_to_range: None,
             search_matches: Vec::new(),
         },
-        on_visible_range,
+        Rc::new(on_visible_range),
+        None,
         Vec::new(),
     )
 }
 
-fn response_search_decorations(
+fn response_decorations(
     theme: Theme,
     matches: &[SearchMatch],
     active_match: usize,
-) -> (Vec<TextDecoration>, Option<usize>) {
-    let mut decorations = Vec::with_capacity(matches.len());
-    let mut scroll_to_offset = None;
+    inspection_reveal: Option<(Range<usize>, bool)>,
+) -> (Vec<TextDecoration>, Option<Range<usize>>) {
+    let mut decorations =
+        Vec::with_capacity(matches.len() + usize::from(inspection_reveal.is_some()));
+    let mut scroll_to_range = None;
     for (index, found) in matches.iter().enumerate() {
         let active = index == active_match;
         if active {
-            scroll_to_offset = Some(found.range.start);
+            scroll_to_range = Some(found.range.start..found.range.start);
         }
         decorations.push(search_match_decoration(theme, found.range.clone(), active));
     }
-    (decorations, scroll_to_offset)
+    if let Some((range, should_scroll)) = inspection_reveal {
+        if should_scroll {
+            scroll_to_range = Some(range.clone());
+        }
+        decorations.push(search_match_decoration(theme, range, true));
+    }
+    (decorations, scroll_to_range)
 }
 
-fn search_highlights(matches: &[SearchMatch], active_match: usize) -> Vec<(Range<usize>, bool)> {
-    matches
+fn response_highlights(
+    matches: &[SearchMatch],
+    active_match: usize,
+    inspection_reveal: Option<&(Range<usize>, bool)>,
+) -> Vec<(Range<usize>, bool)> {
+    let mut highlights = matches
         .iter()
         .enumerate()
         .map(|(index, found)| (found.range.clone(), index == active_match))
-        .collect()
+        .collect::<Vec<_>>();
+    if let Some((range, _)) = inspection_reveal {
+        highlights.push((range.clone(), true));
+    }
+    highlights
 }
 
 struct ResponseEditorPresentation {
@@ -2509,7 +2624,7 @@ struct ResponseEditorPresentation {
     decorations: Vec<TextDecoration>,
     language: SharedString,
     text_color: gpui::Rgba,
-    scroll_to_offset: Option<usize>,
+    scroll_to_range: Option<Range<usize>>,
     search_matches: Vec<(Range<usize>, bool)>,
 }
 
@@ -2517,7 +2632,8 @@ fn response_editor(
     theme: Theme,
     id: impl Into<ElementId>,
     presentation: ResponseEditorPresentation,
-    on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+    on_visible_range: VisibleRangeHandler,
+    on_mouse_down: Option<EditorMouseDownHandler>,
     extra_context_menu_actions: Vec<TextContextMenuExtraAction>,
 ) -> gpui::AnyElement {
     ProbeEditor {
@@ -2529,13 +2645,14 @@ fn response_editor(
         language: presentation.language,
         readonly: true,
         min_height: None,
-        padded: true,
+        padding: EditorInsets::response(theme),
         soft_wrap: true,
         text_color: presentation.text_color,
-        scroll_to_offset: presentation.scroll_to_offset,
+        scroll_to_range: presentation.scroll_to_range,
         search_matches: presentation.search_matches,
         on_change: None,
-        on_visible_range: Some(Rc::new(on_visible_range)),
+        on_mouse_down,
+        on_visible_range: Some(on_visible_range),
         extra_context_menu_actions,
         debug_selector: None,
         variables: None,
@@ -2548,7 +2665,7 @@ struct EditorField {
     decorations: TextDecorationCollection,
     last_decorations: Vec<TextDecoration>,
     on_change: Option<InputChangeHandler>,
-    last_scroll_offset: Option<usize>,
+    last_scroll_range: Option<Range<usize>>,
     language: SharedString,
     _subscription: Subscription,
 }
@@ -2594,12 +2711,13 @@ struct ProbeEditor {
     language: SharedString,
     readonly: bool,
     min_height: Option<f32>,
-    padded: bool,
+    padding: EditorInsets,
     soft_wrap: bool,
     text_color: gpui::Rgba,
-    scroll_to_offset: Option<usize>,
+    scroll_to_range: Option<Range<usize>>,
     search_matches: Vec<(Range<usize>, bool)>,
     on_change: Option<InputChangeHandler>,
+    on_mouse_down: Option<EditorMouseDownHandler>,
     on_visible_range: Option<VisibleRangeHandler>,
     extra_context_menu_actions: Vec<TextContextMenuExtraAction>,
     debug_selector: Option<&'static str>,
@@ -2643,7 +2761,7 @@ impl RenderOnce for ProbeEditor {
                 decorations,
                 last_decorations: Vec::new(),
                 on_change: on_change.clone(),
-                last_scroll_offset: None,
+                last_scroll_range: None,
                 language: language.clone(),
                 _subscription: subscription,
             }
@@ -2659,6 +2777,7 @@ impl RenderOnce for ProbeEditor {
             let context_editor = field.state.clone();
             field.state.update(cx, |editor, cx| {
                 editor.set_editor_style(editor_paint_style(self.theme));
+                editor.set_editor_paddings(self.padding.edges());
                 editor.set_readonly(self.readonly, cx);
                 editor.set_soft_wrap(self.soft_wrap, window, cx);
                 editor.on_context_menu(Rc::new(move |_, capabilities, position, window, cx| {
@@ -2682,17 +2801,20 @@ impl RenderOnce for ProbeEditor {
                 field.last_decorations = self.decorations.clone();
                 field.decorations.set(self.decorations.clone(), cx);
             }
-            if self.scroll_to_offset != field.last_scroll_offset {
-                if let Some(offset) = self.scroll_to_offset {
+            if self.scroll_to_range != field.last_scroll_range {
+                if let Some(range) = &self.scroll_to_range {
                     let laid_out = field.state.read(cx).visible_row_range().is_some();
                     field.state.update(cx, |editor, cx| {
-                        editor.set_selected_range(offset..offset, cx);
+                        editor.set_selected_range(range.clone(), cx);
+                        if !range.is_empty() {
+                            editor.focus(window, cx);
+                        }
                     });
                     if laid_out {
-                        field.last_scroll_offset = self.scroll_to_offset;
+                        field.last_scroll_range = self.scroll_to_range.clone();
                     }
                 } else {
-                    field.last_scroll_offset = None;
+                    field.last_scroll_range = None;
                 }
             }
         });
@@ -2709,7 +2831,6 @@ impl RenderOnce for ProbeEditor {
         let editor = InputBase::new(editor_id.clone())
             .size_full()
             .when_some(self.min_height, |editor, height| editor.min_h(px(height)))
-            .when(self.padded, |editor| editor.p(px(theme.metrics.spacing_2)))
             .overflow_hidden()
             .rounded(px(theme.metrics.radius_small))
             .font_family(theme.typography.monospace_family)
@@ -2731,7 +2852,11 @@ impl RenderOnce for ProbeEditor {
             })
             .on_mouse_down(MouseButton::Left, {
                 let state = state.clone();
+                let on_mouse_down = self.on_mouse_down.clone();
                 move |_, window, cx| {
+                    if let Some(on_mouse_down) = &on_mouse_down {
+                        on_mouse_down(window, cx);
+                    }
                     state.update(cx, |editor, cx| editor.focus(window, cx));
                 }
             })
@@ -4131,7 +4256,7 @@ mod tests {
     };
 
     use super::{
-        ProbeEditor, VariableContext, VariableHighlightElement, body_text_highlights,
+        EditorInsets, ProbeEditor, VariableContext, VariableHighlightElement, body_text_highlights,
         clipboard_has_pasteable_text, dropdown, editor_paint_style, input_text_scroll_offset,
         menu_button, single_line, variable_highlight_runs, variable_ranges, variable_span_layout,
         variable_tooltip_presentation,
@@ -4184,12 +4309,13 @@ mod tests {
                     language: "json".into(),
                     readonly: false,
                     min_height: Some(120.0),
-                    padded: true,
+                    padding: EditorInsets::standard(theme),
                     soft_wrap: true,
                     text_color: theme.colors.text.primary,
-                    scroll_to_offset: None,
+                    scroll_to_range: None,
                     search_matches: Vec::new(),
                     on_change: None,
+                    on_mouse_down: None,
                     on_visible_range: None,
                     extra_context_menu_actions: Vec::new(),
                     debug_selector: Some("context-body-editor"),
@@ -4205,12 +4331,13 @@ mod tests {
                     language: "json".into(),
                     readonly: true,
                     min_height: Some(120.0),
-                    padded: true,
+                    padding: EditorInsets::response(theme),
                     soft_wrap: false,
                     text_color: theme.colors.text.primary,
-                    scroll_to_offset: None,
+                    scroll_to_range: None,
                     search_matches: Vec::new(),
                     on_change: None,
+                    on_mouse_down: None,
                     on_visible_range: None,
                     extra_context_menu_actions: Vec::new(),
                     debug_selector: Some("context-response-editor"),

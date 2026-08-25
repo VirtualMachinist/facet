@@ -204,6 +204,33 @@ impl ResponseViewerState {
         }
     }
 
+    pub(crate) fn inspection_range_for_selection(
+        &self,
+        key: probe_core::RequestKey,
+        selection: InspectSelection,
+    ) -> Option<Range<usize>> {
+        let document = self.documents.get(&key)?;
+        document
+            .inspection_ranges
+            .iter()
+            .find(|range| range.selection == selection)
+            .map(|range| range.range.clone())
+    }
+
+    pub(crate) fn reveal_inspection_in_pretty(
+        &mut self,
+        key: probe_core::RequestKey,
+    ) -> Option<InspectSelection> {
+        let selection = self.inspection_selection(key)?;
+        self.inspection_range_for_selection(key, selection)?;
+        if let Some(document) = self.documents.get_mut(&key) {
+            document.inspection_selection = Some(selection);
+        }
+        self.tab = ResponseViewerTab::Pretty;
+        self.active_match = 0;
+        Some(selection)
+    }
+
     pub(crate) fn visible_text(&self, key: probe_core::RequestKey) -> &str {
         let Some(document) = self.documents.get(&key) else {
             return "";

@@ -530,6 +530,12 @@ enum InspectListRow {
     Item { selection: InspectSelection },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PrettyRevealState {
+    selection: InspectSelection,
+    scroll_pending: bool,
+}
+
 #[derive(Clone, Debug)]
 struct TreeDrag {
     item: WorkspaceItemRef,
@@ -709,6 +715,7 @@ pub(crate) struct ProbeApp {
     inspector_list_width: f32,
     inspector_resize_start: Option<(f32, f32)>,
     pending_inspector_reveal: Cell<Option<InspectSelection>>,
+    pretty_reveal: Cell<Option<PrettyRevealState>>,
     tab_bar_scroll: ScrollHandle,
     pending_tab_reveal: bool,
     #[cfg(test)]
@@ -816,6 +823,7 @@ impl ProbeApp {
             inspector_list_width: DEFAULT_INSPECT_LIST_WIDTH,
             inspector_resize_start: None,
             pending_inspector_reveal: Cell::new(None),
+            pretty_reveal: Cell::new(None),
             tab_bar_scroll: ScrollHandle::new(),
             pending_tab_reveal: false,
             #[cfg(test)]
@@ -6428,10 +6436,34 @@ impl ProbeApp {
         let matches = self.response_viewer.matches(key);
         let active_match = self.response_viewer.active_match();
         let view = cx.weak_entity();
+        let body_mouse_view = cx.weak_entity();
         let inspect_view = cx.weak_entity();
         let inspect_ranges = document.inspection_ranges.clone();
         let inspect_context_enabled = self.response_viewer.tab() == ResponseViewerTab::Pretty
             && document.pretty_notice.is_none();
+        let pretty_reveal = if self.response_viewer.tab() == ResponseViewerTab::Pretty {
+            self.pretty_reveal.get()
+        } else {
+            None
+        };
+        let inspection_reveal = pretty_reveal
+            .and_then(|reveal| {
+                self.response_viewer
+                    .inspection_range_for_selection(key, reveal.selection)
+                    .map(|range| (range, reveal.scroll_pending))
+            })
+            .and_then(|reveal| {
+                (self.response_viewer.tab() == ResponseViewerTab::Pretty).then_some(reveal)
+            });
+        if let Some(reveal) = pretty_reveal
+            && reveal.scroll_pending
+            && self.response_viewer.tab() == ResponseViewerTab::Pretty
+        {
+            self.pretty_reveal.set(Some(PrettyRevealState {
+                selection: reveal.selection,
+                scroll_pending: false,
+            }));
+        }
         div()
             .id("response-body")
             .debug_selector(|| "response-body".into())
@@ -6442,60 +6474,73 @@ impl ProbeApp {
                 theme,
                 "response-body-editor",
                 text,
-                &matches,
-                active_match,
-                if self.response_viewer.tab() == ResponseViewerTab::Pretty
-                    && document.pretty_notice.is_none()
-                {
-                    "json"
-                } else {
-                    ""
-                },
-                move |range, cx| {
-                    #[cfg(test)]
+                components::ResponseBodyInputOptions::new(
+                    &matches,
+                    active_match,
+                    if self.response_viewer.tab() == ResponseViewerTab::Pretty
+                        && document.pretty_notice.is_none()
                     {
-                        let _ = view.update(cx, |this, _| {
-                            this.rendered_response_rows = range.len();
-                        });
-                    }
-                    #[cfg(not(test))]
-                    {
-                        let _ = (&view, range, cx);
-                    }
-                },
-                move |_, offset| {
-                    inspect_context_enabled
-                        && inspect_ranges
-                            .iter()
-                            .any(|entry| entry.range.contains(&offset))
-                },
-                move |_, offset, _, cx| {
-                    let _ = inspect_view.update(cx, |view, cx| {
-                        if view.response_viewer.tab() != ResponseViewerTab::Pretty {
-                            view.message = Some(
-                                "Inspect from the Pretty tab to select a response value."
-                                    .to_owned(),
-                            );
-                        } else if view
-                            .response_viewer
-                            .document(key)
-                            .is_some_and(|document| document.inspection_pending)
+                        "json"
+                    } else {
+                        ""
+                    },
+                    move |range, cx| {
+                        #[cfg(test)]
                         {
-                            view.response_viewer.set_tab(ResponseViewerTab::Inspect);
-                            view.message = Some("Inspection is still running.".to_owned());
-                        } else if let Some(selection) = view
-                            .response_viewer
-                            .select_inspection_at_offset(key, offset)
-                        {
-                            view.pending_inspector_reveal.set(Some(selection));
-                        } else {
-                            view.message = Some(
-                                "No inspected JWT or timestamp found at that value.".to_owned(),
-                            );
+                            let _ = view.update(cx, |this, _| {
+                                this.rendered_response_rows = range.len();
+                            });
                         }
-                        cx.notify();
-                    });
-                },
+                        #[cfg(not(test))]
+                        {
+                            let _ = (&view, range, cx);
+                        }
+                    },
+                    move |_, cx| {
+                        let _ = body_mouse_view.update(cx, |view, cx| {
+                            if view.response_viewer.tab() == ResponseViewerTab::Pretty
+                                && view.pretty_reveal.take().is_some()
+                            {
+                                cx.notify();
+                            }
+                        });
+                    },
+                    move |_, offset| {
+                        inspect_context_enabled
+                            && inspect_ranges
+                                .iter()
+                                .any(|entry| entry.range.contains(&offset))
+                    },
+                    move |_, offset, _, cx| {
+                        let _ = inspect_view.update(cx, |view, cx| {
+                            if view.response_viewer.tab() != ResponseViewerTab::Pretty {
+                                view.message = Some(
+                                    "Inspect from the Pretty tab to select a response value."
+                                        .to_owned(),
+                                );
+                            } else if view
+                                .response_viewer
+                                .document(key)
+                                .is_some_and(|document| document.inspection_pending)
+                            {
+                                view.response_viewer.set_tab(ResponseViewerTab::Inspect);
+                                view.message = Some("Inspection is still running.".to_owned());
+                            } else if let Some(selection) = view
+                                .response_viewer
+                                .select_inspection_at_offset(key, offset)
+                            {
+                                view.pending_inspector_reveal.set(Some(selection));
+                                view.pretty_reveal.set(None);
+                            } else {
+                                view.message = Some(
+                                    "No inspected JWT or timestamp found at that value.".to_owned(),
+                                );
+                            }
+                            cx.notify();
+                        });
+                    },
+                )
+                .inspection_reveal(inspection_reveal),
             ))
             .into_any_element()
     }
@@ -6561,6 +6606,11 @@ impl ProbeApp {
         } else {
             inspection_detail_text(&document.inspection, selected)
         };
+        let revealable = selected.is_some_and(|selection| {
+            self.response_viewer
+                .inspection_range_for_selection(key, selection)
+                .is_some()
+        }) && document.pretty_notice.is_none();
         let view = cx.weak_entity();
         let row_count = rows.len();
         let rows_for_list = rows.clone();
@@ -6635,23 +6685,64 @@ impl ProbeApp {
                     .min_w(px(0.0))
                     .min_h(px(0.0))
                     .p(px(theme.metrics.spacing_2))
-                    .child(components::response_inspector_input(
-                        theme,
-                        "response-inspector-editor",
-                        detail,
-                        move |range, cx| {
-                            #[cfg(test)]
-                            {
-                                let _ = view.update(cx, |this, _| {
-                                    this.rendered_response_rows = range.len();
-                                });
-                            }
-                            #[cfg(not(test))]
-                            {
-                                let _ = (&view, range, cx);
-                            }
-                        },
-                    )),
+                    .child(
+                        div()
+                            .relative()
+                            .size_full()
+                            .child(components::response_inspector_input(
+                                theme,
+                                "response-inspector-editor",
+                                detail,
+                                move |range, cx| {
+                                    #[cfg(test)]
+                                    {
+                                        let _ = view.update(cx, |this, _| {
+                                            this.rendered_response_rows = range.len();
+                                        });
+                                    }
+                                    #[cfg(not(test))]
+                                    {
+                                        let _ = (&view, range, cx);
+                                    }
+                                },
+                            ))
+                            .when(revealable, |detail| {
+                                let reveal_view = cx.weak_entity();
+                                detail.child(
+                                    div()
+                                        .absolute()
+                                        .top(px(theme.metrics.spacing_3))
+                                        .right(px(theme.metrics.spacing_3))
+                                        .child(components::compact_icon_button(
+                                            theme,
+                                            "response-inspector-reveal-pretty",
+                                            "Reveal in Pretty",
+                                            components::locate_icon(theme),
+                                            move |_, _, cx| {
+                                                let _ = reveal_view.update(cx, |view, cx| {
+                                                    if let Some(selection) = view
+                                                        .response_viewer
+                                                        .reveal_inspection_in_pretty(key)
+                                                    {
+                                                        view.pretty_reveal.set(Some(
+                                                            PrettyRevealState {
+                                                                selection,
+                                                                scroll_pending: true,
+                                                            },
+                                                        ));
+                                                    } else {
+                                                        view.message = Some(
+                                                            "Pretty source is unavailable."
+                                                                .to_owned(),
+                                                        );
+                                                    }
+                                                    cx.notify();
+                                                });
+                                            },
+                                        )),
+                                )
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -6716,6 +6807,7 @@ impl ProbeApp {
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let _ = row_view.update(cx, |view, cx| {
                             view.response_viewer.select_inspection(key, selection);
+                            view.pretty_reveal.set(None);
                             cx.notify();
                         });
                     })
@@ -8527,10 +8619,12 @@ mod tests {
     use super::{
         ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
         IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
-        ProbeApp, bind_platform_hotkeys, format_import_diagnostics, request_key_remaps,
+        PrettyRevealState, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
+        request_key_remaps,
     };
     use crate::{
         request_editor::{BodyEditorKind, EditorSection},
+        response_inspector::InspectSelection,
         response_viewer::ResponseViewerTab,
         shell::PaneLayout,
         theme::Theme,
@@ -10210,6 +10304,7 @@ mod tests {
                 view.select_request(request_key, cx);
                 let (cancellation, _) = tokio::sync::oneshot::channel();
                 let generation = view.execution.begin(request_key, cancellation);
+                let body = br#"{"createdAt":1787482800,"ok":true}"#.to_vec();
                 view.complete_execution(
                     request_key,
                     generation,
@@ -10218,12 +10313,12 @@ mod tests {
                         reason: "Created".to_owned(),
                         url: "https://api.example.test/users".to_owned(),
                         duration: Duration::from_millis(42),
-                        size: 11,
+                        size: body.len(),
                         headers: vec![ResponseHeader {
                             name: "content-type".to_owned(),
                             value: "application/json".to_owned(),
                         }],
-                        body: br#"{"ok":true}"#.to_vec(),
+                        body,
                         body_complete: true,
                     }),
                     cx,
@@ -10290,6 +10385,55 @@ mod tests {
             assert!(visual.debug_bounds("response-search-count").is_some());
             assert!(visual.debug_bounds("response-body").is_some());
         }
+
+        window
+            .update(cx, |view, _, cx| {
+                view.response_viewer.set_search(String::new());
+                view.response_viewer.set_tab(ResponseViewerTab::Inspect);
+                cx.notify();
+            })
+            .expect("test window should remain open");
+        cx.run_until_parked();
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let reveal = visual
+                .debug_bounds("response-inspector-reveal-pretty")
+                .expect("selected inspection should expose a reveal button");
+            visual.simulate_mouse_down(reveal.center(), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(reveal.center(), MouseButton::Left, Modifiers::default());
+        }
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, _| {
+                assert_eq!(view.response_viewer.tab(), ResponseViewerTab::Pretty);
+                assert_eq!(
+                    view.pretty_reveal.get(),
+                    Some(PrettyRevealState {
+                        selection: InspectSelection::Timestamp(0),
+                        scroll_pending: false,
+                    })
+                );
+            })
+            .expect("test window should remain open");
+        {
+            let mut visual = VisualTestContext::from_window(window.into(), cx);
+            let body = visual
+                .debug_bounds("response-body")
+                .expect("Pretty response body should render after reveal");
+            assert!(
+                visual
+                    .debug_bounds("response-inspector-reveal-pretty")
+                    .is_none()
+            );
+            visual.simulate_mouse_down(body.center(), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(body.center(), MouseButton::Left, Modifiers::default());
+        }
+        cx.run_until_parked();
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.pretty_reveal.get().is_none());
+            })
+            .expect("test window should remain open");
     }
 
     #[gpui::test]
