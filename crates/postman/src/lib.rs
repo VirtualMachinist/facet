@@ -8,9 +8,8 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    error::Error,
-    fmt, fs,
-    path::{Path, PathBuf},
+    fs,
+    path::Path,
 };
 
 use probe_core::{
@@ -22,6 +21,10 @@ use probe_core::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+
+mod errors;
+
+pub use errors::PostmanImportError;
 
 /// Environment used to retain Postman collection-scoped variables.
 pub const COLLECTION_VARIABLES_ENVIRONMENT: &str = "Postman Collection Variables";
@@ -101,61 +104,6 @@ pub struct ImportedPostmanCollection {
     pub partial: bool,
     /// Environment containing collection variables, when one was created.
     pub collection_variables_environment: Option<String>,
-}
-
-/// Failure to inspect or convert a Postman collection.
-#[derive(Debug)]
-pub enum PostmanImportError {
-    /// Source JSON or collection structure is invalid.
-    Invalid(String),
-    /// Reading the source failed.
-    Io {
-        /// Source path.
-        path: PathBuf,
-        /// Underlying I/O failure.
-        source: std::io::Error,
-    },
-    /// Strict conversion found data that cannot be represented losslessly.
-    Unsupported(Vec<ImportDiagnostic>),
-}
-
-impl PostmanImportError {
-    /// Returns structured compatibility diagnostics, when present.
-    #[must_use]
-    pub fn diagnostics(&self) -> Option<&[ImportDiagnostic]> {
-        match self {
-            Self::Unsupported(diagnostics) => Some(diagnostics),
-            _ => None,
-        }
-    }
-}
-
-impl fmt::Display for PostmanImportError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Invalid(message) => formatter.write_str(message),
-            Self::Io { path, source } => {
-                write!(formatter, "cannot read {}: {source}", path.display())
-            }
-            Self::Unsupported(diagnostics) => write!(
-                formatter,
-                "Postman collection requires partial import because {} item(s) cannot be represented losslessly",
-                diagnostics
-                    .iter()
-                    .filter(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy)
-                    .count()
-            ),
-        }
-    }
-}
-
-impl Error for PostmanImportError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io { source, .. } => Some(source),
-            _ => None,
-        }
-    }
 }
 
 /// Inspects one official Postman Collection v2.0/v2.1 JSON export.
