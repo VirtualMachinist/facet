@@ -453,7 +453,7 @@ async fn build_request(
     let query: Vec<_> = request
         .query_parameters
         .iter()
-        .filter(|parameter| !parameter.disabled)
+        .filter(|parameter| !parameter.disabled && has_parameter_name(&parameter.name))
         .map(|parameter| (parameter.name.as_str(), parameter.value.as_str()))
         .collect();
     if !query.is_empty() {
@@ -475,6 +475,10 @@ async fn build_request(
     Ok(builder)
 }
 
+fn has_parameter_name(name: &str) -> bool {
+    !name.trim().is_empty()
+}
+
 fn supported_method(method: Option<&str>) -> Result<Method, HttpError> {
     let method = method
         .ok_or(HttpError::MissingMethod)?
@@ -492,7 +496,11 @@ fn supported_method(method: Option<&str>) -> Result<Method, HttpError> {
 
 fn request_headers(request: &HttpRequest) -> Result<HeaderMap, HttpError> {
     let mut headers = HeaderMap::new();
-    for header in request.headers.iter().filter(|header| !header.disabled) {
+    for header in request
+        .headers
+        .iter()
+        .filter(|header| !header.disabled && has_parameter_name(&header.name))
+    {
         let name = HeaderName::from_bytes(header.name.as_bytes())
             .map_err(|_| HttpError::InvalidHeaderName(header.name.clone()))?;
         let value = HeaderValue::from_str(&header.value)
@@ -539,14 +547,17 @@ async fn apply_body(
         Body::FormUrlEncoded(fields) => {
             let fields: Vec<_> = fields
                 .iter()
-                .filter(|field| !field.disabled)
+                .filter(|field| !field.disabled && has_parameter_name(&field.name))
                 .map(|field| (field.name.as_str(), field.value.as_str()))
                 .collect();
             Ok(builder.form(&fields))
         }
         Body::Multipart(parts) => {
             let mut form = Form::new();
-            for part in parts.iter().filter(|part| !part.disabled) {
+            for part in parts
+                .iter()
+                .filter(|part| !part.disabled && has_parameter_name(&part.name))
+            {
                 match part.kind {
                     MultipartPartKind::Text => {
                         let MultipartValue::Single(value) = &part.value else {

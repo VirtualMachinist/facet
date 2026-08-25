@@ -167,6 +167,117 @@ fn request(method: &str, url: String) -> HttpRequest {
 }
 
 #[tokio::test]
+async fn ignores_enabled_parameters_without_names() {
+    let (base_url, captured) = serve_once("200 OK", &[], b"ok").await.unwrap();
+    let mut request = request("POST", format!("{base_url}/unnamed"));
+    request.headers = vec![
+        Header {
+            name: String::new(),
+            value: "ignored".to_owned(),
+            disabled: false,
+        },
+        Header {
+            name: "   ".to_owned(),
+            value: "ignored".to_owned(),
+            disabled: false,
+        },
+        Header {
+            name: "X-Valid".to_owned(),
+            value: "sent".to_owned(),
+            disabled: false,
+        },
+    ];
+    request.query_parameters = vec![
+        QueryParameter {
+            name: String::new(),
+            value: "ignored".to_owned(),
+            disabled: false,
+        },
+        QueryParameter {
+            name: "   ".to_owned(),
+            value: "ignored".to_owned(),
+            disabled: false,
+        },
+        QueryParameter {
+            name: "limit".to_owned(),
+            value: "10".to_owned(),
+            disabled: false,
+        },
+        QueryParameter {
+            name: "flag".to_owned(),
+            value: String::new(),
+            disabled: false,
+        },
+    ];
+    request.body = Some(RequestBody::Single(Body::FormUrlEncoded(vec![
+        FormField {
+            name: String::new(),
+            value: "ignored".to_owned(),
+            disabled: false,
+        },
+        FormField {
+            name: "name".to_owned(),
+            value: "Probe".to_owned(),
+            disabled: false,
+        },
+    ])));
+
+    HttpEngine::new()
+        .unwrap()
+        .execute(&request, &ExecutionOptions::default())
+        .await
+        .unwrap();
+    let captured = captured.await.unwrap().unwrap();
+
+    assert_eq!(
+        captured.request_line,
+        "POST /unnamed?limit=10&flag= HTTP/1.1"
+    );
+    assert_eq!(captured.header("x-valid"), Some("sent"));
+    assert!(
+        captured
+            .headers
+            .iter()
+            .all(|(name, _)| !name.trim().is_empty())
+    );
+    assert_eq!(captured.body, b"name=Probe");
+}
+
+#[tokio::test]
+async fn ignores_multipart_parts_without_names() {
+    let (base_url, captured) = serve_once("200 OK", &[], b"ok").await.unwrap();
+    let mut request = request("POST", format!("{base_url}/upload"));
+    request.body = Some(RequestBody::Single(Body::Multipart(vec![
+        MultipartPart {
+            name: String::new(),
+            kind: MultipartPartKind::Text,
+            value: MultipartValue::Single("ignored".to_owned()),
+            content_type: None,
+            disabled: false,
+        },
+        MultipartPart {
+            name: "caption".to_owned(),
+            kind: MultipartPartKind::Text,
+            value: MultipartValue::Single("hello".to_owned()),
+            content_type: None,
+            disabled: false,
+        },
+    ])));
+
+    HttpEngine::new()
+        .unwrap()
+        .execute(&request, &ExecutionOptions::default())
+        .await
+        .unwrap();
+    let captured = captured.await.unwrap().unwrap();
+    let body = String::from_utf8_lossy(&captured.body);
+    assert!(body.contains("name=\"caption\""));
+    assert!(body.contains("hello"));
+    assert!(!body.contains("name=\"\""));
+    assert!(!body.contains("ignored"));
+}
+
+#[tokio::test]
 async fn executes_json_with_headers_query_bearer_auth_and_response_metadata() {
     let (base_url, captured) = serve_once(
         "201 Created",
