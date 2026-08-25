@@ -122,6 +122,16 @@ fn save_shortcut() -> &'static str {
     "ctrl-s"
 }
 
+#[cfg(target_os = "macos")]
+fn find_shortcut() -> &'static str {
+    "cmd-f"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn find_shortcut() -> &'static str {
+    "ctrl-f"
+}
+
 fn assert_save_shortcut_after_clicking_remove_row_persists_removal(
     cx: &mut TestAppContext,
     fixture_name: &str,
@@ -2070,9 +2080,39 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
         assert!(visual.debug_bounds("response-tab-pretty").is_some());
         assert!(visual.debug_bounds("response-tab-raw").is_some());
         assert!(visual.debug_bounds("response-tab-headers").is_some());
-        assert!(visual.debug_bounds("response-search").is_some());
+        assert!(visual.debug_bounds("response-search").is_none());
+        assert!(visual.debug_bounds("editor-search-card").is_none());
         assert!(visual.debug_bounds("response-body").is_some());
         assert!(visual.debug_bounds("response-headers").is_none());
+    }
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let body_bounds = visual
+            .debug_bounds("response-body")
+            .expect("response body should render");
+        visual.simulate_click(body_bounds.center(), Modifiers::default());
+    }
+    cx.simulate_keystrokes(window.into(), find_shortcut());
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("editor-search-card").is_some());
+        assert!(visual.debug_bounds("editor-search-input").is_some());
+        assert!(visual.debug_bounds("response-search").is_none());
+    }
+    cx.simulate_keystrokes(window.into(), "o k");
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("editor-search-card").is_some());
+        assert!(visual.debug_bounds("response-body").is_some());
+    }
+    cx.simulate_keystrokes(window.into(), "escape");
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("editor-search-card").is_none());
     }
 
     window
@@ -2091,38 +2131,13 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
     window
         .update(cx, |view, _, cx| {
             view.response_viewer.set_tab(ResponseViewerTab::Pretty);
-            view.response_viewer.set_search("ok".to_owned());
             cx.notify();
         })
         .expect("test window should remain open");
     cx.run_until_parked();
-    let match_count = window
-        .update(cx, |view, _, _| {
-            view.response_viewer.matches(request_key).len()
-        })
-        .expect("test window should remain open");
-    assert!(match_count >= 1);
-    {
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        let search_bounds = visual
-            .debug_bounds("response-search")
-            .expect("response search input should render");
-        let previous_bounds = visual
-            .debug_bounds("response-search-previous")
-            .expect("previous search result button should render");
-        let next_bounds = visual
-            .debug_bounds("response-search-next")
-            .expect("next search result button should render");
-        assert!(search_bounds.size.width <= px(140.0));
-        assert_eq!(previous_bounds.size.width, previous_bounds.size.height);
-        assert_eq!(next_bounds.size.width, next_bounds.size.height);
-        assert!(visual.debug_bounds("response-search-count").is_some());
-        assert!(visual.debug_bounds("response-body").is_some());
-    }
 
     window
         .update(cx, |view, _, cx| {
-            view.response_viewer.set_search(String::new());
             view.response_viewer.set_tab(ResponseViewerTab::Inspect);
             cx.notify();
         })

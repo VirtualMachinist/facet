@@ -62,8 +62,6 @@ pub(crate) struct PreparedDocument {
 #[derive(Debug, Default)]
 pub(crate) struct ResponseViewerState {
     tab: ResponseViewerTab,
-    search: String,
-    active_match: usize,
     documents: std::collections::BTreeMap<probe_core::RequestKey, PreparedDocument>,
     next_generation: u64,
 }
@@ -71,14 +69,6 @@ pub(crate) struct ResponseViewerState {
 impl ResponseViewerState {
     pub(crate) fn tab(&self) -> ResponseViewerTab {
         self.tab
-    }
-
-    pub(crate) fn search(&self) -> &str {
-        &self.search
-    }
-
-    pub(crate) fn active_match(&self) -> usize {
-        self.active_match
     }
 
     pub(crate) fn document(&self, key: probe_core::RequestKey) -> Option<&PreparedDocument> {
@@ -103,18 +93,14 @@ impl ResponseViewerState {
 
     pub(crate) fn insert(&mut self, key: probe_core::RequestKey, document: PreparedDocument) {
         self.documents.insert(key, document);
-        self.active_match = 0;
     }
 
     pub(crate) fn remove(&mut self, key: probe_core::RequestKey) {
         self.documents.remove(&key);
-        self.active_match = 0;
     }
 
     pub(crate) fn clear(&mut self) {
         self.documents.clear();
-        self.search.clear();
-        self.active_match = 0;
         self.tab = ResponseViewerTab::default();
     }
 
@@ -126,21 +112,10 @@ impl ResponseViewerState {
             .into_iter()
             .filter_map(|(key, document)| key_remaps.get(&key).map(|new| (*new, document)))
             .collect();
-        self.active_match = 0;
     }
 
     pub(crate) fn set_tab(&mut self, tab: ResponseViewerTab) {
-        if self.tab != tab {
-            self.tab = tab;
-            self.active_match = 0;
-        }
-    }
-
-    pub(crate) fn set_search(&mut self, query: String) {
-        if self.search != query {
-            self.search = query;
-            self.active_match = 0;
-        }
+        self.tab = tab;
     }
 
     pub(crate) fn apply_pretty(
@@ -160,7 +135,6 @@ impl ResponseViewerState {
         document.pretty_pending = false;
         document.inspection_ranges =
             inspection_value_ranges(&document.pretty_text, &document.inspection);
-        self.active_match = 0;
     }
 
     pub(crate) fn apply_inspection(
@@ -227,7 +201,6 @@ impl ResponseViewerState {
             document.inspection_selection = Some(selection);
         }
         self.tab = ResponseViewerTab::Pretty;
-        self.active_match = 0;
         Some(selection)
     }
 
@@ -250,34 +223,6 @@ impl ResponseViewerState {
         } else {
             text.lines().count() + usize::from(text.ends_with('\n'))
         }
-    }
-
-    pub(crate) fn matches(&self, key: probe_core::RequestKey) -> Vec<SearchMatch> {
-        let Some(document) = self.documents.get(&key) else {
-            return Vec::new();
-        };
-        match self.tab {
-            ResponseViewerTab::Headers => search_headers(&document.headers, &self.search),
-            ResponseViewerTab::Pretty | ResponseViewerTab::Raw => {
-                search_text(self.visible_text(key), &self.search)
-            }
-            ResponseViewerTab::Inspect => Vec::new(),
-        }
-    }
-
-    pub(crate) fn step_match(
-        &mut self,
-        key: probe_core::RequestKey,
-        delta: isize,
-    ) -> Option<usize> {
-        let count = self.matches(key).len();
-        if count == 0 {
-            self.active_match = 0;
-            return None;
-        }
-        let next = (self.active_match as isize + delta).rem_euclid(count as isize) as usize;
-        self.active_match = next;
-        Some(next)
     }
 }
 
@@ -452,6 +397,7 @@ pub(crate) fn join_header_lines(headers: &[ResponseHeader]) -> JoinedHeaders {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn search_text(text: &str, query: &str) -> Vec<SearchMatch> {
     find_ignore_case(text, query)
         .into_iter()
@@ -459,6 +405,7 @@ pub(crate) fn search_text(text: &str, query: &str) -> Vec<SearchMatch> {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn search_headers(headers: &[ResponseHeader], query: &str) -> Vec<SearchMatch> {
     if query.is_empty() {
         return Vec::new();
@@ -482,6 +429,7 @@ pub(crate) fn search_headers(headers: &[ResponseHeader], query: &str) -> Vec<Sea
     matches
 }
 
+#[cfg(test)]
 fn find_ignore_case(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     if needle.is_empty() {
         return Vec::new();
@@ -506,6 +454,7 @@ fn find_ignore_case(haystack: &str, needle: &str) -> Vec<Range<usize>> {
     matches
 }
 
+#[cfg(test)]
 fn chars_eq_ignore_case(haystack: &[(usize, char)], start: usize, needle: &[char]) -> bool {
     if start + needle.len() > haystack.len() {
         return false;
@@ -516,6 +465,7 @@ fn chars_eq_ignore_case(haystack: &[(usize, char)], start: usize, needle: &[char
         .all(|((_, haystack_char), needle_char)| equal_ignore_case(*haystack_char, *needle_char))
 }
 
+#[cfg(test)]
 fn equal_ignore_case(left: char, right: char) -> bool {
     if left.eq_ignore_ascii_case(&right) {
         return true;

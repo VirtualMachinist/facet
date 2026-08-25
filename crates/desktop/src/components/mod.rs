@@ -27,8 +27,8 @@ use gpui_base::{
     ToggleGroup,
     actions::{Cancel, Confirm, SelectDown, SelectUp},
     input::{
-        Copy, Cut, EditorState, InputContextMenuCapabilities, InputEditorStyle, InputEvent,
-        InputState, Paste, SelectAll, TextDecoration, TextDecorationCollection,
+        Copy, Cut, EditorState, Escape, InputContextMenuCapabilities, InputEditorStyle, InputEvent,
+        InputState, Paste, Search, SelectAll, TextDecoration, TextDecorationCollection,
     },
 };
 use probe_core::path_variable_ranges;
@@ -1074,6 +1074,7 @@ struct ProbeTextInput {
     leading_icon: Option<gpui::Div>,
     content_gap: f32,
     quiet_focus: bool,
+    focus_on_render: bool,
 }
 
 impl RenderOnce for ProbeTextInput {
@@ -1115,6 +1116,19 @@ impl RenderOnce for ProbeTextInput {
             });
             if self.autofocus && !field.read(cx).autofocused {
                 field.update(cx, |field, _| field.autofocused = true);
+                let focus_state = field.read(cx).state.clone();
+                window.defer(cx, move |window, cx| {
+                    focus_state.update(cx, |input, cx| input.focus(window, cx));
+                });
+            }
+            if self.focus_on_render
+                && !field
+                    .read(cx)
+                    .state
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+            {
                 let focus_state = field.read(cx).state.clone();
                 window.defer(cx, move |window, cx| {
                     focus_state.update(cx, |input, cx| input.focus(window, cx));
@@ -1263,6 +1277,7 @@ fn text_input_base(
         leading_icon: None,
         content_gap: theme.metrics.spacing_1,
         quiet_focus: false,
+        focus_on_render: false,
     }
 }
 
@@ -1332,29 +1347,6 @@ pub(crate) fn sidebar_search_input(
         library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
             .text_color(theme.colors.text.muted),
     );
-    input
-}
-
-pub(crate) fn search_input(
-    theme: Theme,
-    id: impl Into<ElementId>,
-    value: impl Into<SharedString>,
-    placeholder: impl Into<SharedString>,
-    on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
-    on_enter: impl Fn(SharedString, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    let mut input = text_input_base(theme, id, value, placeholder);
-    input.height = theme.metrics.control_height - 2.0;
-    input.width = Some(132.0);
-    input.text_size = theme.typography.caption_size;
-    input.debug_selector = Some("response-search");
-    input.content_gap = theme.metrics.spacing_1;
-    input.leading_icon = Some(
-        library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
-            .text_color(theme.colors.text.muted),
-    );
-    input.on_change = Some(Rc::new(on_value_change));
-    input.on_enter = Some(Rc::new(on_enter));
     input
 }
 
@@ -2187,6 +2179,42 @@ struct ProbeEditor {
     variables: Option<VariableContext>,
 }
 
+#[derive(Default)]
+struct EditorSearchState {
+    open: bool,
+    query: String,
+    active_match: usize,
+    focus_input: bool,
+}
+
+impl EditorSearchState {
+    fn open(&mut self) {
+        self.open = true;
+        self.focus_input = true;
+    }
+
+    fn set_query(&mut self, query: String) {
+        if self.query != query {
+            self.query = query;
+            self.active_match = 0;
+        }
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.active_match = 0;
+        self.focus_input = false;
+    }
+
+    fn take_focus_request(&mut self) -> bool {
+        std::mem::take(&mut self.focus_input)
+    }
+
+    fn request_input_focus(&mut self) {
+        self.focus_input = true;
+    }
+}
+
 impl RenderOnce for ProbeEditor {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let component_id = self.id.clone();
@@ -2199,12 +2227,22 @@ impl RenderOnce for ProbeEditor {
         let on_change = self.on_change.clone();
         let soft_wrap = self.soft_wrap;
         let language = self.language.clone();
+        let editor_id = self.id.clone();
+        let search_state = window.use_keyed_state(
+            ElementId::NamedChild(
+                Arc::new(editor_id.clone()),
+                SharedString::from("search-state"),
+            ),
+            cx,
+            |_, _| EditorSearchState::default(),
+        );
+        let scroll_to_range = self.scroll_to_range;
         let field = window.use_keyed_state(self.id.clone(), cx, |window, cx| {
             let state = cx.new(|cx| {
                 let mut editor = EditorState::new(window, cx)
                     .placeholder(placeholder.clone())
                     .folding(false)
-                    .searchable(false)
+                    .searchable(true)
                     .soft_wrap(soft_wrap)
                     .language(language.clone());
                 editor.set_highlighter_factory(crate::syntax::factory(), cx);
@@ -2259,13 +2297,26 @@ impl RenderOnce for ProbeEditor {
                 if editor.value() != self.value {
                     editor.set_value(self.value.clone(), window, cx);
                 }
+                if editor.search_session().open {
+                    let query = editor.search_session().query.clone();
+                    let active_match = editor.search_session().matcher.current_match_index();
+                    search_state.update(cx, |search, cx| {
+                        search.open();
+                        if !query.is_empty() {
+                            search.set_query(query);
+                        }
+                        search.active_match = active_match;
+                        cx.notify();
+                    });
+                    editor.close_search(cx);
+                }
             });
             if field.last_decorations != self.decorations {
                 field.last_decorations = self.decorations.clone();
                 field.decorations.set(self.decorations.clone(), cx);
             }
-            if self.scroll_to_range != field.last_scroll_range {
-                if let Some(range) = &self.scroll_to_range {
+            if scroll_to_range != field.last_scroll_range {
+                if let Some(range) = &scroll_to_range {
                     let laid_out = field.state.read(cx).visible_row_range().is_some();
                     field.state.update(cx, |editor, cx| {
                         editor.set_selected_range(range.clone(), cx);
@@ -2274,7 +2325,7 @@ impl RenderOnce for ProbeEditor {
                         }
                     });
                     if laid_out {
-                        field.last_scroll_range = self.scroll_to_range.clone();
+                        field.last_scroll_range = scroll_to_range.clone();
                     }
                 } else {
                     field.last_scroll_range = None;
@@ -2282,6 +2333,24 @@ impl RenderOnce for ProbeEditor {
             }
         });
         let state = field.read(cx).state.clone();
+        let (matches, active_match) = if search_state.read(cx).open {
+            let matches = state.read(cx).search_session().matcher.matched_ranges();
+            let active_match = search_state
+                .read(cx)
+                .active_match
+                .min(matches.len().saturating_sub(1));
+            if active_match != search_state.read(cx).active_match {
+                search_state.update(cx, |search, _| search.active_match = active_match);
+            }
+            (matches, active_match)
+        } else {
+            (Rc::new(Vec::new()), 0)
+        };
+        let local_search_matches = matches
+            .iter()
+            .enumerate()
+            .map(|(index, range)| (range.clone(), index == active_match))
+            .collect::<Vec<_>>();
         if let Some(on_visible_range) = self.on_visible_range {
             match state.read(cx).visible_row_range() {
                 Some(range) => on_visible_range(range, cx),
@@ -2290,7 +2359,6 @@ impl RenderOnce for ProbeEditor {
         }
         let focused = state.read(cx).focus_handle(cx).is_focused(window);
         let theme = self.theme;
-        let editor_id = self.id.clone();
         let editor = InputBase::new(editor_id.clone())
             .size_full()
             .when_some(self.min_height, |editor, height| editor.min_h(px(height)))
@@ -2313,6 +2381,31 @@ impl RenderOnce for ProbeEditor {
             .when_some(self.debug_selector, |editor, selector| {
                 editor.debug_selector(move || selector.into())
             })
+            .key_context("ProbeEditor")
+            .on_action({
+                let search_state = search_state.clone();
+                move |_: &Search, window, cx| {
+                    search_state.update(cx, |search, cx| {
+                        search.open();
+                        cx.notify();
+                    });
+                    window.refresh();
+                }
+            })
+            .on_action({
+                let search_state = search_state.clone();
+                let state = state.clone();
+                move |_: &Escape, window, cx| {
+                    if search_state.read(cx).open {
+                        search_state.update(cx, |search, cx| {
+                            search.close();
+                            cx.notify();
+                        });
+                        state.update(cx, |editor, cx| editor.focus(window, cx));
+                        window.refresh();
+                    }
+                }
+            })
             .on_mouse_down(MouseButton::Left, {
                 let state = state.clone();
                 let on_mouse_down = self.on_mouse_down.clone();
@@ -2329,7 +2422,20 @@ impl RenderOnce for ProbeEditor {
             state.clone(),
             editor,
             self.value.clone(),
-            self.search_matches,
+            [self.search_matches, local_search_matches].concat(),
+        );
+        let editor = editor_search_card_overlay(
+            self.theme,
+            editor,
+            ElementId::NamedChild(
+                Arc::new(editor_id.clone()),
+                SharedString::from("search-card"),
+            ),
+            search_state,
+            matches,
+            active_match,
+            state.clone(),
+            cx,
         );
         let editor = if let Some(variables) = self.variables {
             variable_editor_overlay(
@@ -2356,6 +2462,262 @@ impl RenderOnce for ProbeEditor {
             cx,
         )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn editor_search_card_overlay(
+    theme: Theme,
+    editor: impl IntoElement,
+    card_id: ElementId,
+    search_state: Entity<EditorSearchState>,
+    matches: Rc<Vec<Range<usize>>>,
+    active_match: usize,
+    editor_state: Entity<EditorState>,
+    cx: &mut App,
+) -> gpui::AnyElement {
+    if !search_state.read(cx).open {
+        return editor.into_any_element();
+    }
+
+    let mut shadow_color: Hsla = theme.colors.text.primary.into();
+    shadow_color.a = match theme.appearance {
+        crate::theme::ThemeAppearance::Light => 0.12,
+        crate::theme::ThemeAppearance::Dark => 0.28,
+    };
+    let (query, focus_input) = search_state.update(cx, |search, _| {
+        (search.query.clone(), search.take_focus_request())
+    });
+    let match_count = matches.len();
+    let count_label = if query.is_empty() || match_count == 0 {
+        "0/0".to_owned()
+    } else {
+        format!("{}/{}", active_match + 1, match_count)
+    };
+    let input_id = ElementId::NamedChild(Arc::new(card_id.clone()), SharedString::from("input"));
+    let previous_id =
+        ElementId::NamedChild(Arc::new(card_id.clone()), SharedString::from("previous"));
+    let next_id = ElementId::NamedChild(Arc::new(card_id.clone()), SharedString::from("next"));
+    let close_id = ElementId::NamedChild(Arc::new(card_id.clone()), SharedString::from("close"));
+    let query_state = search_state.clone();
+    let query_editor = editor_state.clone();
+    let enter_state = search_state.clone();
+    let enter_editor = editor_state.clone();
+    let enter_matches = matches.clone();
+    let previous_state = search_state.clone();
+    let previous_editor = editor_state.clone();
+    let previous_matches = matches.clone();
+    let next_state = search_state.clone();
+    let next_editor = editor_state.clone();
+    let next_matches = matches;
+    let close_state = search_state.clone();
+    let close_editor = editor_state.clone();
+    let escape_state = search_state.clone();
+    let escape_editor = editor_state.clone();
+
+    let mut input = text_input_base(theme, input_id, query, "Search");
+    input.width = Some(150.0);
+    input.height = theme.metrics.control_height - 2.0;
+    input.text_size = theme.typography.caption_size;
+    input.debug_selector = Some("editor-search-input");
+    input.content_gap = theme.metrics.spacing_1;
+    input.leading_icon = Some(
+        library_icon("lucide-search", &SEARCH_SVG, theme.metrics.icon_small)
+            .text_color(theme.colors.text.muted),
+    );
+    input.focus_on_render = focus_input;
+    input.on_change = Some(Rc::new(move |value, _, cx| {
+        let query = value.to_string();
+        query_state.update(cx, |search, cx| {
+            search.set_query(query.clone());
+            cx.notify();
+        });
+        query_editor.update(cx, |editor, cx| {
+            reveal_editor_search_match(editor, &query, cx);
+        });
+    }));
+    input.on_enter = Some(Rc::new(move |_, _, cx| {
+        let range = enter_editor.update(cx, |editor, cx| {
+            navigate_editor_search_match(editor, SearchDirection::Next, cx)
+        });
+        sync_active_search_match(&enter_state, &enter_matches, range, false, cx);
+    }));
+
+    div()
+        .relative()
+        .size_full()
+        .min_h(px(0.0))
+        .child(editor)
+        .child(
+            div()
+                .id(card_id)
+                .debug_selector(|| "editor-search-card".into())
+                .key_context("ProbeEditorSearch")
+                .on_action(move |_: &Escape, window, cx| {
+                    escape_state.update(cx, |search, cx| {
+                        search.close();
+                        cx.notify();
+                    });
+                    escape_editor.update(cx, |editor, cx| editor.focus(window, cx));
+                })
+                .absolute()
+                .top(px(theme.metrics.spacing_2))
+                .right(px(theme.metrics.spacing_2))
+                .h(px(theme.metrics.control_height + 8.0))
+                .flex()
+                .items_center()
+                .gap(px(theme.metrics.spacing_1))
+                .pl(px(theme.metrics.spacing_1))
+                .pr(px(theme.metrics.spacing_1))
+                .rounded(px(theme.metrics.radius_medium))
+                .bg(theme.colors.surfaces.overlay)
+                .border_1()
+                .border_color(theme.colors.borders.standard)
+                .shadow(vec![
+                    BoxShadow::new(px(0.0), px(8.0), shadow_color).blur_radius(px(18.0)),
+                ])
+                .child(input)
+                .child(
+                    div()
+                        .w(px(46.0))
+                        .text_align(TextAlign::Center)
+                        .text_size(px(theme.typography.caption_size))
+                        .text_color(theme.colors.text.secondary)
+                        .child(count_label),
+                )
+                .child(search_card_button(
+                    theme,
+                    previous_id,
+                    "Previous search result",
+                    chevron_icon(theme, true),
+                    match_count == 0,
+                    move |event, _, cx| {
+                        let range = previous_editor.update(cx, |editor, cx| {
+                            navigate_editor_search_match(editor, SearchDirection::Previous, cx)
+                        });
+                        sync_active_search_match(
+                            &previous_state,
+                            &previous_matches,
+                            range,
+                            matches!(event, ClickEvent::Mouse(_)),
+                            cx,
+                        );
+                    },
+                ))
+                .child(search_card_button(
+                    theme,
+                    next_id,
+                    "Next search result",
+                    chevron_icon(theme, false),
+                    match_count == 0,
+                    move |event, _, cx| {
+                        let range = next_editor.update(cx, |editor, cx| {
+                            navigate_editor_search_match(editor, SearchDirection::Next, cx)
+                        });
+                        sync_active_search_match(
+                            &next_state,
+                            &next_matches,
+                            range,
+                            matches!(event, ClickEvent::Mouse(_)),
+                            cx,
+                        );
+                    },
+                ))
+                .child(search_card_button(
+                    theme,
+                    close_id,
+                    "Close search",
+                    close_icon(theme),
+                    false,
+                    move |_, window, cx| {
+                        close_state.update(cx, |search, cx| {
+                            search.close();
+                            cx.notify();
+                        });
+                        close_editor.update(cx, |editor, cx| editor.focus(window, cx));
+                    },
+                )),
+        )
+        .into_any_element()
+}
+
+fn reveal_editor_search_match(
+    editor: &mut EditorState,
+    query: &str,
+    cx: &mut Context<EditorState>,
+) {
+    editor.set_search_query(query, true, cx);
+    if editor.search_session().query.is_empty() || editor.search_session().matcher.is_empty() {
+        editor.close_search(cx);
+        return;
+    }
+    editor.previous_search_match(cx);
+    editor.next_search_match(cx);
+    editor.close_search(cx);
+}
+
+enum SearchDirection {
+    Previous,
+    Next,
+}
+
+fn navigate_editor_search_match(
+    editor: &mut EditorState,
+    direction: SearchDirection,
+    cx: &mut Context<EditorState>,
+) -> Option<Range<usize>> {
+    let range = match direction {
+        SearchDirection::Previous => editor.previous_search_match(cx),
+        SearchDirection::Next => editor.next_search_match(cx),
+    };
+    editor.close_search(cx);
+    range
+}
+
+fn sync_active_search_match(
+    search_state: &Entity<EditorSearchState>,
+    matches: &[Range<usize>],
+    range: Option<Range<usize>>,
+    refocus_input: bool,
+    cx: &mut App,
+) {
+    let Some(active_match) = range.and_then(|range| matches.iter().position(|item| *item == range))
+    else {
+        return;
+    };
+    search_state.update(cx, |search, cx| {
+        search.active_match = active_match;
+        if refocus_input {
+            search.request_input_focus();
+        }
+        cx.notify();
+    });
+}
+
+fn search_card_button(
+    theme: Theme,
+    id: ElementId,
+    aria_label: impl Into<SharedString>,
+    icon: impl IntoElement,
+    disabled: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let size = theme.metrics.control_height - 2.0;
+    Button::new(id)
+        .accessibility_label(aria_label)
+        .disabled(disabled)
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(theme.metrics.radius_small))
+        .bg(transparent_black())
+        .border_1()
+        .border_color(transparent_black())
+        .cursor_pointer()
+        .hover(move |button| button.bg(theme.colors.selection.inactive_background))
+        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .on_click(on_click)
+        .child(icon)
 }
 
 fn response_search_highlight_overlay(

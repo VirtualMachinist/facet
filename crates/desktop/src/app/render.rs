@@ -2585,79 +2585,6 @@ impl ProbeApp {
             );
         }
 
-        let inspect_selected = self.response_viewer.tab() == ResponseViewerTab::Inspect;
-        let matches = self.response_viewer.matches(key);
-        let match_count = matches.len();
-        let search_label = if self.response_viewer.search().is_empty() {
-            String::new()
-        } else if match_count == 0 {
-            "No matches".to_owned()
-        } else {
-            format!(
-                "{} of {match_count}",
-                self.response_viewer.active_match() + 1
-            )
-        };
-        let search_view = cx.weak_entity();
-        let enter_view = cx.weak_entity();
-        let previous_view = cx.weak_entity();
-        let next_view = cx.weak_entity();
-        let search = div()
-            .flex()
-            .items_center()
-            .gap(px(theme.metrics.spacing_1))
-            .child(
-                div()
-                    .id("response-search-count")
-                    .debug_selector(|| "response-search-count".into())
-                    .text_size(px(theme.typography.caption_size))
-                    .text_color(theme.colors.text.muted)
-                    .mr(px(theme.metrics.spacing_1))
-                    .child(search_label),
-            )
-            .child(components::search_input(
-                theme,
-                "response-search-input",
-                self.response_viewer.search().to_owned(),
-                "Search",
-                move |value, _, input_cx| {
-                    let _ = search_view.update(input_cx, |view, cx| {
-                        view.response_viewer.set_search(value.to_string());
-                        cx.notify();
-                    });
-                },
-                move |_, _, input_cx| {
-                    let _ = enter_view.update(input_cx, |view, cx| {
-                        view.step_response_match(key, 1);
-                        cx.notify();
-                    });
-                },
-            ))
-            .child(components::compact_icon_button(
-                theme,
-                "response-search-previous",
-                "Previous search result",
-                components::chevron_icon(theme, true),
-                move |_, _, cx| {
-                    let _ = previous_view.update(cx, |view, cx| {
-                        view.step_response_match(key, -1);
-                        cx.notify();
-                    });
-                },
-            ))
-            .child(components::compact_icon_button(
-                theme,
-                "response-search-next",
-                "Next search result",
-                components::chevron_icon(theme, false),
-                move |_, _, cx| {
-                    let _ = next_view.update(cx, |view, cx| {
-                        view.step_response_match(key, 1);
-                        cx.notify();
-                    });
-                },
-            ));
-
         let mut banners = div()
             .px(px(theme.metrics.spacing_2))
             .pt(px(theme.metrics.spacing_1))
@@ -2690,7 +2617,7 @@ impl ProbeApp {
         }
 
         let list = match self.response_viewer.tab() {
-            ResponseViewerTab::Headers => self.render_response_headers(theme, key, document, cx),
+            ResponseViewerTab::Headers => self.render_response_headers(theme, document, cx),
             ResponseViewerTab::Inspect => self.render_response_inspector(theme, key, document, cx),
             ResponseViewerTab::Pretty | ResponseViewerTab::Raw => {
                 self.render_response_body(theme, key, document, cx)
@@ -2713,16 +2640,11 @@ impl ProbeApp {
                     .gap(px(theme.metrics.spacing_2))
                     .border_b_1()
                     .border_color(theme.colors.borders.subtle)
-                    .child(tabs)
-                    .when(!inspect_selected, |bar| bar.child(search)),
+                    .child(tabs),
             )
             .when(has_banner, |panel| panel.child(banners))
             .child(list)
             .into_any_element()
-    }
-
-    fn step_response_match(&mut self, key: probe_core::RequestKey, delta: isize) {
-        self.response_viewer.step_match(key, delta);
     }
 
     fn render_response_body(
@@ -2739,8 +2661,6 @@ impl ProbeApp {
         if text.is_empty() {
             return placeholder_message(theme, "Empty response body.");
         }
-        let matches = self.response_viewer.matches(key);
-        let active_match = self.response_viewer.active_match();
         let view = cx.weak_entity();
         let body_mouse_view = cx.weak_entity();
         let inspect_view = cx.weak_entity();
@@ -2781,8 +2701,8 @@ impl ProbeApp {
                 "response-body-editor",
                 text,
                 components::ResponseBodyInputOptions::new(
-                    &matches,
-                    active_match,
+                    &[],
+                    0,
                     if self.response_viewer.tab() == ResponseViewerTab::Pretty
                         && document.pretty_notice.is_none()
                     {
@@ -2854,15 +2774,12 @@ impl ProbeApp {
     fn render_response_headers(
         &self,
         theme: Theme,
-        key: probe_core::RequestKey,
         document: &PreparedDocument,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         if document.headers.is_empty() {
             return placeholder_message(theme, "No response headers");
         }
-        let matches = self.response_viewer.matches(key);
-        let active_match = self.response_viewer.active_match();
         let view = cx.weak_entity();
         div()
             .id("response-headers")
@@ -2874,8 +2791,8 @@ impl ProbeApp {
                 theme,
                 "response-headers-editor",
                 &document.headers,
-                &matches,
-                active_match,
+                &[],
+                0,
                 move |range, cx| {
                     #[cfg(test)]
                     {
