@@ -126,6 +126,100 @@ chain, and interpolates request variables before output or execution preflight.
 Use `environment set` and `environment unset` to persist variable values on a named
 environment.
 
+## Installation
+
+Download the latest version of Probe for your platform from the [GitHub Releases](https://github.com/crizant/probe/releases) page.
+
+### macOS
+
+Download the macOS release and move **Probe.app** to your Applications folder.
+
+Probe is currently distributed without Apple code signing or notarization. Because of this, macOS may prevent the application from opening and show a warning that the developer cannot be verified.
+
+To open Probe:
+
+1. Try to open **Probe.app** normally.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down to the Security section and find the message about Probe being blocked.
+4. Click **Open Anyway**, then confirm by clicking **Open**.
+
+Alternatively, right-click **Probe.app** in Finder and choose **Open**. Depending on your macOS version, this may allow you to open the application anyway.
+
+> [!NOTE]
+> Probe is a free and open-source project. Apple requires a paid Apple Developer Program membership to distribute a properly signed and notarized macOS application. At the moment, I don't plan to pay the recurring developer fee for this free project, so macOS releases are distributed unsigned.
+>
+> If you prefer not to run an unsigned binary, you can inspect the source code and build Probe yourself.
+
+### Windows
+
+Download the Windows release, extract the archive, and run **Probe.exe**.
+
+Because Probe is currently distributed without a code-signing certificate, Windows may display a Microsoft Defender SmartScreen warning when you launch it for the first time.
+
+If SmartScreen blocks the application:
+
+1. Click **More info** on the warning.
+2. Verify that the application is **Probe**.
+3. Click **Run anyway**.
+
+Probe does not require installation and can be run directly from the extracted folder.
+
+### Linux
+
+Download the Linux release and extract the archive:
+
+```bash
+tar -xzf probe-*.tar.gz
+```
+
+If necessary, make the executable runnable:
+
+```bash
+chmod +x probe
+```
+
+Then launch Probe:
+
+```bash
+./probe
+```
+
+You can optionally move the executable somewhere on your `PATH`, for example:
+
+```bash
+sudo mv probe /usr/local/bin/
+```
+
+After that, Probe can be launched from anywhere:
+
+```bash
+probe
+```
+
+### CLI
+
+Probe also includes a command-line interface.
+
+After downloading the CLI release for your platform, place the `probe` executable somewhere on your `PATH`.
+
+On macOS and Linux, for example:
+
+```bash
+chmod +x probe
+sudo mv probe /usr/local/bin/
+```
+
+Then verify the installation:
+
+```bash
+probe --version
+```
+
+On Windows, place `probe.exe` in a directory included in your `PATH`, or add its directory to `PATH`.
+
+For CLI usage and available commands, see [docs/CLI.md](docs/CLI.md).
+
+
 ## Development
 
 Install [rustup](https://rustup.rs/) and enter the repository. The checked-in
