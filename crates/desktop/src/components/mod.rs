@@ -82,18 +82,24 @@ pub(crate) fn popup_surface(
         .border_color(theme.colors.borders.standard)
 }
 
+fn temporary_surface_shadow(theme: Theme, y_offset: f32) -> Vec<BoxShadow> {
+    let (alpha, vertical_offset) = match theme.appearance {
+        crate::theme::ThemeAppearance::Light => (0.14, y_offset / 4.0),
+        crate::theme::ThemeAppearance::Dark => (0.06, 0.0),
+    };
+
+    vec![
+        BoxShadow::new(px(0.0), px(vertical_offset), theme.elevation_shadow(alpha))
+            .blur_radius(px(20.0)),
+    ]
+}
+
 /// A restrained temporary surface for application dialogs.
 pub(crate) fn dialog_surface(
     theme: Theme,
     id: impl Into<ElementId>,
     width: f32,
 ) -> gpui::Stateful<gpui::Div> {
-    let mut shadow_color: Hsla = theme.colors.text.primary.into();
-    shadow_color.a = match theme.appearance {
-        crate::theme::ThemeAppearance::Light => 0.12,
-        crate::theme::ThemeAppearance::Dark => 0.28,
-    };
-
     div()
         .id(id)
         .w(px(width))
@@ -104,9 +110,7 @@ pub(crate) fn dialog_surface(
         .bg(theme.colors.surfaces.overlay)
         .border_1()
         .border_color(theme.colors.borders.standard)
-        .shadow(vec![
-            BoxShadow::new(px(0.0), px(6.0), shadow_color).blur_radius(px(18.0)),
-        ])
+        .shadow(temporary_surface_shadow(theme, 6.0))
 }
 
 pub(crate) fn context_menu_surface(
@@ -2479,11 +2483,6 @@ fn editor_search_card_overlay(
         return editor.into_any_element();
     }
 
-    let mut shadow_color: Hsla = theme.colors.text.primary.into();
-    shadow_color.a = match theme.appearance {
-        crate::theme::ThemeAppearance::Light => 0.12,
-        crate::theme::ThemeAppearance::Dark => 0.28,
-    };
     let (query, focus_input) = search_state.update(cx, |search, _| {
         (search.query.clone(), search.take_focus_request())
     });
@@ -2572,9 +2571,7 @@ fn editor_search_card_overlay(
                 .bg(theme.colors.surfaces.overlay)
                 .border_1()
                 .border_color(theme.colors.borders.standard)
-                .shadow(vec![
-                    BoxShadow::new(px(0.0), px(8.0), shadow_color).blur_radius(px(18.0)),
-                ])
+                .shadow(temporary_surface_shadow(theme, 8.0))
                 .child(input)
                 .child(
                     div()

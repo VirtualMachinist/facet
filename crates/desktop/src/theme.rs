@@ -207,12 +207,23 @@ impl Theme {
         }
     }
 
+    /// Elevation shadow color for temporary raised surfaces.
+    #[must_use]
+    pub fn elevation_shadow(self, alpha: f32) -> Hsla {
+        let mut shadow = match self.appearance {
+            ThemeAppearance::Light => self.colors.text.primary.into(),
+            ThemeAppearance::Dark => hsla(0.0, 0.0, 0.0, 1.0),
+        };
+        shadow.a = alpha;
+        shadow
+    }
+
     fn semantic_tokens(self) -> SemanticThemeTokens {
-        let mut shadow: Hsla = self.colors.text.primary.into();
-        shadow.a = match self.appearance {
+        let shadow_alpha = match self.appearance {
             ThemeAppearance::Light => 0.10,
             ThemeAppearance::Dark => 0.32,
         };
+        let shadow = self.elevation_shadow(shadow_alpha);
         let body_line = px(self.typography.body_size * self.typography.body_line_height);
         SemanticThemeTokens {
             colors: ColorTokens {
