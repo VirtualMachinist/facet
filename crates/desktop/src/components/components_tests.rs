@@ -6,8 +6,8 @@ use gpui::{
     prelude::*, px, size, transparent_black,
 };
 use gpui_base::{
-    Button, Input, InputBase, Popover,
-    input::{Copy, Cut, InputState, Paste, SelectAll},
+    Button, Editor, Input, InputBase, Popover,
+    input::{Copy, Cut, EditorState, InputState, Paste, SelectAll},
 };
 
 use super::{
@@ -727,6 +727,65 @@ fn search_highlight_bounds_repair_wrapped_edge_characters() {
 
     assert_eq!(wrapped_edge.size.width, px(8.0));
     assert_eq!(wrapped_edge.size.height, px(16.0));
+}
+
+struct SearchHighlightHarness {
+    editor: Entity<EditorState>,
+}
+
+impl Render for SearchHighlightHarness {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::light();
+        InputBase::new("search-highlight-harness-editor")
+            .size_full()
+            .font_family(theme.typography.monospace_family)
+            .text_size(px(theme.typography.body_size))
+            .child(Editor::new(&self.editor))
+    }
+}
+
+#[gpui::test]
+fn search_highlight_bounds_include_last_character_before_newline(cx: &mut TestAppContext) {
+    cx.update(crate::theme::Theme::init);
+    let value = SharedString::from("aaaaaaaaaf\n234");
+    let window = cx.open_window(size(px(320.0), px(120.0)), |window, cx| {
+        SearchHighlightHarness {
+            editor: cx.new(|cx| {
+                let mut editor = EditorState::new(window, cx).soft_wrap(false);
+                editor.set_value(value.clone(), window, cx);
+                editor
+            }),
+        }
+    });
+    cx.run_until_parked();
+
+    let (fallback, cross_line, single_character) = window
+        .update(cx, |harness, window, cx| {
+            let editor = harness.editor.read(cx);
+            let fallback = super::search_fallback_char_size(Theme::light(), editor, window);
+            (
+                fallback,
+                super::search_match_bounds(editor, &value, &(9..14), fallback),
+                super::search_match_bounds(editor, &value, &(9..10), fallback),
+            )
+        })
+        .expect("search highlight test window should be open");
+
+    assert_eq!(cross_line.len(), 2, "f234 should highlight on both rows");
+    assert!(
+        cross_line.iter().all(|bounds| bounds.size.width > px(1.0)),
+        "both rows of a cross-line match should have visible highlight bounds"
+    );
+    assert_eq!(
+        single_character.len(),
+        1,
+        "a lone match at the end of a row should have highlight bounds"
+    );
+    assert_eq!(single_character[0].size.height, fallback.height);
+    assert!(
+        (single_character[0].size.width - fallback.width - px(1.0)).abs() < px(0.01),
+        "a lone line-end match should use the editor font's measured glyph width"
+    );
 }
 
 #[test]

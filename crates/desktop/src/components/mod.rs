@@ -2743,13 +2743,16 @@ fn response_search_highlight_overlay(
                 move |bounds, _, window, cx| {
                     let editor = state.read(cx);
                     window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                        let fallback_char_size = search_fallback_char_size(theme, editor, window);
                         for (range, active) in &matches {
                             let color = if *active {
                                 active_color
                             } else {
                                 inactive_color
                             };
-                            for match_bounds in search_match_bounds(editor, &text, range) {
+                            for match_bounds in
+                                search_match_bounds(editor, &text, range, fallback_char_size)
+                            {
                                 window.paint_quad(fill(match_bounds, color));
                             }
                         }
@@ -2769,6 +2772,7 @@ fn search_match_bounds(
     editor: &EditorState,
     text: &str,
     range: &Range<usize>,
+    fallback_char_size: gpui::Size<Pixels>,
 ) -> Vec<Bounds<Pixels>> {
     let mut bounds = Vec::new();
     let start = range.start.min(text.len());
@@ -2777,12 +2781,21 @@ fn search_match_bounds(
         return bounds;
     }
 
+    let measured_bounds = search_match_char_ranges(text, start..end)
+        .into_iter()
+        .filter_map(|char_range| editor.range_to_bounds(&char_range))
+        .collect::<Vec<_>>();
+    let repair_char_size = measured_bounds
+        .iter()
+        .find_map(usable_search_char_size)
+        .unwrap_or(fallback_char_size);
+
     let mut last_char_size = None;
-    for char_range in search_match_char_ranges(text, start..end) {
-        let Some(mut char_bounds) = editor.range_to_bounds(&char_range) else {
-            continue;
-        };
-        normalize_search_char_bounds(&mut char_bounds, last_char_size);
+    for mut char_bounds in measured_bounds {
+        normalize_search_char_bounds(
+            &mut char_bounds,
+            Some(last_char_size.unwrap_or(repair_char_size)),
+        );
         if char_bounds.size.width <= px(0.0) || char_bounds.size.height <= px(0.0) {
             continue;
         }
@@ -2793,6 +2806,27 @@ fn search_match_bounds(
         bound.size.width += px(1.0);
     }
     bounds
+}
+
+fn search_fallback_char_size(
+    theme: Theme,
+    editor: &EditorState,
+    window: &Window,
+) -> gpui::Size<Pixels> {
+    let font_size = px(theme.typography.body_size);
+    let font_id = window
+        .text_system()
+        .resolve_font(&font(theme.typography.monospace_family));
+    size(
+        window.text_system().em_layout_width(font_id, font_size),
+        editor.line_height().unwrap_or(px(
+            theme.typography.body_size * theme.typography.body_line_height
+        )),
+    )
+}
+
+fn usable_search_char_size(bounds: &Bounds<Pixels>) -> Option<gpui::Size<Pixels>> {
+    (bounds.size.width > px(0.0) && bounds.size.height > px(0.0)).then_some(bounds.size)
 }
 
 fn search_match_char_ranges(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
