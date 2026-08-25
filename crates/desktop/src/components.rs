@@ -2740,6 +2740,7 @@ impl RenderOnce for ProbeEditor {
             self.theme,
             state.clone(),
             editor,
+            self.value.clone(),
             self.search_matches,
         );
         let editor = if let Some(variables) = self.variables {
@@ -2754,7 +2755,7 @@ impl RenderOnce for ProbeEditor {
                 cx,
             )
         } else {
-            editor
+            editor.into_any_element()
         };
         with_text_context_menu(
             theme,
@@ -2773,6 +2774,7 @@ fn response_search_highlight_overlay(
     theme: Theme,
     state: Entity<EditorState>,
     editor: impl IntoElement,
+    text: SharedString,
     matches: Vec<(Range<usize>, bool)>,
 ) -> gpui::AnyElement {
     if matches.is_empty() {
@@ -2795,15 +2797,14 @@ fn response_search_highlight_overlay(
                     let editor = state.read(cx);
                     window.with_content_mask(Some(ContentMask { bounds }), |window| {
                         for (range, active) in &matches {
-                            let Some(match_bounds) = editor.range_to_bounds(range) else {
-                                continue;
-                            };
                             let color = if *active {
                                 active_color
                             } else {
                                 inactive_color
                             };
-                            window.paint_quad(fill(match_bounds, color));
+                            for match_bounds in search_match_bounds(editor, &text, range) {
+                                window.paint_quad(fill(match_bounds, color));
+                            }
                         }
                     });
                 },
@@ -2815,6 +2816,86 @@ fn response_search_highlight_overlay(
             .left(px(0.0)),
         )
         .into_any_element()
+}
+
+fn search_match_bounds(
+    editor: &EditorState,
+    text: &str,
+    range: &Range<usize>,
+) -> Vec<Bounds<Pixels>> {
+    let mut bounds = Vec::new();
+    let start = range.start.min(text.len());
+    let end = range.end.min(text.len());
+    if start >= end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+        return bounds;
+    }
+
+    let mut last_char_size = None;
+    for char_range in search_match_char_ranges(text, start..end) {
+        let Some(mut char_bounds) = editor.range_to_bounds(&char_range) else {
+            continue;
+        };
+        normalize_search_char_bounds(&mut char_bounds, last_char_size);
+        if char_bounds.size.width <= px(0.0) || char_bounds.size.height <= px(0.0) {
+            continue;
+        }
+        last_char_size = Some(char_bounds.size);
+        push_merged_highlight_bounds(&mut bounds, char_bounds);
+    }
+    for bound in &mut bounds {
+        bound.size.width += px(1.0);
+    }
+    bounds
+}
+
+fn search_match_char_ranges(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut char_starts = text[range.clone()]
+        .char_indices()
+        .map(|(index, _)| range.start + index)
+        .peekable();
+    while let Some(start) = char_starts.next() {
+        let end = char_starts.peek().copied().unwrap_or(range.end);
+        let slice = &text[start..end];
+        if slice != "\n" && slice != "\r" {
+            ranges.push(start..end);
+        }
+    }
+    ranges
+}
+
+fn normalize_search_char_bounds(
+    bounds: &mut Bounds<Pixels>,
+    last_char_size: Option<gpui::Size<Pixels>>,
+) {
+    let Some(last_char_size) = last_char_size else {
+        return;
+    };
+    if bounds.size.width <= px(0.0) {
+        bounds.size.width = last_char_size.width;
+    }
+    if bounds.size.height > last_char_size.height {
+        bounds.size.height = last_char_size.height;
+    }
+}
+
+fn push_merged_highlight_bounds(bounds: &mut Vec<Bounds<Pixels>>, next: Bounds<Pixels>) {
+    let Some(current) = bounds.last_mut() else {
+        bounds.push(next);
+        return;
+    };
+    if current.origin.y != next.origin.y || current.size.height != next.size.height {
+        bounds.push(next);
+        return;
+    }
+
+    let current_right = current.origin.x + current.size.width;
+    let next_right = next.origin.x + next.size.width;
+    if next.origin.x > current_right {
+        bounds.push(next);
+    } else if next_right > current_right {
+        current.size.width = next_right - current.origin.x;
+    }
 }
 
 fn body_text_highlights(theme: Theme, variables: &[(Range<usize>, String)]) -> Vec<TextDecoration> {
@@ -4758,6 +4839,30 @@ mod tests {
         assert_eq!(runs[0].color, base_color);
         assert_eq!(runs[1].color, highlight);
         assert_eq!(runs[2].color, base_color);
+    }
+
+    #[test]
+    fn search_match_char_ranges_split_long_matches_on_char_boundaries() {
+        let value = "token.abc.def\nnext";
+        let ranges = super::search_match_char_ranges(value, 0.."token.abc.def\nn".len());
+
+        assert_eq!(ranges.first(), Some(&(0..1)));
+        assert_eq!(ranges.last(), Some(&(14..15)));
+        assert!(!ranges.iter().any(|range| &value[range.clone()] == "\n"));
+        assert!(ranges.iter().all(|range| {
+            value.is_char_boundary(range.start) && value.is_char_boundary(range.end)
+        }));
+    }
+
+    #[test]
+    fn search_highlight_bounds_repair_wrapped_edge_characters() {
+        let mut wrapped_edge =
+            gpui::Bounds::new(point(px(120.0), px(24.0)), size(px(-120.0), px(32.0)));
+
+        super::normalize_search_char_bounds(&mut wrapped_edge, Some(size(px(8.0), px(16.0))));
+
+        assert_eq!(wrapped_edge.size.width, px(8.0));
+        assert_eq!(wrapped_edge.size.height, px(16.0));
     }
 
     #[test]
