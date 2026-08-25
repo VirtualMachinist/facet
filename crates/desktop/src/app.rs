@@ -2890,15 +2890,37 @@ impl ProbeApp {
             .collect::<Vec<_>>();
         self.install_reloaded_workspace(workspace, baselines, &key_remaps);
         self.restore_shell_selectors(&result.selector_remaps, selectors);
-        if matches!(operation, StructureOperation::DuplicateRequest { .. })
-            && let Some(selector) = result.selector.as_deref()
+        let should_select_result = matches!(
+            operation,
+            StructureOperation::CreateRequest { .. }
+                | StructureOperation::CreateFolder { .. }
+                | StructureOperation::DuplicateRequest { .. }
+        );
+        if matches!(
+            operation,
+            StructureOperation::CreateRequest { .. } | StructureOperation::CreateFolder { .. }
+        ) && let Some(parent) = result.parent.as_deref()
         {
             let loaded = self
                 .loaded_workspace
                 .as_ref()
                 .expect("workspace was replaced after structural edit");
-            self.selected_tree_item = loaded.request_key(selector).map(WorkspaceItemRef::Request);
-            if self.structure_dialog.is_none() {
+            if let Some(key) = loaded.folder_key(parent) {
+                self.shell.expand_folder(key);
+            }
+        }
+        if should_select_result && let Some(selector) = result.selector.as_deref() {
+            let loaded = self
+                .loaded_workspace
+                .as_ref()
+                .expect("workspace was replaced after structural edit");
+            self.selected_tree_item = match result.kind {
+                ItemKind::Request => loaded.request_key(selector).map(WorkspaceItemRef::Request),
+                ItemKind::Folder => loaded.folder_key(selector).map(WorkspaceItemRef::Folder),
+            };
+            if matches!(operation, StructureOperation::DuplicateRequest { .. })
+                && self.structure_dialog.is_none()
+            {
                 self.tree_focus_handle.focus(window, cx);
             }
         }
@@ -2920,9 +2942,26 @@ impl ProbeApp {
             self.shell.open_request(key);
         }
         self.rebuild_visible_tree_rows();
+        if should_select_result {
+            self.scroll_selected_tree_item_into_view();
+        }
         self.reveal_active_tab();
         self.message = None;
         self.persist_session(cx);
+    }
+
+    fn scroll_selected_tree_item_into_view(&self) {
+        let Some(selected) = self.selected_tree_item else {
+            return;
+        };
+        if let Some(index) = self
+            .visible_tree_rows
+            .iter()
+            .position(|row| row.item == selected)
+        {
+            self.tree_scroll
+                .scroll_to_item(index, ScrollStrategy::Nearest);
+        }
     }
 
     fn select_tree_offset(&mut self, offset: isize, cx: &mut Context<Self>) {
@@ -9281,6 +9320,19 @@ mod tests {
         path
     }
 
+    fn writable_large_fixture(suffix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-desktop-large-{}-{unique}-{suffix}.yml",
+            std::process::id()
+        ));
+        fs::copy(large_fixture(), &path).unwrap();
+        path
+    }
+
     fn writable_structure_fixture(suffix: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -9358,6 +9410,123 @@ mod tests {
             Some("https://local.example/dirty"),
             "structural moves must not silently save an unrelated dirty draft"
         );
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn creating_root_request_without_selection_selects_opens_and_reveals_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_large_fixture("create-root-request-selection");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.selected_tree_item = None;
+                view.apply_structure(
+                    probe_opencollection::StructureOperation::CreateRequest {
+                        parent: None,
+                        index: None,
+                        name: "Created Root".to_owned(),
+                        method: Some("GET".to_owned()),
+                        url: None,
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        let created_selector = window
+            .update(cx, |view, _, _| {
+                assert!(view.structure_task.is_none(), "{:?}", view.message);
+                let loaded = view.loaded_workspace.as_ref().unwrap();
+                let created = loaded
+                    .requests()
+                    .iter()
+                    .find_map(|located| {
+                        let request = loaded.workspace().request(located.key())?;
+                        (request.metadata.name.as_deref() == Some("Created Root"))
+                            .then(|| located.key())
+                    })
+                    .expect("created request should exist");
+                assert_eq!(
+                    view.selected_tree_item,
+                    Some(WorkspaceItemRef::Request(created))
+                );
+                assert_eq!(view.shell.active_tab(), Some(created));
+                loaded.request_selector(created).unwrap().to_owned()
+            })
+            .unwrap();
+        assert_eq!(created_selector, "items/1001");
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("tree-row-items/1001")
+            .expect("created request should be revealed in the tree");
+
+        fs::remove_file(fixture).unwrap();
+    }
+
+    #[gpui::test]
+    fn creating_request_in_selected_folder_selects_child_and_expands_parent(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(Theme::init);
+        let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+            ProbeApp::new(window, cx)
+        });
+        let fixture = writable_bundled_fixture("create-folder-child-selection");
+        let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+        let folder = workspace.folder_key("items/0").unwrap();
+        window
+            .update(cx, |view, window, cx| {
+                view.session_store = None;
+                view.set_workspace(fixture.clone(), workspace);
+                view.select_tree_item(WorkspaceItemRef::Folder(folder), cx);
+                view.shell.collapse_folder(folder);
+                view.rebuild_visible_tree_rows();
+                view.apply_structure(
+                    probe_opencollection::StructureOperation::CreateRequest {
+                        parent: Some("items/0".to_owned()),
+                        index: None,
+                        name: "Created Child".to_owned(),
+                        method: Some("GET".to_owned()),
+                        url: None,
+                    },
+                    window,
+                    cx,
+                );
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |view, _, _| {
+                assert!(view.structure_task.is_none(), "{:?}", view.message);
+                let loaded = view.loaded_workspace.as_ref().unwrap();
+                let created = loaded.request_key("items/0/items/1").unwrap();
+                let folder = loaded.folder_key("items/0").unwrap();
+                assert_eq!(
+                    view.selected_tree_item,
+                    Some(WorkspaceItemRef::Request(created))
+                );
+                assert_eq!(view.shell.active_tab(), Some(created));
+                assert!(view.shell.folder_is_expanded(folder));
+                assert!(
+                    view.visible_tree_rows
+                        .iter()
+                        .any(|row| row.item == WorkspaceItemRef::Request(created)),
+                    "created child should be visible after expanding its parent"
+                );
+            })
+            .unwrap();
+
         fs::remove_file(fixture).unwrap();
     }
 
