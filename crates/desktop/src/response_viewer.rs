@@ -1,4 +1,4 @@
-//! Read-only response presentation: Pretty, Raw, Headers, and Search.
+//! Read-only response presentation: Pretty, Raw, Headers, Inspect, and Search.
 //!
 //! This module retains response text without altering it, searches the active
 //! representation, and pretty-prints JSON off the UI thread. Syntax coloring is
@@ -6,6 +6,11 @@
 
 use std::ops::Range;
 
+use crate::response_inspector::{
+    INSPECT_MAX_BYTES, InspectSelection, InspectionRange, ResponseInspection,
+    first_inspection_selection, inspect_response_body, inspection_has_selection,
+    inspection_selection_at_offset, inspection_value_ranges,
+};
 use probe_http::{HttpResponse, ResponseHeader};
 
 /// JSON pretty-print larger than this runs on a background executor.
@@ -17,23 +22,25 @@ pub(crate) enum ResponseViewerTab {
     Pretty,
     Raw,
     Headers,
+    Inspect,
 }
 
 impl ResponseViewerTab {
-    pub(crate) const ALL: [Self; 3] = [Self::Pretty, Self::Raw, Self::Headers];
+    pub(crate) const ALL: [Self; 4] = [Self::Pretty, Self::Raw, Self::Headers, Self::Inspect];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Pretty => "Pretty",
             Self::Raw => "Raw",
             Self::Headers => "Headers",
+            Self::Inspect => "Inspect",
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SearchMatch {
-    pub range: std::ops::Range<usize>,
+    pub range: Range<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -46,6 +53,10 @@ pub(crate) struct PreparedDocument {
     pub binary: bool,
     pub truncated: bool,
     pub headers: Vec<ResponseHeader>,
+    pub inspection: ResponseInspection,
+    pub inspection_pending: bool,
+    pub inspection_ranges: Vec<InspectionRange>,
+    pub inspection_selection: Option<InspectSelection>,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +83,17 @@ impl ResponseViewerState {
 
     pub(crate) fn document(&self, key: probe_core::RequestKey) -> Option<&PreparedDocument> {
         self.documents.get(&key)
+    }
+
+    pub(crate) fn inspection_selection(
+        &self,
+        key: probe_core::RequestKey,
+    ) -> Option<InspectSelection> {
+        let document = self.documents.get(&key)?;
+        document
+            .inspection_selection
+            .filter(|selection| inspection_has_selection(&document.inspection, *selection))
+            .or_else(|| first_inspection_selection(&document.inspection))
     }
 
     pub(crate) fn allocate_generation(&mut self) -> u64 {
@@ -136,7 +158,50 @@ impl ResponseViewerState {
         document.pretty_text = pretty.text;
         document.pretty_notice = pretty.notice;
         document.pretty_pending = false;
+        document.inspection_ranges =
+            inspection_value_ranges(&document.pretty_text, &document.inspection);
         self.active_match = 0;
+    }
+
+    pub(crate) fn apply_inspection(
+        &mut self,
+        key: probe_core::RequestKey,
+        generation: u64,
+        inspection: ResponseInspection,
+    ) {
+        let Some(document) = self.documents.get_mut(&key) else {
+            return;
+        };
+        if document.generation != generation || !document.inspection_pending {
+            return;
+        }
+        document.inspection = inspection;
+        document.inspection_pending = false;
+        document.inspection_selection = first_inspection_selection(&document.inspection);
+        document.inspection_ranges =
+            inspection_value_ranges(&document.pretty_text, &document.inspection);
+    }
+
+    pub(crate) fn select_inspection_at_offset(
+        &mut self,
+        key: probe_core::RequestKey,
+        offset: usize,
+    ) -> Option<InspectSelection> {
+        let document = self.documents.get_mut(&key)?;
+        let selection = inspection_selection_at_offset(&document.inspection_ranges, offset)?;
+        document.inspection_selection = Some(selection);
+        self.tab = ResponseViewerTab::Inspect;
+        Some(selection)
+    }
+
+    pub(crate) fn select_inspection(
+        &mut self,
+        key: probe_core::RequestKey,
+        selection: InspectSelection,
+    ) {
+        if let Some(document) = self.documents.get_mut(&key) {
+            document.inspection_selection = Some(selection);
+        }
     }
 
     pub(crate) fn visible_text(&self, key: probe_core::RequestKey) -> &str {
@@ -146,7 +211,7 @@ impl ResponseViewerState {
         match self.tab {
             ResponseViewerTab::Pretty => &document.pretty_text,
             ResponseViewerTab::Raw => &document.raw_text,
-            ResponseViewerTab::Headers => "",
+            ResponseViewerTab::Headers | ResponseViewerTab::Inspect => "",
         }
     }
 
@@ -169,6 +234,7 @@ impl ResponseViewerState {
             ResponseViewerTab::Pretty | ResponseViewerTab::Raw => {
                 search_text(self.visible_text(key), &self.search)
             }
+            ResponseViewerTab::Inspect => Vec::new(),
         }
     }
 
@@ -197,7 +263,7 @@ pub(crate) struct PrettyBody {
 pub(crate) fn prepare_document(
     response: &HttpResponse,
     generation: u64,
-) -> (PreparedDocument, bool) {
+) -> (PreparedDocument, bool, bool) {
     let truncated = !response.body_complete;
     if response.body.is_empty() {
         return (
@@ -210,7 +276,12 @@ pub(crate) fn prepare_document(
                 binary: false,
                 truncated,
                 headers: response.headers.clone(),
+                inspection: ResponseInspection::default(),
+                inspection_pending: false,
+                inspection_ranges: Vec::new(),
+                inspection_selection: None,
             },
+            false,
             false,
         );
     }
@@ -225,15 +296,26 @@ pub(crate) fn prepare_document(
                 binary: true,
                 truncated,
                 headers: response.headers.clone(),
+                inspection: ResponseInspection::default(),
+                inspection_pending: false,
+                inspection_ranges: Vec::new(),
+                inspection_selection: None,
             },
+            false,
             false,
         );
     }
 
     let raw_text = String::from_utf8_lossy(&response.body).into_owned();
     let json_candidate = looks_like_json(response);
-    let pending = json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
-    let (pretty_text, pretty_notice, pretty_pending) = if pending {
+    let pretty_pending = json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
+    let inspection_pending = json_candidate && response.body.len() <= INSPECT_MAX_BYTES;
+    let inspection = if !json_candidate || inspection_pending {
+        ResponseInspection::default()
+    } else {
+        inspect_response_body(&response.body)
+    };
+    let (pretty_text, pretty_notice, pretty_pending) = if pretty_pending {
         (raw_text.clone(), Some("Formatting JSON…".to_owned()), true)
     } else if json_candidate {
         let pretty = pretty_json_body(&response.body);
@@ -245,6 +327,8 @@ pub(crate) fn prepare_document(
             false,
         )
     };
+    let inspection_ranges = inspection_value_ranges(&pretty_text, &inspection);
+    let inspection_selection = first_inspection_selection(&inspection);
 
     (
         PreparedDocument {
@@ -256,8 +340,13 @@ pub(crate) fn prepare_document(
             binary: false,
             truncated,
             headers: response.headers.clone(),
+            inspection,
+            inspection_pending,
+            inspection_ranges,
+            inspection_selection,
         },
         pretty_pending,
+        inspection_pending,
     )
 }
 
@@ -455,8 +544,9 @@ mod tests {
     fn long_lines_are_preserved_for_the_virtualized_editor() {
         let line = "x".repeat(1_000);
         let response = response(line.as_bytes(), "text/plain");
-        let (document, pending) = prepare_document(&response, 1);
+        let (document, pending, inspection_pending) = prepare_document(&response, 1);
         assert!(!pending);
+        assert!(!inspection_pending);
         assert_eq!(document.raw_text, line);
     }
 
@@ -516,15 +606,17 @@ mod tests {
     fn binary_and_json_sniffing_prepare_the_expected_document() {
         let json = response(br#"{"ok":true}"#, "application/json");
         assert!(looks_like_json(&json));
-        let (document, pending) = prepare_document(&json, 1);
+        let (document, pending, inspection_pending) = prepare_document(&json, 1);
         assert!(!pending);
+        assert!(inspection_pending);
         assert!(!document.binary);
         assert!(document.pretty_notice.is_none());
         assert!(document.pretty_text.contains('\n'));
 
         let binary = response(&[0, 159, 146, 150], "application/octet-stream");
-        let (document, pending) = prepare_document(&binary, 2);
+        let (document, pending, inspection_pending) = prepare_document(&binary, 2);
         assert!(!pending);
+        assert!(!inspection_pending);
         assert!(document.binary);
         assert!(document.raw_text.is_empty());
     }
@@ -532,8 +624,10 @@ mod tests {
     #[test]
     fn invalid_json_keeps_raw_text_and_explains_pretty_failure() {
         let response = response(b"{not json", "application/json");
-        let (PreparedDocument { pretty_notice, .. }, pending) = prepare_document(&response, 1);
+        let (PreparedDocument { pretty_notice, .. }, pending, inspection_pending) =
+            prepare_document(&response, 1);
         assert!(!pending);
+        assert!(inspection_pending);
         assert_eq!(
             pretty_notice.as_deref(),
             Some("Response is not valid JSON.")
@@ -544,14 +638,16 @@ mod tests {
     fn raw_text_does_not_insert_line_breaks() {
         let source = r#"{"value":"abcdefghij"}"#;
         let response = response(source.as_bytes(), "application/json");
-        let (document, pending) = prepare_document(&response, 1);
+        let (document, pending, inspection_pending) = prepare_document(&response, 1);
         assert!(!pending);
+        assert!(inspection_pending);
         assert_eq!(document.raw_text, source);
     }
 
     #[test]
     fn viewer_tabs_are_stable() {
-        assert_eq!(ResponseViewerTab::ALL.len(), 3);
+        assert_eq!(ResponseViewerTab::ALL.len(), 4);
         assert_eq!(ResponseViewerTab::Pretty.label(), "Pretty");
+        assert_eq!(ResponseViewerTab::Inspect.label(), "Inspect");
     }
 }

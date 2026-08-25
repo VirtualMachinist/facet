@@ -106,6 +106,7 @@ struct TextContextMenuState {
     position: Option<Point<Pixels>>,
     capabilities: InputContextMenuCapabilities,
     target_focus: Option<FocusHandle>,
+    target_editor: Option<Entity<EditorState>>,
 }
 
 fn text_context_menu_id(id: &ElementId, child: &'static str) -> ElementId {
@@ -149,11 +150,27 @@ fn clipboard_has_pasteable_text(cx: &App) -> bool {
         .is_some()
 }
 
+fn text_context_target(
+    state: &Entity<TextContextMenuState>,
+    cx: &App,
+) -> Option<(Option<String>, usize)> {
+    state.read(cx).target_editor.as_ref().map(|editor| {
+        let editor = editor.read(cx);
+        let range = editor.selected_range();
+        let selected = (!range.is_empty())
+            .then(|| editor.value().get(range.clone()).map(str::to_owned))
+            .flatten();
+        (selected, range.start)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn with_text_context_menu(
     theme: Theme,
     id: &ElementId,
     state: Entity<TextContextMenuState>,
     content: impl IntoElement,
+    extra_actions: Vec<TextContextMenuExtraAction>,
     fill_parent: bool,
     window: &Window,
     cx: &App,
@@ -222,6 +239,42 @@ fn with_text_context_menu(
             window,
             || Box::new(Copy),
         ));
+    }
+
+    if !extra_actions.is_empty() {
+        menu = menu.child(context_menu_separator(theme));
+        for action in extra_actions {
+            let action_state = state.clone();
+            let action_is_enabled = action.is_enabled.clone();
+            let action_handler = action.on_click.clone();
+            let target = text_context_target(&action_state, cx);
+            let enabled = target.as_ref().is_some_and(|(selected, cursor_offset)| {
+                (!action.requires_selection || selected.is_some())
+                    && action_is_enabled(selected.as_deref(), *cursor_offset)
+            });
+            menu = menu.child(menu_button_with_style(
+                theme,
+                text_context_menu_id(id, action.id),
+                action.label,
+                None,
+                enabled,
+                MenuButtonStyle::standard(theme),
+                move |window, cx| {
+                    let target_focus = action_state.read(cx).target_focus.clone();
+                    let target = text_context_target(&action_state, cx);
+                    action_state.update(cx, |state, cx| {
+                        state.position = None;
+                        cx.notify();
+                    });
+                    if let Some(target_focus) = target_focus {
+                        target_focus.focus(window, cx);
+                    }
+                    if let Some((selected, cursor_offset)) = target {
+                        action_handler(selected, cursor_offset, window, cx);
+                    }
+                },
+            ));
+        }
     }
 
     menu = menu.child(text_context_menu_action(
@@ -1141,8 +1194,19 @@ pub(crate) fn dialog_choice_button(
 }
 
 type InputChangeHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
+type TextContextActionHandler = Rc<dyn Fn(Option<String>, usize, &mut Window, &mut App)>;
+type TextContextEnableHandler = Rc<dyn Fn(Option<&str>, usize) -> bool>;
 type DropdownChangeHandler<T> = Rc<dyn Fn(Option<&T>, &mut Window, &mut App)>;
 type DropdownActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[derive(Clone)]
+struct TextContextMenuExtraAction {
+    id: &'static str,
+    label: &'static str,
+    requires_selection: bool,
+    is_enabled: TextContextEnableHandler,
+    on_click: TextContextActionHandler,
+}
 
 #[derive(Clone)]
 struct DropdownAction {
@@ -1607,6 +1671,7 @@ impl RenderOnce for ProbeTextInput {
             &component_id,
             context_menu,
             input,
+            Vec::new(),
             false,
             window,
             cx,
@@ -2314,12 +2379,14 @@ pub(crate) fn body_text_input(
         search_matches: Vec::new(),
         on_change: Some(Rc::new(on_value_change)),
         on_visible_range: None,
+        extra_context_menu_actions: Vec::new(),
         debug_selector: None,
         variables: Some(variables),
     }
     .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn response_body_input(
     theme: Theme,
     id: impl Into<ElementId>,
@@ -2328,6 +2395,8 @@ pub(crate) fn response_body_input(
     active_match: usize,
     language: impl Into<SharedString>,
     on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+    inspect_enabled: impl Fn(Option<&str>, usize) -> bool + 'static,
+    on_inspect: impl Fn(Option<String>, usize, &mut Window, &mut App) + 'static,
 ) -> gpui::AnyElement {
     let (decorations, scroll_to_offset) = response_search_decorations(theme, matches, active_match);
     response_editor(
@@ -2342,6 +2411,13 @@ pub(crate) fn response_body_input(
             search_matches: search_highlights(matches, active_match),
         },
         on_visible_range,
+        vec![TextContextMenuExtraAction {
+            id: "inspect",
+            label: "Inspect",
+            requires_selection: false,
+            is_enabled: Rc::new(inspect_enabled),
+            on_click: Rc::new(on_inspect),
+        }],
     )
 }
 
@@ -2377,6 +2453,29 @@ pub(crate) fn response_headers_input(
             search_matches: search_highlights(matches, active_match),
         },
         on_visible_range,
+        Vec::new(),
+    )
+}
+
+pub(crate) fn response_inspector_input(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+) -> gpui::AnyElement {
+    response_editor(
+        theme,
+        id,
+        ResponseEditorPresentation {
+            value: text.into(),
+            decorations: Vec::new(),
+            language: SharedString::default(),
+            text_color: theme.colors.text.primary,
+            scroll_to_offset: None,
+            search_matches: Vec::new(),
+        },
+        on_visible_range,
+        Vec::new(),
     )
 }
 
@@ -2419,6 +2518,7 @@ fn response_editor(
     id: impl Into<ElementId>,
     presentation: ResponseEditorPresentation,
     on_visible_range: impl Fn(Range<usize>, &mut App) + 'static,
+    extra_context_menu_actions: Vec<TextContextMenuExtraAction>,
 ) -> gpui::AnyElement {
     ProbeEditor {
         theme,
@@ -2436,6 +2536,7 @@ fn response_editor(
         search_matches: presentation.search_matches,
         on_change: None,
         on_visible_range: Some(Rc::new(on_visible_range)),
+        extra_context_menu_actions,
         debug_selector: None,
         variables: None,
     }
@@ -2500,6 +2601,7 @@ struct ProbeEditor {
     search_matches: Vec<(Range<usize>, bool)>,
     on_change: Option<InputChangeHandler>,
     on_visible_range: Option<VisibleRangeHandler>,
+    extra_context_menu_actions: Vec<TextContextMenuExtraAction>,
     debug_selector: Option<&'static str>,
     variables: Option<VariableContext>,
 }
@@ -2554,6 +2656,7 @@ impl RenderOnce for ProbeEditor {
             }
             let context_focus = field.state.read(cx).focus_handle(cx);
             let open_context_menu = context_menu.clone();
+            let context_editor = field.state.clone();
             field.state.update(cx, |editor, cx| {
                 editor.set_editor_style(editor_paint_style(self.theme));
                 editor.set_readonly(self.readonly, cx);
@@ -2564,6 +2667,7 @@ impl RenderOnce for ProbeEditor {
                         state.position = Some(position);
                         state.capabilities = capabilities;
                         state.target_focus = Some(context_focus.clone());
+                        state.target_editor = Some(context_editor.clone());
                         cx.notify();
                     });
                 }));
@@ -2652,7 +2756,16 @@ impl RenderOnce for ProbeEditor {
         } else {
             editor
         };
-        with_text_context_menu(theme, &component_id, context_menu, editor, true, window, cx)
+        with_text_context_menu(
+            theme,
+            &component_id,
+            context_menu,
+            editor,
+            self.extra_context_menu_actions,
+            true,
+            window,
+            cx,
+        )
     }
 }
 
@@ -3997,6 +4110,7 @@ mod tests {
                     search_matches: Vec::new(),
                     on_change: None,
                     on_visible_range: None,
+                    extra_context_menu_actions: Vec::new(),
                     debug_selector: Some("context-body-editor"),
                     variables: Some(VariableContext::default()),
                 }
@@ -4017,6 +4131,7 @@ mod tests {
                     search_matches: Vec::new(),
                     on_change: None,
                     on_visible_range: None,
+                    extra_context_menu_actions: Vec::new(),
                     debug_selector: Some("context-response-editor"),
                     variables: None,
                 }

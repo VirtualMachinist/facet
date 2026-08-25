@@ -12,6 +12,7 @@ mod execution;
 mod filesystem;
 mod persistence;
 mod request_editor;
+mod response_inspector;
 mod response_viewer;
 mod session;
 mod shell;

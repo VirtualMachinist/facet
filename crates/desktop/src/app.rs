@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::Cell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
@@ -58,6 +59,7 @@ use crate::{
         BodyEditorKind, EditorSection, RequestEditorState, apply_url_bar_value, auth_label,
         auth_value, body_kind, raw_body_mut, set_auth_property, set_authentication, url_bar_value,
     },
+    response_inspector::{InspectSelection, inspect_response_body, inspection_detail_text},
     response_viewer::{
         PreparedDocument, ResponseViewerState, ResponseViewerTab, prepare_document,
         pretty_json_body,
@@ -81,6 +83,9 @@ const APPLICATION_NAME: &str = "Probe";
 const IMPORT_DIAGNOSTIC_GROUP_LIMIT: usize = 8;
 const WORKSPACE_SWITCHER_MENU_WIDTH: f32 = 300.0;
 const RESPONSE_ELAPSED_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_INSPECT_LIST_WIDTH: f32 = 220.0;
+const MIN_INSPECT_LIST_WIDTH: f32 = 160.0;
+const MAX_INSPECT_LIST_WIDTH: f32 = 360.0;
 
 fn response_status_color(theme: Theme, status: u16) -> gpui::Rgba {
     match status {
@@ -519,6 +524,12 @@ struct TreeRow {
     depth: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InspectListRow {
+    Group { label: &'static str, count: usize },
+    Item { selection: InspectSelection },
+}
+
 #[derive(Clone, Debug)]
 struct TreeDrag {
     item: WorkspaceItemRef,
@@ -535,6 +546,61 @@ struct TreeRowSpec {
     method: Option<String>,
     depth: usize,
     selected: bool,
+}
+
+fn inspect_list_rows(document: &PreparedDocument) -> Vec<InspectListRow> {
+    let mut rows = Vec::with_capacity(document.inspection.count() + 2);
+    if !document.inspection.jwts.is_empty() {
+        rows.push(InspectListRow::Group {
+            label: "JWT",
+            count: document.inspection.jwts.len(),
+        });
+        rows.extend(
+            (0..document.inspection.jwts.len()).map(|index| InspectListRow::Item {
+                selection: InspectSelection::Jwt(index),
+            }),
+        );
+    }
+    if !document.inspection.timestamps.is_empty() {
+        rows.push(InspectListRow::Group {
+            label: "Timestamps",
+            count: document.inspection.timestamps.len(),
+        });
+        rows.extend(
+            (0..document.inspection.timestamps.len()).map(|index| InspectListRow::Item {
+                selection: InspectSelection::Timestamp(index),
+            }),
+        );
+    }
+    rows
+}
+
+fn inspect_row_label(document: &PreparedDocument, selection: InspectSelection) -> String {
+    match selection {
+        InspectSelection::Jwt(index) => document
+            .inspection
+            .jwts
+            .get(index)
+            .map(|finding| finding.path.clone())
+            .unwrap_or_else(|| "JWT".to_owned()),
+        InspectSelection::Timestamp(index) => document
+            .inspection
+            .timestamps
+            .get(index)
+            .map(|finding| finding.path.clone())
+            .unwrap_or_else(|| "Timestamp".to_owned()),
+    }
+}
+
+fn inspect_row_index(rows: &[InspectListRow], selection: InspectSelection) -> Option<usize> {
+    rows.iter().position(|row| {
+        matches!(
+            row,
+            InspectListRow::Item {
+                selection: row_selection
+            } if *row_selection == selection
+        )
+    })
 }
 
 struct ShellSelectors {
@@ -639,6 +705,10 @@ pub(crate) struct ProbeApp {
     execution: ExecutionState,
     response_viewer: ResponseViewerState,
     tree_scroll: UniformListScrollHandle,
+    inspector_scroll: UniformListScrollHandle,
+    inspector_list_width: f32,
+    inspector_resize_start: Option<(f32, f32)>,
+    pending_inspector_reveal: Cell<Option<InspectSelection>>,
     tab_bar_scroll: ScrollHandle,
     pending_tab_reveal: bool,
     #[cfg(test)]
@@ -742,6 +812,10 @@ impl ProbeApp {
             execution: ExecutionState::default(),
             response_viewer: ResponseViewerState::default(),
             tree_scroll: UniformListScrollHandle::new(),
+            inspector_scroll: UniformListScrollHandle::new(),
+            inspector_list_width: DEFAULT_INSPECT_LIST_WIDTH,
+            inspector_resize_start: None,
+            pending_inspector_reveal: Cell::new(None),
             tab_bar_scroll: ScrollHandle::new(),
             pending_tab_reveal: false,
             #[cfg(test)]
@@ -3239,22 +3313,35 @@ impl ProbeApp {
             return;
         };
         let generation = self.response_viewer.allocate_generation();
-        let (document, pending) = prepare_document(response, generation);
-        let body = pending.then(|| response.body.clone());
+        let (document, pretty_pending, inspection_pending) = prepare_document(response, generation);
+        let pretty_body = pretty_pending.then(|| response.body.clone());
+        let inspection_body = inspection_pending.then(|| response.body.clone());
         self.response_viewer.insert(key, document);
-        let Some(body) = body else {
-            return;
-        };
-        cx.spawn(async move |view, cx| {
-            let pretty = cx
-                .background_spawn(async move { pretty_json_body(&body) })
-                .await;
-            let _ = view.update(cx, |view, cx| {
-                view.response_viewer.apply_pretty(key, generation, pretty);
-                cx.notify();
-            });
-        })
-        .detach();
+        if let Some(body) = pretty_body {
+            cx.spawn(async move |view, cx| {
+                let pretty = cx
+                    .background_spawn(async move { pretty_json_body(&body) })
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.response_viewer.apply_pretty(key, generation, pretty);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+        if let Some(body) = inspection_body {
+            cx.spawn(async move |view, cx| {
+                let inspection = cx
+                    .background_spawn(async move { inspect_response_body(&body) })
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    view.response_viewer
+                        .apply_inspection(key, generation, inspection);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
     }
 
     fn cancel_request(&mut self, key: RequestKey, cx: &mut Context<Self>) {
@@ -3269,6 +3356,13 @@ impl ProbeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some((start_x, start_width)) = self.inspector_resize_start {
+            let delta = f32::from(event.position.x) - start_x;
+            self.inspector_list_width =
+                (start_width + delta).clamp(MIN_INSPECT_LIST_WIDTH, MAX_INSPECT_LIST_WIDTH);
+            cx.notify();
+            return;
+        }
         match self.shell.resizing {
             Some(ResizePane::Sidebar) => self.shell.resize_sidebar(event.position.x.into()),
             Some(ResizePane::Response) => match self.shell.pane_layout {
@@ -3287,7 +3381,8 @@ impl ProbeApp {
     }
 
     fn finish_resize(&mut self, cx: &mut Context<Self>) {
-        if self.shell.resizing.take().is_none() {
+        let was_inspector_resizing = self.inspector_resize_start.take().is_some();
+        if self.shell.resizing.take().is_none() && !was_inspector_resizing {
             return;
         }
         self.persist_session(cx);
@@ -6145,11 +6240,21 @@ impl ProbeApp {
         for (index, tab) in ResponseViewerTab::ALL.into_iter().enumerate() {
             let tab_view = cx.weak_entity();
             let selected = self.response_viewer.tab() == tab;
+            let label = if tab == ResponseViewerTab::Inspect {
+                let count = document.inspection.count();
+                if count > 0 {
+                    format!("Inspect [{count}]")
+                } else {
+                    tab.label().to_owned()
+                }
+            } else {
+                tab.label().to_owned()
+            };
             tabs = tabs.child(
                 components::text_tab(
                     theme,
                     ("response-view-tab", index),
-                    tab.label(),
+                    label,
                     selected,
                     index + 1,
                     ResponseViewerTab::ALL.len(),
@@ -6166,6 +6271,7 @@ impl ProbeApp {
             );
         }
 
+        let inspect_selected = self.response_viewer.tab() == ResponseViewerTab::Inspect;
         let matches = self.response_viewer.matches(key);
         let match_count = matches.len();
         let search_label = if self.response_viewer.search().is_empty() {
@@ -6255,7 +6361,10 @@ impl ProbeApp {
             );
         }
         if let Some(notice) = &document.pretty_notice
-            && self.response_viewer.tab() != ResponseViewerTab::Headers
+            && !matches!(
+                self.response_viewer.tab(),
+                ResponseViewerTab::Headers | ResponseViewerTab::Inspect
+            )
         {
             has_banner = true;
             banners = banners.child(
@@ -6268,6 +6377,7 @@ impl ProbeApp {
 
         let list = match self.response_viewer.tab() {
             ResponseViewerTab::Headers => self.render_response_headers(theme, key, document, cx),
+            ResponseViewerTab::Inspect => self.render_response_inspector(theme, key, document, cx),
             ResponseViewerTab::Pretty | ResponseViewerTab::Raw => {
                 self.render_response_body(theme, key, document, cx)
             }
@@ -6290,7 +6400,7 @@ impl ProbeApp {
                     .border_b_1()
                     .border_color(theme.colors.borders.subtle)
                     .child(tabs)
-                    .child(search),
+                    .when(!inspect_selected, |bar| bar.child(search)),
             )
             .when(has_banner, |panel| panel.child(banners))
             .child(list)
@@ -6318,6 +6428,10 @@ impl ProbeApp {
         let matches = self.response_viewer.matches(key);
         let active_match = self.response_viewer.active_match();
         let view = cx.weak_entity();
+        let inspect_view = cx.weak_entity();
+        let inspect_ranges = document.inspection_ranges.clone();
+        let inspect_context_enabled = self.response_viewer.tab() == ResponseViewerTab::Pretty
+            && document.pretty_notice.is_none();
         div()
             .id("response-body")
             .debug_selector(|| "response-body".into())
@@ -6348,6 +6462,39 @@ impl ProbeApp {
                     {
                         let _ = (&view, range, cx);
                     }
+                },
+                move |_, offset| {
+                    inspect_context_enabled
+                        && inspect_ranges
+                            .iter()
+                            .any(|entry| entry.range.contains(&offset))
+                },
+                move |_, offset, _, cx| {
+                    let _ = inspect_view.update(cx, |view, cx| {
+                        if view.response_viewer.tab() != ResponseViewerTab::Pretty {
+                            view.message = Some(
+                                "Inspect from the Pretty tab to select a response value."
+                                    .to_owned(),
+                            );
+                        } else if view
+                            .response_viewer
+                            .document(key)
+                            .is_some_and(|document| document.inspection_pending)
+                        {
+                            view.response_viewer.set_tab(ResponseViewerTab::Inspect);
+                            view.message = Some("Inspection is still running.".to_owned());
+                        } else if let Some(selection) = view
+                            .response_viewer
+                            .select_inspection_at_offset(key, offset)
+                        {
+                            view.pending_inspector_reveal.set(Some(selection));
+                        } else {
+                            view.message = Some(
+                                "No inspected JWT or timestamp found at that value.".to_owned(),
+                            );
+                        }
+                        cx.notify();
+                    });
                 },
             ))
             .into_any_element()
@@ -6392,6 +6539,189 @@ impl ProbeApp {
                 },
             ))
             .into_any_element()
+    }
+
+    fn render_response_inspector(
+        &self,
+        theme: Theme,
+        key: probe_core::RequestKey,
+        document: &PreparedDocument,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let rows = inspect_list_rows(document);
+        if let Some(selection) = self.pending_inspector_reveal.take()
+            && let Some(index) = inspect_row_index(&rows, selection)
+        {
+            self.inspector_scroll
+                .scroll_to_item(index, ScrollStrategy::Nearest);
+        }
+        let selected = self.response_viewer.inspection_selection(key);
+        let detail = if document.inspection_pending {
+            "Inspecting response…".to_owned()
+        } else {
+            inspection_detail_text(&document.inspection, selected)
+        };
+        let view = cx.weak_entity();
+        let row_count = rows.len();
+        let rows_for_list = rows.clone();
+        let list = uniform_list("response-inspector-list", row_count, {
+            cx.processor(move |view, range: std::ops::Range<usize>, _, cx| {
+                range
+                    .filter_map(|index| {
+                        let document = view.response_viewer.document(key)?;
+                        let selected = view.response_viewer.inspection_selection(key);
+                        rows_for_list.get(index).copied().map(|row| {
+                            view.render_inspector_list_row(theme, key, row, document, selected, cx)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .size_full()
+        .track_scroll(&self.inspector_scroll);
+
+        if row_count == 0 && !document.inspection_pending {
+            return div()
+                .id("response-inspector-empty")
+                .debug_selector(|| "response-inspector-empty".into())
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme.colors.text.muted)
+                .child(document.inspection.skipped.clone().unwrap_or_else(|| {
+                    "JWTs and Unix timestamps are detected automatically.".to_owned()
+                }))
+                .into_any_element();
+        }
+
+        let divider_view = cx.weak_entity();
+        let divider = div()
+            .id("response-inspector-divider")
+            .debug_selector(|| "response-inspector-divider".into())
+            .w(px(5.0))
+            .h_full()
+            .flex_none()
+            .border_l_1()
+            .border_color(theme.colors.borders.subtle)
+            .cursor(CursorStyle::ResizeLeftRight)
+            .hover(move |handle| handle.bg(theme.colors.borders.subtle))
+            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                let _ = divider_view.update(cx, |view, cx| {
+                    view.inspector_resize_start =
+                        Some((f32::from(event.position.x), view.inspector_list_width));
+                    cx.notify();
+                });
+            });
+
+        div()
+            .id("response-inspector")
+            .debug_selector(|| "response-inspector".into())
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .child(
+                div()
+                    .w(px(self.inspector_list_width))
+                    .flex_none()
+                    .min_h(px(0.0))
+                    .p(px(theme.metrics.spacing_2))
+                    .child(list),
+            )
+            .child(divider)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .p(px(theme.metrics.spacing_2))
+                    .child(components::response_inspector_input(
+                        theme,
+                        "response-inspector-editor",
+                        detail,
+                        move |range, cx| {
+                            #[cfg(test)]
+                            {
+                                let _ = view.update(cx, |this, _| {
+                                    this.rendered_response_rows = range.len();
+                                });
+                            }
+                            #[cfg(not(test))]
+                            {
+                                let _ = (&view, range, cx);
+                            }
+                        },
+                    )),
+            )
+            .into_any_element()
+    }
+
+    fn render_inspector_list_row(
+        &self,
+        theme: Theme,
+        key: probe_core::RequestKey,
+        row: InspectListRow,
+        document: &PreparedDocument,
+        selected: Option<InspectSelection>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        match row {
+            InspectListRow::Group { label, count } => div()
+                .w_full()
+                .h(px(theme.metrics.tree_row_height))
+                .px(px(theme.metrics.spacing_1))
+                .flex()
+                .items_center()
+                .gap(px(theme.metrics.spacing_1))
+                .text_size(px(theme.typography.caption_size))
+                .text_color(theme.colors.text.secondary)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(label)
+                .child(
+                    div()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(theme.colors.text.muted)
+                        .child(format!("[{count}]")),
+                )
+                .into_any_element(),
+            InspectListRow::Item { selection } => {
+                let label = inspect_row_label(document, selection);
+                let row_view = cx.weak_entity();
+                let is_selected = selected == Some(selection);
+                div()
+                    .id("response-inspector-list-row")
+                    .debug_selector(|| "response-inspector-list-row".into())
+                    .w_full()
+                    .h(px(theme.metrics.tree_row_height))
+                    .px(px(theme.metrics.spacing_1))
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme.metrics.radius_small))
+                    .cursor(CursorStyle::PointingHand)
+                    .text_size(px(theme.typography.caption_size))
+                    .text_color(theme.colors.text.primary)
+                    .bg(if is_selected {
+                        theme.colors.selection.inactive_background
+                    } else {
+                        theme.colors.surfaces.raised
+                    })
+                    .hover(move |row| {
+                        if is_selected {
+                            row
+                        } else {
+                            row.bg(theme.colors.surfaces.editor)
+                        }
+                    })
+                    .child(components::truncated_label(label).min_w(px(0.0)))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let _ = row_view.update(cx, |view, cx| {
+                            view.response_viewer.select_inspection(key, selection);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            }
+        }
     }
 
     fn render_editor_response(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::Div {
