@@ -235,33 +235,48 @@ cargo fmt --check
 On macOS, desktop builds also require the full Xcode developer tools (not only the
 standalone Command Line Tools), because pinned GPUI compiles Metal shaders.
 
-The repository is a Cargo workspace. It currently includes OpenCollection parsing,
-bundled and unbundled filesystem loading, an indexed in-memory workspace, shared
-environment resolution, asynchronous HTTP execution, a versioned automation-safe CLI
-contract, Postman Collection v2.0/v2.1 and Yaak export/directory-sync import, and a native GPUI desktop shell with semantic light/dark themes,
-OpenCollection-backed browsing, request tabs, resizable editor/response panes, and
-a title-bar workspace switcher. The workspace switcher, empty sidebar, and macOS
-`File > Import` menu expose the same Postman/Yaak import workflow. Empty workspaces
-can create a new bundled collection or open an existing one. The request editor updates method, URL, query and
-`:variableName` path parameters, headers, body, authentication, and environment selection in memory as
-the user works. Desktop Send and Cancel actions use the same asynchronous HTTP engine
-as the CLI, and completed responses expose status, duration, size, headers, and body
-in a Pretty/Raw/Headers viewer with search. Large bodies are virtualized so navigation
-stays responsive. The editor and response viewer support vertical or horizontal layouts,
-and the local desktop session restores the active workspace, tabs, collapsed folders,
+The repository is a Cargo workspace. It currently includes:
+
+- OpenCollection parsing, bundled and unbundled filesystem loading, and an
+  indexed in-memory workspace
+- shared environment resolution and asynchronous HTTP execution
+- a versioned, automation-safe CLI contract
+- Postman Collection v2.0/v2.1 and Yaak export/directory-sync import
+- a native GPUI desktop shell with semantic light/dark themes
+
+The desktop app supports OpenCollection-backed browsing, request tabs,
+resizable editor/response panes, and a title-bar workspace switcher. The
+workspace switcher, empty sidebar, and macOS `File > Import` menu expose the
+same Postman/Yaak import workflow. Empty workspaces can create a new bundled
+collection or open an existing one.
+
+The request editor updates method, URL, query and `:variableName` path
+parameters, headers, body, authentication, and environment selection in memory
+as the user works. Desktop Send and Cancel actions use the same asynchronous
+HTTP engine as the CLI. Completed responses expose status, duration, size,
+headers, and body in a Pretty/Raw/Headers viewer with search. Large bodies are
+virtualized so navigation stays responsive.
+
+The editor and response viewer support vertical or horizontal layouts. The
+local desktop session restores the active workspace, tabs, collapsed folders,
 selected environment, pane orientation, and pane sizes automatically.
-Edited requests show a dirty indicator and expose a save icon beside the URL while dirty.
-Saves use the shared atomic OpenCollection repository on a background executor,
-and Probe asks before closing tabs, collections, or the application with unsaved changes.
-Open collections are watched for filesystem changes; valid external edits, additions,
-deletions, and identifiable renames are reconciled in the background while conflicting
-local drafts remain protected until the user chooses which version to keep.
-The desktop collection tree also exposes keyboard-accessible controls for creating,
-renaming, deleting, moving, and reordering requests and folders, and the same move and
-reorder operations can be performed by dragging tree rows onto folder or sibling
-targets. Structural writes run
-in the background through the shared repository, while open tabs, collapsed folders,
-session selectors, and unsaved request drafts follow persisted selector remaps.
+
+Edited requests show a dirty indicator and expose a save icon beside the URL
+while dirty. Saves use the shared atomic OpenCollection repository on a
+background executor, and Probe asks before closing tabs, collections, or the
+application with unsaved changes.
+
+Open collections are watched for filesystem changes. Valid external edits,
+additions, deletions, and identifiable renames are reconciled in the background.
+Conflicting local drafts remain protected until the user chooses which version
+to keep.
+
+The desktop collection tree exposes keyboard-accessible controls for creating,
+renaming, deleting, moving, and reordering requests and folders. The same move
+and reorder operations can be performed by dragging tree rows onto folder or
+sibling targets. Structural writes run in the background through the shared
+repository, while open tabs, collapsed folders, session selectors, and unsaved
+request drafts follow persisted selector remaps.
 
 ```bash
 cargo run -p probe-cli -- --help
