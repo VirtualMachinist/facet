@@ -3274,3 +3274,61 @@ fn opening_many_request_tabs_scrolls_to_the_active_tab(cx: &mut TestAppContext) 
         "the newly opened tab should be visible in the tab bar"
     );
 }
+
+#[gpui::test]
+fn hovering_a_request_tab_shows_the_full_label_tooltip(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = large_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace =
+        probe_opencollection::load_workspace(&fixture).expect("large fixture should load");
+    let keys: Vec<_> = workspace
+        .requests()
+        .iter()
+        .take(12)
+        .map(|request| request.key())
+        .collect();
+    assert!(keys.len() >= 12, "large fixture should have many requests");
+    window
+        .update(cx, |view, _, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            cx.notify();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, cx| {
+            for key in &keys {
+                view.select_request(*key, cx);
+            }
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
+    cx.run_until_parked();
+
+    let tab = visual
+        .debug_bounds("request-tab-label")
+        .expect("active request tab should render");
+    hover_and_wait(cx, window, tab.center());
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(
+        visual.debug_bounds("request-tab-tooltip-popup").is_some(),
+        "hovering a request tab should show its full label tooltip"
+    );
+    assert!(
+        visual.debug_bounds("request-tab-tooltip-method").is_some(),
+        "the request tab tooltip should include the request method"
+    );
+}

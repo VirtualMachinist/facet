@@ -1,6 +1,71 @@
 use super::*;
 
 impl ProbeApp {
+    fn render_request_tab_tooltip(&self, theme: Theme) -> gpui::AnyElement {
+        let Some(tooltip) = self.request_tab_tooltip else {
+            return div().into_any_element();
+        };
+        if !tooltip.open {
+            return div().into_any_element();
+        }
+        if !self.shell.tabs().contains(&tooltip.key) {
+            return div().into_any_element();
+        }
+        let Some(loaded) = &self.loaded_workspace else {
+            return div().into_any_element();
+        };
+        let Some(request) = loaded.workspace().request(tooltip.key) else {
+            return div().into_any_element();
+        };
+        let label = request
+            .metadata
+            .name
+            .as_deref()
+            .unwrap_or("Untitled request")
+            .to_owned();
+        let method = request.method.as_deref().unwrap_or("HTTP").to_uppercase();
+        let position = point(
+            tooltip.position.x + px(theme.metrics.spacing_1),
+            tooltip.position.y + px(theme.metrics.control_height * 0.5),
+        );
+        let popup = div()
+            .id("request-tab-tooltip-popup")
+            .debug_selector(|| "request-tab-tooltip-popup".into())
+            .max_w(px(320.0))
+            .px(px(theme.metrics.spacing_2))
+            .py(px(theme.metrics.spacing_1))
+            .rounded(px(theme.metrics.radius_small))
+            .bg(theme.colors.surfaces.window)
+            .border_1()
+            .border_color(theme.colors.borders.standard)
+            .shadow_sm()
+            .text_size(px(theme.typography.caption_size))
+            .text_color(theme.colors.text.primary)
+            .flex()
+            .items_center()
+            .gap(px(theme.metrics.spacing_2))
+            .child(
+                div()
+                    .id("request-tab-tooltip-method")
+                    .debug_selector(|| "request-tab-tooltip-method".into())
+                    .flex_none()
+                    .font_family(theme.typography.monospace_family)
+                    .text_size(px(tree_method_font_size(theme, &method)))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.method_color(&method))
+                    .child(method),
+            )
+            .child(components::truncated_label(label).min_w(px(0.0)).flex_1());
+
+        deferred(
+            Positioner::corner(Anchor::TopLeft, position)
+                .margin(px(6.0))
+                .child(popup),
+        )
+        .with_priority(POPUP_PRIORITY + 1)
+        .into_any_element()
+    }
+
     fn render_tab_context_menu(
         &self,
         theme: Theme,
@@ -772,6 +837,9 @@ impl ProbeApp {
             let select_view = cx.weak_entity();
             let close_view = cx.weak_entity();
             let context_menu_view = cx.weak_entity();
+            let tooltip_hover_view = cx.weak_entity();
+            let tooltip_move_view = cx.weak_entity();
+            let tooltip_leave_view = cx.weak_entity();
             let middle_close_view = close_view.clone();
             let close_hover = if active {
                 active_tab_close_hover
@@ -811,6 +879,22 @@ impl ProbeApp {
                             .hover(move |tab| tab.bg(theme.colors.surfaces.sidebar))
                     })
                     .cursor_pointer()
+                    .on_mouse_move(move |event, _, cx| {
+                        let _ = tooltip_move_view.update(cx, |view, cx| {
+                            view.update_request_tab_tooltip_position(tab_key, event.position, cx);
+                        });
+                    })
+                    .on_hover(move |hovered, window, cx| {
+                        let _ = if *hovered {
+                            tooltip_hover_view.update(cx, |view, cx| {
+                                view.open_request_tab_tooltip(tab_key, window.mouse_position(), cx);
+                            })
+                        } else {
+                            tooltip_leave_view.update(cx, |view, cx| {
+                                view.close_request_tab_tooltip(tab_key, cx);
+                            })
+                        };
+                    })
                     .on_click(move |_, _, cx| {
                         let _ = select_view.update(cx, |view, cx| view.select_request(tab_key, cx));
                     })
@@ -3421,6 +3505,7 @@ impl Render for ProbeApp {
             .child(self.render_structure_dialog(theme, window, cx))
             .child(self.render_create_environment_dialog(theme, window, cx))
             .child(self.render_application_dialog(theme, window, cx))
+            .child(self.render_request_tab_tooltip(theme))
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
     }

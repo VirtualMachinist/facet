@@ -100,6 +100,7 @@ const APPLICATION_ID: &str = "dev.probe.desktop";
 const APPLICATION_NAME: &str = "Probe";
 const WORKSPACE_SWITCHER_MENU_WIDTH: f32 = 300.0;
 const RESPONSE_ELAPSED_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
+const REQUEST_TAB_TOOLTIP_DELAY: Duration = Duration::from_millis(200);
 const DEFAULT_INSPECT_LIST_WIDTH: f32 = 220.0;
 const MIN_INSPECT_LIST_WIDTH: f32 = 160.0;
 const MAX_INSPECT_LIST_WIDTH: f32 = 360.0;
@@ -175,6 +176,13 @@ fn request_key_remaps(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+struct RequestTabTooltip {
+    key: RequestKey,
+    position: Point<Pixels>,
+    open: bool,
+}
+
 pub(crate) struct ProbeApp {
     focus_handle: FocusHandle,
     tree_focus_handle: FocusHandle,
@@ -212,6 +220,9 @@ pub(crate) struct ProbeApp {
     tree_context_menu_position: Option<Point<Pixels>>,
     tab_context_menu: Option<RequestKey>,
     tab_context_menu_position: Option<Point<Pixels>>,
+    request_tab_tooltip: Option<RequestTabTooltip>,
+    request_tab_tooltip_epoch: usize,
+    request_tab_tooltip_task: Option<Task<()>>,
     visible_tree_rows: Vec<TreeRow>,
     tree_search: String,
     selected_tree_item: Option<WorkspaceItemRef>,
@@ -322,6 +333,9 @@ impl ProbeApp {
             tree_context_menu_position: None,
             tab_context_menu: None,
             tab_context_menu_position: None,
+            request_tab_tooltip: None,
+            request_tab_tooltip_epoch: 0,
+            request_tab_tooltip_task: None,
             visible_tree_rows: Vec::new(),
             tree_search: String::new(),
             selected_tree_item: None,
@@ -3298,6 +3312,7 @@ impl ProbeApp {
         }
         self.tab_context_menu = Some(key);
         self.tab_context_menu_position = Some(position);
+        self.request_tab_tooltip = None;
         cx.notify();
     }
 
@@ -3307,6 +3322,69 @@ impl ProbeApp {
         }
         self.tab_context_menu = None;
         self.tab_context_menu_position = None;
+        cx.notify();
+    }
+
+    fn open_request_tab_tooltip(
+        &mut self,
+        key: RequestKey,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.shell.tabs().contains(&key) {
+            return;
+        }
+        self.request_tab_tooltip_epoch = self.request_tab_tooltip_epoch.wrapping_add(1);
+        let epoch = self.request_tab_tooltip_epoch;
+        self.request_tab_tooltip = Some(RequestTabTooltip {
+            key,
+            position,
+            open: false,
+        });
+        self.request_tab_tooltip_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(REQUEST_TAB_TOOLTIP_DELAY)
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                if view.request_tab_tooltip_epoch == epoch
+                    && let Some(tooltip) = view.request_tab_tooltip.as_mut()
+                {
+                    tooltip.open = true;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    fn update_request_tab_tooltip_position(
+        &mut self,
+        key: RequestKey,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tooltip) = self.request_tab_tooltip.as_mut() else {
+            return;
+        };
+        if tooltip.key != key {
+            return;
+        }
+        tooltip.position = position;
+        if tooltip.open {
+            cx.notify();
+        }
+    }
+
+    fn close_request_tab_tooltip(&mut self, key: RequestKey, cx: &mut Context<Self>) {
+        if self
+            .request_tab_tooltip
+            .is_none_or(|tooltip| tooltip.key != key)
+        {
+            return;
+        }
+        self.request_tab_tooltip_epoch = self.request_tab_tooltip_epoch.wrapping_add(1);
+        self.request_tab_tooltip_task = None;
+        self.request_tab_tooltip = None;
         cx.notify();
     }
 
