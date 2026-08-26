@@ -1,6 +1,18 @@
 use super::*;
 
 impl ProbeApp {
+    fn handle_titlebar_mouse_down(event: &MouseDownEvent, window: &mut Window) {
+        if event.click_count > 1 {
+            #[cfg(target_os = "macos")]
+            window.titlebar_double_click();
+
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
+            window.zoom_window();
+        } else {
+            window.start_window_move();
+        }
+    }
+
     fn render_desktop_action_menu_item(
         theme: Theme,
         id: ElementId,
@@ -502,8 +514,8 @@ impl ProbeApp {
                     .h_full()
                     .flex_1()
                     .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
+                    .on_mouse_down(MouseButton::Left, |event, window, _| {
+                        Self::handle_titlebar_mouse_down(event, window);
                     }),
             )
             .child(components::pane_layout_toggle(
