@@ -25,8 +25,12 @@ probe folder rename <path> <selector> --name <name> [--json]
 probe folder delete <path> <selector> [--json]
 probe folder move <path> <selector> [--parent <folder>] [--index <index>] [--json]
 probe folder reorder <path> <selector> --index <index> [--json]
+probe environment create <path> --name <name> [--extends <parent>] [--json]
+probe environment list <path> [--json]
 probe environment set <path> --environment <name> --name <var> --value <value> [--json]
 probe environment unset <path> --environment <name> --name <var> [--json]
+probe environment delete <path> --environment <name> [--json]
+probe environment rename <path> --environment <name> --name <new> [--json]
 ```
 
 `<path>` may be a bundled OpenCollection YAML file or an unbundled collection
@@ -82,6 +86,11 @@ it when present or adding an override when the value currently comes from a pare
 `--name` is the variable and `--value` is required. `unset` removes the variable entry
 from that environment only, so a parent value can show through. Both commands reject
 secrets, empty names, and stdin workspaces.
+
+`environment delete` and `environment rename` use the same `--environment` flag for the
+existing environment. `--name` on rename is the new identity, matching `environment create`.
+Parent environments cannot be deleted or renamed; that failure is `environment_in_use`.
+Stdin workspaces cannot be persisted.
 
 Before committing, Probe compares the source file with the exact bytes that were
 loaded. If another process changed it, the command fails with `workspace_modified`
@@ -212,6 +221,11 @@ with `environment` set to JSON `null`.
 `environment set --json` and `environment unset --json` return `environment`, `name`,
 and `operation`. `set` also returns `value`.
 
+`environment create --json` returns `environment` and `operation`, plus `extends` when a
+parent was supplied. `environment delete --json` returns `environment` and `operation`.
+`environment rename --json` returns `environment` (the new name), `previousEnvironment`,
+and `operation`.
+
 Structural commands return stable fields `operation`, `itemType`, `previousSelector`, `selector`,
 `parent`, `index`, and `selectorRemaps`. The remap object contains every surviving known
 repository selector, including siblings whose bundled structural selector shifted. `selector`
@@ -269,7 +283,8 @@ text, so automation must not parse it. JSON stdout never contains progress outpu
 terminal escape sequences, or logs.
 
 Environment failures use exit code 5 and stable categories including
-`environment_not_found`, `missing_variable`, `variable_not_found`,
+`environment_not_found`, `duplicate_environment`, `environment_in_use`,
+`missing_variable`, `variable_not_found`,
 `secret_variable_unavailable`, and
 `environment_resolution`. Secret variables declared by OpenCollection do not contain
 their values; until a secure runtime provider is added, referencing one reports

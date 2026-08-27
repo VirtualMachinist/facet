@@ -652,6 +652,8 @@ Initial commands:
 <app> environment create <path> --name <name> [--extends <parent>]
 <app> environment set <path> --environment <name> --name <var> --value <value>
 <app> environment unset <path> --environment <name> --name <var>
+<app> environment delete <path> --environment <name>
+<app> environment rename <path> --environment <current> --name <new>
 
 Required:
 
@@ -665,12 +667,12 @@ parsing the collection file.
 
 Exit criteria:
 
-- an external program can create environments and manage variables without parsing
-  human-readable output
+- an external program can create, rename, and delete environments and manage variables
+  without parsing human-readable output
 - CLI operations produce the same persisted domain and repository results as direct
   Phase 18 operations
-- duplicate names, missing parents, inheritance cycles, read-only sources, and
-  external-modification conflicts are distinguishable programmatically
+- duplicate names, missing parents, inheritance cycles, environments in use, read-only
+  sources, and external-modification conflicts are distinguishable programmatically
 
 
 ## Phase 20 — Desktop Workspace Structure Editing

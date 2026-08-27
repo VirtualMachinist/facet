@@ -115,6 +115,8 @@ pub const fn help() -> &'static str {
         "  environment list <path>             List environments\n",
         "  environment set <path>              Set and persist an environment variable\n",
         "  environment unset <path>            Remove an environment variable override\n",
+        "  environment delete <path>           Delete an environment\n",
+        "  environment rename <path>           Rename an environment\n",
         "\n",
         "Options:\n",
         "      --environment <name>  Environment used to resolve or mutate variables\n",
@@ -186,9 +188,12 @@ const ENVIRONMENT_HELP: &str = concat!(
     "  create <path> --name <name> [--extends <parent>]\n",
     "  set <path> --environment <name> --name <var> --value <value>\n",
     "  unset <path> --environment <name> --name <var>\n",
+    "  delete <path> --environment <name>\n",
+    "  rename <path> --environment <name> --name <new>\n",
     "\n",
-    "Create adds a new environment with an optional parent. Set writes a plain variable on\n",
-    "the named environment. A parent-only variable is overridden on the selected environment.\n",
+    "Create adds a new environment with an optional parent. Delete removes a leaf environment.\n",
+    "Rename changes a leaf environment's name. Set writes a plain variable on the named\n",
+    "environment. A parent-only variable is overridden on the selected environment.\n",
     "Unset removes that environment's entry so a parent value can show through. Stdin\n",
     "workspaces cannot be persisted.\n",
 );
@@ -338,6 +343,15 @@ enum Command {
         name: String,
         extends: Option<String>,
     },
+    EnvironmentDelete {
+        input: WorkspaceInput,
+        environment: String,
+    },
+    EnvironmentRename {
+        input: WorkspaceInput,
+        environment: String,
+        name: String,
+    },
 }
 
 #[derive(Debug)]
@@ -441,6 +455,7 @@ impl CliError {
                 "secret_variable_unavailable"
             }
             EnvironmentResolutionError::DuplicateVariable { .. } => "duplicate_variable",
+            EnvironmentResolutionError::EnvironmentInUse(_) => "environment_in_use",
             _ => "environment_resolution",
         };
         Self {
@@ -1125,6 +1140,41 @@ fn parse_command(args: &[String], options: ParsedOptions) -> Result<Command, Cli
                 name: update.name.expect("guarded variable name"),
             })
         }
+        [group, action, path]
+            if group == "environment"
+                && action == "delete"
+                && environment.is_some()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.is_empty()
+                && value.is_none()
+                && extends.is_none() =>
+        {
+            Ok(Command::EnvironmentDelete {
+                input: WorkspaceInput::from_argument(path),
+                environment: environment.expect("guarded environment name"),
+            })
+        }
+        [group, action, path]
+            if group == "environment"
+                && action == "rename"
+                && environment.is_some()
+                && output.is_none()
+                && parent.is_none()
+                && index.is_none()
+                && update.name.is_some()
+                && update.method.is_none()
+                && update.url.is_none()
+                && value.is_none()
+                && extends.is_none() =>
+        {
+            Ok(Command::EnvironmentRename {
+                input: WorkspaceInput::from_argument(path),
+                environment: environment.expect("guarded environment name"),
+                name: update.name.expect("guarded environment name"),
+            })
+        }
         _ => Err(CliError::invalid_arguments(
             "invalid command; run 'probe --help' for usage",
         )),
@@ -1192,6 +1242,14 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             name,
             extends,
         } => create_environment(&input, &name, extends, stdin),
+        Command::EnvironmentDelete { input, environment } => {
+            delete_environment(&input, &environment, stdin)
+        }
+        Command::EnvironmentRename {
+            input,
+            environment,
+            name,
+        } => rename_environment(&input, &environment, &name, stdin),
     }
 }
 
@@ -1206,6 +1264,65 @@ fn create_environment(
         .create_environment(name.to_owned(), extends.clone())
         .map_err(CliError::persistence)?;
     Ok(environment_create_output(name, extends.as_deref()))
+}
+
+fn delete_environment(
+    input: &WorkspaceInput,
+    environment: &str,
+    stdin: &mut impl Read,
+) -> Result<CommandOutput, CliError> {
+    let mut loaded = load(input, stdin)?;
+    loaded
+        .delete_environment(environment)
+        .map_err(CliError::persistence)?;
+    Ok(environment_delete_output(environment))
+}
+
+fn environment_delete_output(environment: &str) -> CommandOutput {
+    CommandOutput {
+        human: format!("Deleted environment {environment}\n"),
+        json: json!({
+            "environment": environment,
+            "operation": "delete",
+        }),
+    }
+}
+
+fn rename_environment(
+    input: &WorkspaceInput,
+    environment: &str,
+    name: &str,
+    stdin: &mut impl Read,
+) -> Result<CommandOutput, CliError> {
+    let mut loaded = load(input, stdin)?;
+    let mut replacement = loaded
+        .workspace()
+        .environments()
+        .iter()
+        .find(|candidate| candidate.name == environment)
+        .cloned()
+        .ok_or_else(|| {
+            CliError::configuration(EnvironmentResolutionError::EnvironmentNotFound(
+                environment.to_owned(),
+            ))
+        })?;
+    let name = name.trim();
+    replacement.name = name.to_owned();
+    loaded
+        .replace_environment(environment, replacement)
+        .map_err(CliError::persistence)?;
+    Ok(environment_rename_output(environment, name))
+}
+
+fn environment_rename_output(previous: &str, name: &str) -> CommandOutput {
+    CommandOutput {
+        human: format!("Renamed environment {previous} to {name}\n"),
+        json: json!({
+            "environment": name,
+            "operation": "rename",
+            "previousEnvironment": previous,
+        }),
+    }
 }
 
 fn environment_create_output(name: &str, extends: Option<&str>) -> CommandOutput {

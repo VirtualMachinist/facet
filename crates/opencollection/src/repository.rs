@@ -310,6 +310,18 @@ impl LoadedWorkspace {
         );
     }
 
+    /// Replaces one environment in memory and atomically persists the OpenCollection document.
+    pub fn replace_environment(
+        &mut self,
+        original_name: &str,
+        replacement: Environment,
+    ) -> Result<(), SaveError> {
+        let prepared = self.prepare_environment_replace(original_name, replacement)?;
+        let saved = prepared.execute()?;
+        self.complete_environment_replace(saved);
+        Ok(())
+    }
+
     /// Captures a validated replacement of one environment for background persistence.
     ///
     /// Secret variables are retained from the source document. The replacement may edit
@@ -387,6 +399,14 @@ impl LoadedWorkspace {
                 original_source: saved.serialized_source,
             },
         );
+    }
+
+    /// Deletes an environment in memory and atomically persists the OpenCollection document.
+    pub fn delete_environment(&mut self, name: &str) -> Result<(), SaveError> {
+        let prepared = self.prepare_environment_delete(name)?;
+        let saved = prepared.execute()?;
+        self.complete_environment_delete(saved);
+        Ok(())
     }
 
     /// Captures deletion of an environment that has no children.
