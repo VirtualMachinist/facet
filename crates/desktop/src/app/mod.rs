@@ -82,8 +82,8 @@ use crate::{
         inspection_detail_text,
     },
     response_viewer::{
-        PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, ResponseBodySyntax,
-        ResponseViewerState, ResponseViewerTab, prepare_document, pretty_json_body,
+        PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, RawBodyView, ResponseBodySyntax,
+        ResponseViewerState, ResponseViewerTab, encode_base64, prepare_document, pretty_json_body,
     },
     session::{SessionState, SessionStore},
     shell::{PaneLayout, ResizePane, ShellState},
@@ -2059,6 +2059,7 @@ impl ProbeApp {
             self.selected_tree_item = Some(WorkspaceItemRef::Request(key));
             self.shell.open_request(key);
             self.response_viewer.ensure_available_tab(key);
+            self.start_base64_encoding(key, cx);
             self.reveal_active_tab();
             if self
                 .loaded_workspace
@@ -2962,6 +2963,7 @@ impl ProbeApp {
         if self.shell.active_tab() == Some(key) {
             self.response_viewer.ensure_available_tab(key);
         }
+        self.start_base64_encoding(key, cx);
         if let Some(body) = pretty_body {
             cx.spawn(async move |view, cx| {
                 let pretty = cx
@@ -2996,6 +2998,38 @@ impl ProbeApp {
         }
     }
 
+    fn set_response_tab(&mut self, tab: ResponseViewerTab, cx: &mut Context<Self>) {
+        self.response_viewer.set_tab(tab);
+        if let Some(key) = self.shell.active_tab() {
+            self.start_base64_encoding(key, cx);
+        }
+        cx.notify();
+    }
+
+    fn set_raw_body_view(&mut self, view: RawBodyView, cx: &mut Context<Self>) {
+        self.response_viewer.set_raw_view(view);
+        if let Some(key) = self.shell.active_tab() {
+            self.start_base64_encoding(key, cx);
+        }
+        cx.notify();
+    }
+
+    fn start_base64_encoding(&mut self, key: RequestKey, cx: &mut Context<Self>) {
+        let Some((generation, bytes)) = self.response_viewer.take_base64_job(key) else {
+            return;
+        };
+        cx.spawn(async move |view, cx| {
+            let encoded = cx
+                .background_spawn(async move { encode_base64(&bytes) })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.response_viewer.apply_base64(key, generation, encoded);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn load_response_page(
         &mut self,
         key: RequestKey,
@@ -3021,9 +3055,11 @@ impl ProbeApp {
                 .await;
             let _ = view.update(cx, |view, cx| {
                 match result {
-                    Ok(body) => view
-                        .response_viewer
-                        .apply_page(key, generation, offset, body),
+                    Ok(body) => {
+                        view.response_viewer
+                            .apply_page(key, generation, offset, body);
+                        view.start_base64_encoding(key, cx);
+                    }
                     Err(error) => view.response_viewer.fail_page(
                         key,
                         generation,

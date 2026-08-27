@@ -2663,8 +2663,7 @@ impl ProbeApp {
                     available_tabs.len(),
                     move |_, _, cx| {
                         let _ = tab_view.update(cx, |view, cx| {
-                            view.response_viewer.set_tab(tab);
-                            cx.notify();
+                            view.set_response_tab(tab, cx);
                         });
                     },
                 )
@@ -2672,6 +2671,35 @@ impl ProbeApp {
                     format!("response-tab-{}", tab.label().to_ascii_lowercase())
                 }),
             );
+        }
+
+        let mut raw_views = Tabs::new("response-raw-view-tabs")
+            .flex()
+            .items_center()
+            .gap(px(theme.metrics.spacing_1));
+        if self.response_viewer.tab() == ResponseViewerTab::Raw {
+            for (index, view) in RawBodyView::ALL.iter().copied().enumerate() {
+                let view_entity = cx.weak_entity();
+                let selected = self.response_viewer.raw_view() == view;
+                raw_views = raw_views.child(
+                    components::editor_subtab(
+                        theme,
+                        ("response-raw-view", index),
+                        view.label(),
+                        selected,
+                        index + 1,
+                        RawBodyView::ALL.len(),
+                        move |_, _, cx| {
+                            let _ = view_entity.update(cx, |app, cx| {
+                                app.set_raw_body_view(view, cx);
+                            });
+                        },
+                    )
+                    .debug_selector(move || {
+                        format!("response-raw-view-{}", view.label().to_ascii_lowercase())
+                    }),
+                );
+            }
         }
 
         let mut banners = div()
@@ -2822,7 +2850,11 @@ impl ProbeApp {
                     .gap(px(theme.metrics.spacing_2))
                     .border_b_1()
                     .border_color(theme.colors.borders.subtle)
-                    .child(tabs),
+                    .child(tabs)
+                    .when(
+                        self.response_viewer.tab() == ResponseViewerTab::Raw,
+                        |bar| bar.child(raw_views),
+                    ),
             )
             .when(has_banner, |panel| panel.child(banners))
             .child(list)
@@ -2836,8 +2868,17 @@ impl ProbeApp {
         document: &PreparedDocument,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        if document.binary {
+        if document.binary
+            && (self.response_viewer.tab() == ResponseViewerTab::Pretty
+                || self.response_viewer.raw_view() == RawBodyView::Text)
+        {
             return placeholder_message(theme, "Binary response body cannot be displayed as text.");
+        }
+        if self.response_viewer.tab() == ResponseViewerTab::Raw
+            && self.response_viewer.raw_view() == RawBodyView::Base64
+            && document.base64_pending
+        {
+            return placeholder_message(theme, "Encoding Base64…");
         }
         let text = self.response_viewer.visible_text(key);
         if text.is_empty() {
@@ -2950,7 +2991,10 @@ impl ProbeApp {
                         });
                     },
                 )
-                .soft_wrap(self.response_viewer.tab() == ResponseViewerTab::Pretty)
+                .soft_wrap(
+                    self.response_viewer.tab() == ResponseViewerTab::Pretty
+                        || self.response_viewer.raw_view() == RawBodyView::Base64,
+                )
                 .inspection_reveal(inspection_reveal),
             ))
             .into_any_element()

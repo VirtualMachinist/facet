@@ -24,7 +24,7 @@ use super::{
 use crate::{
     request_editor::{BodyEditorKind, EditorSection},
     response_inspector::InspectSelection,
-    response_viewer::ResponseViewerTab,
+    response_viewer::{RawBodyView, ResponseViewerTab},
     shell::PaneLayout,
     structure_editor::StructureDialogMode,
     synchronization::ReconciledWorkspace,
@@ -2082,6 +2082,8 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
         assert!(visual.debug_bounds("response-tab-pretty").is_some());
         assert!(visual.debug_bounds("response-tab-raw").is_some());
         assert!(visual.debug_bounds("response-tab-headers").is_some());
+        assert!(visual.debug_bounds("response-raw-view-text").is_none());
+        assert!(visual.debug_bounds("response-raw-view-base64").is_none());
         assert!(visual.debug_bounds("response-search").is_none());
         assert!(visual.debug_bounds("editor-search-card").is_none());
         assert!(visual.debug_bounds("response-body").is_some());
@@ -2115,6 +2117,31 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
     {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         assert!(visual.debug_bounds("editor-search-card").is_none());
+    }
+
+    window
+        .update(cx, |view, _, cx| {
+            view.set_response_tab(ResponseViewerTab::Raw, cx);
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("response-raw-view-text").is_some());
+        let base64 = visual
+            .debug_bounds("response-raw-view-base64")
+            .expect("raw Base64 sub-tab should render");
+        visual.simulate_click(base64.center(), Modifiers::default());
+    }
+    cx.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(view.response_viewer.raw_view(), RawBodyView::Base64);
+        })
+        .expect("test window should remain open");
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("response-body").is_some());
     }
 
     window

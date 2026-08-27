@@ -1,4 +1,4 @@
-//! Read-only response presentation: Pretty, Raw, Headers, Inspect, and Search.
+//! Read-only response presentation: Pretty, Raw (Text/Base64), Headers, Inspect, and Search.
 //!
 //! This module retains response text without altering it, searches the active
 //! representation, and pretty-prints JSON off the UI thread. Syntax coloring is
@@ -13,9 +13,10 @@ use crate::response_inspector::{
 };
 use probe_http::{HttpResponse, ResponseHeader};
 
-/// JSON pretty-print larger than this runs on a background executor.
+/// JSON pretty-print and Base64 encoding larger than this run on a background executor.
 pub(crate) const SYNC_PRETTY_BYTES: usize = 64 * 1024;
 pub(crate) const RESPONSE_PAGE_BYTES: usize = probe_http::MAX_IN_MEMORY_RESPONSE_BYTES;
+const BASE64_LINE_LENGTH: usize = 76;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PageDirection {
@@ -64,6 +65,24 @@ impl ResponseViewerTab {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RawBodyView {
+    #[default]
+    Text,
+    Base64,
+}
+
+impl RawBodyView {
+    pub(crate) const ALL: [Self; 2] = [Self::Text, Self::Base64];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Text => "Text",
+            Self::Base64 => "Base64",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SearchMatch {
     pub range: Range<usize>,
@@ -76,6 +95,9 @@ pub(crate) struct PreparedDocument {
     pub pretty_text: String,
     pub pretty_pending: bool,
     pub pretty_notice: Option<String>,
+    pub page_body: Vec<u8>,
+    pub base64_text: String,
+    pub base64_pending: bool,
     pub syntax: ResponseBodySyntax,
     pub binary: bool,
     pub file_backed: bool,
@@ -110,6 +132,7 @@ impl PreparedDocument {
 #[derive(Debug, Default)]
 pub(crate) struct ResponseViewerState {
     tab: ResponseViewerTab,
+    raw_view: RawBodyView,
     documents: std::collections::BTreeMap<probe_core::RequestKey, PreparedDocument>,
     next_generation: u64,
 }
@@ -117,6 +140,10 @@ pub(crate) struct ResponseViewerState {
 impl ResponseViewerState {
     pub(crate) fn tab(&self) -> ResponseViewerTab {
         self.tab
+    }
+
+    pub(crate) fn raw_view(&self) -> RawBodyView {
+        self.raw_view
     }
 
     pub(crate) fn document(&self, key: probe_core::RequestKey) -> Option<&PreparedDocument> {
@@ -144,13 +171,14 @@ impl ResponseViewerState {
     }
 
     pub(crate) fn ensure_available_tab(&mut self, key: probe_core::RequestKey) {
-        if self.tab == ResponseViewerTab::Pretty
-            && self
-                .documents
-                .get(&key)
-                .is_some_and(|document| document.truncated)
-        {
+        let Some(document) = self.documents.get(&key) else {
+            return;
+        };
+        if self.tab == ResponseViewerTab::Pretty && document.truncated {
             self.tab = ResponseViewerTab::Raw;
+        }
+        if document.binary && self.raw_view == RawBodyView::Text {
+            self.raw_view = RawBodyView::Base64;
         }
     }
 
@@ -161,6 +189,7 @@ impl ResponseViewerState {
     pub(crate) fn clear(&mut self) {
         self.documents.clear();
         self.tab = ResponseViewerTab::default();
+        self.raw_view = RawBodyView::default();
     }
 
     pub(crate) fn remap_requests(
@@ -175,6 +204,50 @@ impl ResponseViewerState {
 
     pub(crate) fn set_tab(&mut self, tab: ResponseViewerTab) {
         self.tab = tab;
+    }
+
+    pub(crate) fn set_raw_view(&mut self, view: RawBodyView) {
+        self.raw_view = view;
+    }
+
+    pub(crate) fn take_base64_job(
+        &mut self,
+        key: probe_core::RequestKey,
+    ) -> Option<(u64, Vec<u8>)> {
+        if self.tab != ResponseViewerTab::Raw || self.raw_view != RawBodyView::Base64 {
+            return None;
+        }
+        let document = self.documents.get_mut(&key)?;
+        if document.base64_pending || !document.base64_text.is_empty() {
+            return None;
+        }
+        let bytes = page_bytes(document).to_vec();
+        if bytes.is_empty() {
+            return None;
+        }
+        if bytes.len() <= SYNC_PRETTY_BYTES {
+            document.base64_text = encode_base64(&bytes);
+            None
+        } else {
+            document.base64_pending = true;
+            Some((document.generation, bytes))
+        }
+    }
+
+    pub(crate) fn apply_base64(
+        &mut self,
+        key: probe_core::RequestKey,
+        generation: u64,
+        encoded: String,
+    ) {
+        let Some(document) = self.documents.get_mut(&key) else {
+            return;
+        };
+        if document.generation != generation || !document.base64_pending {
+            return;
+        }
+        document.base64_text = encoded;
+        document.base64_pending = false;
     }
 
     pub(crate) fn apply_pretty(
@@ -257,7 +330,15 @@ impl ResponseViewerState {
         }
         document.page_offset = offset;
         document.page_len = body.len();
-        document.raw_text = String::from_utf8_lossy(&body).into_owned();
+        if document.binary {
+            document.page_body = body;
+            document.raw_text.clear();
+        } else {
+            document.raw_text = String::from_utf8_lossy(&body).into_owned();
+            document.page_body.clear();
+        }
+        document.base64_text.clear();
+        document.base64_pending = false;
         document.pretty_text.clear();
         document.pretty_notice = None;
         document.inspection_ranges.clear();
@@ -333,7 +414,10 @@ impl ResponseViewerState {
         };
         match self.tab {
             ResponseViewerTab::Pretty => &document.pretty_text,
-            ResponseViewerTab::Raw => &document.raw_text,
+            ResponseViewerTab::Raw => match self.raw_view {
+                RawBodyView::Text => &document.raw_text,
+                RawBodyView::Base64 => &document.base64_text,
+            },
             ResponseViewerTab::Headers | ResponseViewerTab::Inspect => "",
         }
     }
@@ -347,6 +431,15 @@ impl ResponseViewerState {
             text.lines().count() + usize::from(text.ends_with('\n'))
         }
     }
+
+    #[cfg(test)]
+    fn show_raw_base64(&mut self, key: probe_core::RequestKey) {
+        self.set_tab(ResponseViewerTab::Raw);
+        self.set_raw_view(RawBodyView::Base64);
+        if let Some((generation, bytes)) = self.take_base64_job(key) {
+            self.apply_base64(key, generation, encode_base64(&bytes));
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -355,69 +448,52 @@ pub(crate) struct PrettyBody {
     pub notice: Option<String>,
 }
 
+fn document_from_response(response: &HttpResponse, generation: u64) -> PreparedDocument {
+    PreparedDocument {
+        generation,
+        raw_text: String::new(),
+        pretty_text: String::new(),
+        pretty_pending: false,
+        pretty_notice: None,
+        page_body: Vec::new(),
+        base64_text: String::new(),
+        base64_pending: false,
+        syntax: ResponseBodySyntax::Plain,
+        binary: false,
+        file_backed: response.body_file.is_some(),
+        truncated: !response.body_complete,
+        retention_notice: response.body_retention_error.clone(),
+        page_offset: 0,
+        page_len: response.body.len(),
+        total_size: response.size,
+        page_pending: false,
+        headers: response.headers.clone(),
+        inspection: ResponseInspection::default(),
+        inspection_pending: false,
+        inspection_ranges: Vec::new(),
+        inspection_selection: None,
+    }
+}
+
 pub(crate) fn prepare_document(
     response: &HttpResponse,
     generation: u64,
 ) -> (PreparedDocument, bool, bool) {
-    let truncated = !response.body_complete;
     if response.body.is_empty() {
-        return (
-            PreparedDocument {
-                generation,
-                raw_text: String::new(),
-                pretty_text: String::new(),
-                pretty_pending: false,
-                pretty_notice: None,
-                syntax: ResponseBodySyntax::Plain,
-                binary: false,
-                file_backed: response.body_file.is_some(),
-                truncated,
-                retention_notice: response.body_retention_error.clone(),
-                page_offset: 0,
-                page_len: 0,
-                total_size: response.size,
-                page_pending: false,
-                headers: response.headers.clone(),
-                inspection: ResponseInspection::default(),
-                inspection_pending: false,
-                inspection_ranges: Vec::new(),
-                inspection_selection: None,
-            },
-            false,
-            false,
-        );
+        return (document_from_response(response, generation), false, false);
     }
     let file_backed = response.body_file.is_some();
     if body_is_binary(&response.body, file_backed) {
-        return (
-            PreparedDocument {
-                generation,
-                raw_text: String::new(),
-                pretty_text: String::new(),
-                pretty_pending: false,
-                pretty_notice: Some(format!("Binary response body ({} bytes).", response.size)),
-                syntax: ResponseBodySyntax::Plain,
-                binary: true,
-                file_backed: response.body_file.is_some(),
-                truncated,
-                retention_notice: response.body_retention_error.clone(),
-                page_offset: 0,
-                page_len: response.body.len(),
-                total_size: response.size,
-                page_pending: false,
-                headers: response.headers.clone(),
-                inspection: ResponseInspection::default(),
-                inspection_pending: false,
-                inspection_ranges: Vec::new(),
-                inspection_selection: None,
-            },
-            false,
-            false,
-        );
+        let mut document = document_from_response(response, generation);
+        document.pretty_notice = Some(format!("Binary response body ({} bytes).", response.size));
+        document.page_body = response.body.clone();
+        document.binary = true;
+        return (document, false, false);
     }
 
     let raw_text = String::from_utf8_lossy(&response.body).into_owned();
     let syntax = response_body_syntax(response);
+    let truncated = !response.body_complete;
     let json_candidate = syntax == ResponseBodySyntax::Json;
     let inspection_candidate = matches!(syntax, ResponseBodySyntax::Json | ResponseBodySyntax::Xml);
     let pretty_pending = !truncated && json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
@@ -457,31 +533,17 @@ pub(crate) fn prepare_document(
     let inspection_ranges = inspection_value_ranges(&pretty_text, &inspection);
     let inspection_selection = first_inspection_selection(&inspection);
 
-    (
-        PreparedDocument {
-            generation,
-            raw_text,
-            pretty_text,
-            pretty_pending,
-            pretty_notice,
-            syntax,
-            binary: false,
-            file_backed,
-            truncated,
-            retention_notice: response.body_retention_error.clone(),
-            page_offset: 0,
-            page_len: response.body.len(),
-            total_size: response.size,
-            page_pending: false,
-            headers: response.headers.clone(),
-            inspection,
-            inspection_pending,
-            inspection_ranges,
-            inspection_selection,
-        },
-        pretty_pending,
-        inspection_pending,
-    )
+    let mut document = document_from_response(response, generation);
+    document.raw_text = raw_text;
+    document.pretty_text = pretty_text;
+    document.pretty_pending = pretty_pending;
+    document.pretty_notice = pretty_notice;
+    document.syntax = syntax;
+    document.inspection = inspection;
+    document.inspection_pending = inspection_pending;
+    document.inspection_ranges = inspection_ranges;
+    document.inspection_selection = inspection_selection;
+    (document, pretty_pending, inspection_pending)
 }
 
 fn body_is_binary(body: &[u8], file_backed: bool) -> bool {
@@ -510,6 +572,66 @@ pub(crate) fn pretty_json_body(body: &[u8]) -> PrettyBody {
             notice: Some("Response is not valid JSON.".to_owned()),
         },
     }
+}
+
+fn page_bytes(document: &PreparedDocument) -> &[u8] {
+    if document.binary {
+        &document.page_body
+    } else {
+        document.raw_text.as_bytes()
+    }
+}
+
+pub(crate) fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let output_len = input.len().div_ceil(3).saturating_mul(4);
+    let mut output = vec![0; output_len];
+    let mut offset = 0;
+    let mut index = 0;
+    while index + 3 <= input.len() {
+        let n = (u32::from(input[index]) << 16)
+            | (u32::from(input[index + 1]) << 8)
+            | u32::from(input[index + 2]);
+        output[offset] = TABLE[((n >> 18) & 0x3F) as usize];
+        output[offset + 1] = TABLE[((n >> 12) & 0x3F) as usize];
+        output[offset + 2] = TABLE[((n >> 6) & 0x3F) as usize];
+        output[offset + 3] = TABLE[(n & 0x3F) as usize];
+        index += 3;
+        offset += 4;
+    }
+    match input.len() - index {
+        1 => {
+            let n = u32::from(input[index]) << 16;
+            output[offset] = TABLE[((n >> 18) & 0x3F) as usize];
+            output[offset + 1] = TABLE[((n >> 12) & 0x3F) as usize];
+            output[offset + 2] = b'=';
+            output[offset + 3] = b'=';
+        }
+        2 => {
+            let n = (u32::from(input[index]) << 16) | (u32::from(input[index + 1]) << 8);
+            output[offset] = TABLE[((n >> 18) & 0x3F) as usize];
+            output[offset + 1] = TABLE[((n >> 12) & 0x3F) as usize];
+            output[offset + 2] = TABLE[((n >> 6) & 0x3F) as usize];
+            output[offset + 3] = b'=';
+        }
+        _ => {}
+    }
+    wrap_base64(output)
+}
+
+fn wrap_base64(encoded: Vec<u8>) -> String {
+    if encoded.len() <= BASE64_LINE_LENGTH {
+        return String::from_utf8(encoded).expect("base64 alphabet is ASCII");
+    }
+    let extra_newlines = encoded.len().saturating_sub(1) / BASE64_LINE_LENGTH;
+    let mut wrapped = String::with_capacity(encoded.len() + extra_newlines);
+    for (index, chunk) in encoded.chunks(BASE64_LINE_LENGTH).enumerate() {
+        if index > 0 {
+            wrapped.push('\n');
+        }
+        wrapped.push_str(std::str::from_utf8(chunk).expect("base64 alphabet is ASCII"));
+    }
+    wrapped
 }
 
 pub(crate) fn response_body_syntax(response: &HttpResponse) -> ResponseBodySyntax {
@@ -670,9 +792,9 @@ mod tests {
     use probe_http::{HttpResponse, ResponseHeader};
 
     use super::{
-        PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, ResponseBodySyntax,
-        ResponseViewerTab, body_is_binary, join_header_lines, prepare_document, pretty_json_body,
-        response_body_syntax, search_headers, search_text,
+        PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, RawBodyView, ResponseBodySyntax,
+        ResponseViewerTab, body_is_binary, encode_base64, join_header_lines, prepare_document,
+        pretty_json_body, response_body_syntax, search_headers, search_text,
     };
 
     fn response(body: &[u8], content_type: &str) -> HttpResponse {
@@ -692,6 +814,39 @@ mod tests {
             body_retention_error: None,
         }
     }
+
+    fn request_key() -> probe_core::RequestKey {
+        let workspace = probe_core::Workspace::from_collection(probe_core::Collection {
+            items: vec![probe_core::CollectionItem::HttpRequest(
+                probe_core::HttpRequest::default(),
+            )],
+            ..probe_core::Collection::default()
+        });
+        let probe_core::WorkspaceItemRef::Request(key) = workspace.root_items()[0] else {
+            panic!("expected request key");
+        };
+        key
+    }
+
+    fn viewer_with(
+        document: PreparedDocument,
+    ) -> (probe_core::RequestKey, super::ResponseViewerState) {
+        let key = request_key();
+        let mut viewer = super::ResponseViewerState::default();
+        viewer.insert(key, document);
+        (key, viewer)
+    }
+
+    fn file_backed_document(body: &[u8], trailing: usize, content_type: &str) -> PreparedDocument {
+        let mut large = response(body, content_type);
+        large.size = body.len() + trailing;
+        large.body_complete = false;
+        let (mut document, _, _) = prepare_document(&large, 7);
+        document.file_backed = true;
+        document
+    }
+
+    const BINARY_BODY: &[u8] = &[0, 159, 146, 150];
 
     #[test]
     fn pretty_json_indents_object_fields() {
@@ -775,12 +930,81 @@ mod tests {
         assert!(document.pretty_notice.is_none());
         assert!(document.pretty_text.contains('\n'));
 
-        let binary = response(&[0, 159, 146, 150], "application/octet-stream");
+        let binary = response(BINARY_BODY, "application/octet-stream");
         let (document, pending, inspection_pending) = prepare_document(&binary, 2);
         assert!(!pending);
         assert!(!inspection_pending);
         assert!(document.binary);
         assert!(document.raw_text.is_empty());
+        assert_eq!(document.page_body, BINARY_BODY);
+    }
+
+    #[test]
+    fn encode_base64_matches_rfc4648_and_wraps_at_76_columns() {
+        let cases: &[(&[u8], &str)] = &[
+            (b"", ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (b"fooba", "Zm9vYmE="),
+            (b"foobar", "Zm9vYmFy"),
+            (BINARY_BODY, "AJ+Slg=="),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(encode_base64(input), *expected, "input={input:?}");
+        }
+
+        let wrapped = encode_base64(&[b'a'; 60]);
+        let lines: Vec<&str> = wrapped.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), 76);
+        assert!(lines[1].len() < 76);
+        assert!(!wrapped.ends_with('\n'));
+    }
+
+    #[test]
+    fn raw_base64_view_encodes_the_response_body() {
+        let json = br#"{"ok":true}"#;
+        let (key, mut viewer) =
+            viewer_with(prepare_document(&response(json, "application/json"), 1).0);
+        viewer.show_raw_base64(key);
+        assert_eq!(viewer.visible_text(key), encode_base64(json));
+
+        viewer.insert(
+            key,
+            prepare_document(&response(BINARY_BODY, "application/octet-stream"), 2).0,
+        );
+        viewer.ensure_available_tab(key);
+        assert_eq!(viewer.raw_view(), RawBodyView::Base64);
+        viewer.show_raw_base64(key);
+        assert_eq!(viewer.visible_text(key), encode_base64(BINARY_BODY));
+    }
+
+    #[test]
+    fn paging_a_binary_body_replaces_bytes_and_invalidates_base64() {
+        let first_page = vec![0xFF; RESPONSE_PAGE_BYTES];
+        let (key, mut viewer) = viewer_with(file_backed_document(
+            &first_page,
+            4,
+            "application/octet-stream",
+        ));
+        viewer.ensure_available_tab(key);
+        assert_eq!(viewer.tab(), ResponseViewerTab::Raw);
+        assert_eq!(viewer.raw_view(), RawBodyView::Base64);
+        assert!(viewer.take_base64_job(key).is_some());
+        assert!(viewer.document(key).unwrap().base64_pending);
+
+        let (generation, offset) = viewer.begin_page(key, PageDirection::Next).unwrap();
+        viewer.apply_page(key, generation, offset, vec![1, 2, 3, 4]);
+
+        let document = viewer.document(key).unwrap();
+        assert_eq!(document.page_offset, RESPONSE_PAGE_BYTES);
+        assert_eq!(document.page_body, [1, 2, 3, 4]);
+        assert!(document.base64_text.is_empty());
+        assert!(!document.base64_pending);
+        viewer.show_raw_base64(key);
+        assert_eq!(viewer.visible_text(key), encode_base64(&[1, 2, 3, 4]));
     }
 
     #[test]
@@ -829,23 +1053,7 @@ mod tests {
     #[test]
     fn file_backed_pages_replace_only_the_bounded_view() {
         let first_page = vec![b'x'; RESPONSE_PAGE_BYTES];
-        let mut large = response(&first_page, "text/plain");
-        large.size = RESPONSE_PAGE_BYTES + 4;
-        large.body_complete = false;
-        let (mut document, _, _) = prepare_document(&large, 7);
-        document.file_backed = true;
-        let key = probe_core::Workspace::from_collection(probe_core::Collection {
-            items: vec![probe_core::CollectionItem::HttpRequest(
-                probe_core::HttpRequest::default(),
-            )],
-            ..probe_core::Collection::default()
-        })
-        .root_items()[0];
-        let probe_core::WorkspaceItemRef::Request(key) = key else {
-            panic!("expected request key");
-        };
-        let mut viewer = super::ResponseViewerState::default();
-        viewer.insert(key, document);
+        let (key, mut viewer) = viewer_with(file_backed_document(&first_page, 4, "text/plain"));
         viewer.ensure_available_tab(key);
         assert_eq!(viewer.tab(), ResponseViewerTab::Raw);
         assert!(!viewer.document(key).unwrap().can_load_previous_page());
