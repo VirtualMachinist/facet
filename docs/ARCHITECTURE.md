@@ -432,7 +432,7 @@ ownership of that file, and
 the final owner removes it. Frontends that need the complete body provide a cache directory;
 callers such as the CLI can drain the remainder without retaining it. The desktop reads subsequent
 16 MiB pages off the UI thread, searches only the resident page, and renders those pages as
-soft-wrapped Raw text without retaining a duplicate Pretty representation. Pretty is hidden for
+unwrapped Raw text without retaining a duplicate Pretty representation. Pretty is hidden for
 file-backed responses because formatting an isolated page would not produce a valid document.
 Inspect remains available and scans file-backed JSON and XML through streaming parsers without
 constructing a complete document tree. `--output`

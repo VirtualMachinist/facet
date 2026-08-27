@@ -2950,7 +2950,7 @@ impl ProbeApp {
                         });
                     },
                 )
-                .soft_wrap(true)
+                .soft_wrap(self.response_viewer.tab() == ResponseViewerTab::Pretty)
                 .inspection_reveal(inspection_reveal),
             ))
             .into_any_element()
