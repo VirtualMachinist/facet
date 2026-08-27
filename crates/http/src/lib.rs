@@ -8,7 +8,10 @@ use std::{
     fmt,
     future::{Future, pending},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -34,6 +37,38 @@ static RESPONSE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub struct ExecutionOptions {
     /// Base directory for relative request-body file paths.
     pub base_directory: Option<PathBuf>,
+    /// Directory used for automatically managed large-response spool files.
+    ///
+    /// When absent, the complete large body is drained without being retained.
+    /// Callers that need paging or inspection should provide a cache directory.
+    pub response_directory: Option<PathBuf>,
+}
+
+/// An automatically managed complete response body stored on disk.
+///
+/// Clones share ownership. The file is removed when the final owner is dropped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResponseBodyFile {
+    inner: Arc<ResponseBodyFileInner>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ResponseBodyFileInner {
+    path: PathBuf,
+}
+
+impl ResponseBodyFile {
+    /// Returns the complete body's path for bounded or streaming reads.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.inner.path
+    }
+}
+
+impl Drop for ResponseBodyFileInner {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// A response header retained independently of the HTTP implementation.
@@ -60,10 +95,14 @@ pub struct HttpResponse {
     pub size: usize,
     /// Response headers sorted deterministically by name and value.
     pub headers: Vec<ResponseHeader>,
-    /// Raw response body.
+    /// Raw response body, bounded to [`MAX_IN_MEMORY_RESPONSE_BYTES`].
+    ///
+    /// For a file-backed response this is the leading preview of the complete body.
     pub body: Vec<u8>,
     /// Whether `body` contains the complete response body.
     pub body_complete: bool,
+    /// Complete automatically managed body when it exceeded the in-memory bound.
+    pub body_file: Option<ResponseBodyFile>,
 }
 
 /// A request-construction, cancellation, timeout, or transport failure.
@@ -273,11 +312,11 @@ impl HttpEngine {
         let url = response.url().to_string();
         let mut headers = response_headers(response.headers());
         headers.sort_by(|left, right| (&left.name, &left.value).cmp(&(&right.name, &right.value)));
-        let (body, size, body_complete) = if let Some(output) = output {
+        let (body, size, body_complete, body_file) = if let Some(output) = output {
             let size = stream_response_to_file(&mut response, output).await?;
-            (Vec::new(), size, false)
+            (Vec::new(), size, false, None)
         } else {
-            collect_bounded_response(&mut response).await?
+            collect_bounded_response(&mut response, options.response_directory.as_deref()).await?
         };
         Ok(HttpResponse {
             status: status.as_u16(),
@@ -288,6 +327,7 @@ impl HttpEngine {
             headers,
             body,
             body_complete,
+            body_file,
         })
     }
 
@@ -304,22 +344,81 @@ impl HttpEngine {
 
 async fn collect_bounded_response(
     response: &mut Response,
-) -> Result<(Vec<u8>, usize, bool), HttpError> {
+    response_directory: Option<&Path>,
+) -> Result<(Vec<u8>, usize, bool, Option<ResponseBodyFile>), HttpError> {
     let mut body = Vec::new();
     let mut size = 0_usize;
-    let mut complete = true;
+    let mut spool: Option<(tokio::fs::File, ResponseBodyFile)> = None;
+    let mut exceeded_memory_limit = false;
     while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
         size = size.checked_add(chunk.len()).ok_or_else(|| {
             HttpError::Transport("response body size exceeds platform limits".to_owned())
         })?;
-        if complete && size <= MAX_IN_MEMORY_RESPONSE_BYTES {
-            body.extend_from_slice(&chunk);
-        } else if complete {
-            body.clear();
-            complete = false;
+        if let Some((file, _)) = &mut spool {
+            file.write_all(&chunk).await.map_err(response_spool_error)?;
+            continue;
+        }
+        if exceeded_memory_limit {
+            continue;
+        }
+        let remaining = MAX_IN_MEMORY_RESPONSE_BYTES.saturating_sub(body.len());
+        let preview_len = remaining.min(chunk.len());
+        body.extend_from_slice(&chunk[..preview_len]);
+        if preview_len < chunk.len() {
+            exceeded_memory_limit = true;
+            if let Some(response_directory) = response_directory {
+                let (mut file, body_file) = create_response_spool_file(response_directory).await?;
+                file.write_all(&body).await.map_err(response_spool_error)?;
+                file.write_all(&chunk[preview_len..])
+                    .await
+                    .map_err(response_spool_error)?;
+                spool = Some((file, body_file));
+            }
         }
     }
-    Ok((body, size, complete))
+    let body_file = if let Some((mut file, body_file)) = spool {
+        file.flush().await.map_err(response_spool_error)?;
+        drop(file);
+        Some(body_file)
+    } else {
+        None
+    };
+    Ok((body, size, !exceeded_memory_limit, body_file))
+}
+
+async fn create_response_spool_file(
+    response_directory: &Path,
+) -> Result<(tokio::fs::File, ResponseBodyFile), HttpError> {
+    tokio::fs::create_dir_all(response_directory)
+        .await
+        .map_err(response_spool_error)?;
+    loop {
+        let sequence = RESPONSE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let path =
+            response_directory.join(format!("response-{}-{sequence}.body", std::process::id()));
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            options.mode(0o600);
+        }
+        match options.open(&path).await {
+            Ok(file) => {
+                return Ok((
+                    file,
+                    ResponseBodyFile {
+                        inner: Arc::new(ResponseBodyFileInner { path }),
+                    },
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(response_spool_error(error)),
+        }
+    }
+}
+
+fn response_spool_error(error: std::io::Error) -> HttpError {
+    HttpError::Transport(format!("cannot retain response body: {error}"))
 }
 
 async fn stream_response_to_file(

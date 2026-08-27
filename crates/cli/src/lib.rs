@@ -1392,7 +1392,10 @@ fn run_request(
         .map_err(|error| CliError::runtime(&error))?;
     let response = runtime.block_on(async {
         let engine = HttpEngine::new().map_err(CliError::http)?;
-        let options = ExecutionOptions { base_directory };
+        let options = ExecutionOptions {
+            base_directory,
+            ..ExecutionOptions::default()
+        };
         if let Some(output) = output {
             engine
                 .execute_cancellable_to_file(&request, &options, output, tokio::signal::ctrl_c())

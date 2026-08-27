@@ -730,6 +730,7 @@ pub(crate) struct ResponseBodyInputOptions<'a> {
     active_match: usize,
     inspection_reveal: Option<(Range<usize>, bool)>,
     language: SharedString,
+    soft_wrap: bool,
     on_visible_range: VisibleRangeHandler,
     on_mouse_down: EditorMouseDownHandler,
     inspect_enabled: TextContextEnableHandler,
@@ -751,6 +752,7 @@ impl<'a> ResponseBodyInputOptions<'a> {
             active_match,
             inspection_reveal: None,
             language: language.into(),
+            soft_wrap: true,
             on_visible_range: Rc::new(on_visible_range),
             on_mouse_down: Rc::new(on_mouse_down),
             inspect_enabled: Rc::new(inspect_enabled),
@@ -763,6 +765,11 @@ impl<'a> ResponseBodyInputOptions<'a> {
         inspection_reveal: Option<(Range<usize>, bool)>,
     ) -> Self {
         self.inspection_reveal = inspection_reveal;
+        self
+    }
+
+    pub(crate) fn soft_wrap(mut self, soft_wrap: bool) -> Self {
+        self.soft_wrap = soft_wrap;
         self
     }
 }
@@ -1961,6 +1968,7 @@ pub(crate) fn response_body_input(
             value: text.into(),
             decorations,
             language: options.language,
+            soft_wrap: options.soft_wrap,
             text_color: theme.colors.syntax.plain,
             scroll_to_range,
             search_matches,
@@ -2004,6 +2012,7 @@ pub(crate) fn response_headers_input(
             value: joined.text.into(),
             decorations,
             language: SharedString::default(),
+            soft_wrap: true,
             text_color: theme.colors.text.primary,
             scroll_to_range,
             search_matches: response_highlights(matches, active_match, None),
@@ -2027,6 +2036,7 @@ pub(crate) fn response_inspector_input(
             value: text.into(),
             decorations: Vec::new(),
             language: SharedString::default(),
+            soft_wrap: true,
             text_color: theme.colors.text.primary,
             scroll_to_range: None,
             search_matches: Vec::new(),
@@ -2082,6 +2092,7 @@ struct ResponseEditorPresentation {
     value: SharedString,
     decorations: Vec<TextDecoration>,
     language: SharedString,
+    soft_wrap: bool,
     text_color: gpui::Rgba,
     scroll_to_range: Option<Range<usize>>,
     search_matches: Vec<(Range<usize>, bool)>,
@@ -2105,7 +2116,7 @@ fn response_editor(
         readonly: true,
         min_height: None,
         padding: EditorInsets::response(theme),
-        soft_wrap: true,
+        soft_wrap: presentation.soft_wrap,
         text_color: presentation.text_color,
         scroll_to_range: presentation.scroll_to_range,
         search_matches: presentation.search_matches,
@@ -2126,6 +2137,7 @@ struct EditorField {
     on_change: Option<InputChangeHandler>,
     last_scroll_range: Option<Range<usize>>,
     language: SharedString,
+    soft_wrap: bool,
     _subscription: Subscription,
 }
 
@@ -2276,6 +2288,7 @@ impl RenderOnce for ProbeEditor {
                 on_change: on_change.clone(),
                 last_scroll_range: None,
                 language: language.clone(),
+                soft_wrap,
                 _subscription: subscription,
             }
         });
@@ -2285,6 +2298,10 @@ impl RenderOnce for ProbeEditor {
             if language_changed {
                 field.language = self.language.clone();
             }
+            let soft_wrap_changed = field.soft_wrap != self.soft_wrap;
+            if soft_wrap_changed {
+                field.soft_wrap = self.soft_wrap;
+            }
             let context_focus = field.state.read(cx).focus_handle(cx);
             let open_context_menu = context_menu.clone();
             let context_editor = field.state.clone();
@@ -2292,7 +2309,9 @@ impl RenderOnce for ProbeEditor {
                 editor.set_editor_style(editor_paint_style(self.theme));
                 editor.set_editor_paddings(self.padding.edges());
                 editor.set_readonly(self.readonly, cx);
-                editor.set_soft_wrap(self.soft_wrap, window, cx);
+                if soft_wrap_changed {
+                    editor.set_soft_wrap(self.soft_wrap, window, cx);
+                }
                 editor.on_context_menu(Rc::new(move |_, capabilities, position, window, cx| {
                     context_focus.focus(window, cx);
                     open_context_menu.update(cx, |state, cx| {

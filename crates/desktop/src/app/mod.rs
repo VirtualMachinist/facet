@@ -66,7 +66,7 @@ use crate::{
     components,
     execution::{
         ExecutionState, ResponseState, body_file_path_for_storage, execute_http_request,
-        format_duration, format_size,
+        format_duration, format_size, read_response_page, response_cache_directory,
     },
     filesystem::{
         WATCH_DEBOUNCE, WorkspaceWatcher, event_affects_workspace, rename_hints,
@@ -77,10 +77,13 @@ use crate::{
         BodyEditorKind, EditorSection, RequestEditorState, apply_url_bar_value, auth_label,
         auth_value, body_kind, raw_body_mut, set_auth_property, set_authentication, url_bar_value,
     },
-    response_inspector::{InspectSelection, inspect_response_body, inspection_detail_text},
+    response_inspector::{
+        InspectSelection, inspect_json_file, inspect_response_body, inspect_xml_file,
+        inspection_detail_text,
+    },
     response_viewer::{
-        PreparedDocument, ResponseBodySyntax, ResponseViewerState, ResponseViewerTab,
-        prepare_document, pretty_json_body,
+        PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, ResponseBodySyntax,
+        ResponseViewerState, ResponseViewerTab, prepare_document, pretty_json_body,
     },
     session::{SessionState, SessionStore},
     shell::{PaneLayout, ResizePane, ShellState},
@@ -2047,6 +2050,7 @@ impl ProbeApp {
         {
             self.selected_tree_item = Some(WorkspaceItemRef::Request(key));
             self.shell.open_request(key);
+            self.response_viewer.ensure_available_tab(key);
             self.reveal_active_tab();
             if self
                 .loaded_workspace
@@ -2887,6 +2891,7 @@ impl ProbeApp {
                 .workspace_path
                 .as_deref()
                 .and_then(workspace_base_directory),
+            response_directory: Some(response_cache_directory()),
         };
         let (cancellation_sender, cancellation_receiver) = tokio::sync::oneshot::channel();
         let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
@@ -2939,8 +2944,16 @@ impl ProbeApp {
         let generation = self.response_viewer.allocate_generation();
         let (document, pretty_pending, inspection_pending) = prepare_document(response, generation);
         let pretty_body = pretty_pending.then(|| response.body.clone());
-        let inspection_body = inspection_pending.then(|| response.body.clone());
+        let inspection_source = inspection_pending.then(|| {
+            response.body_file.clone().map_or_else(
+                || Ok(response.body.clone()),
+                |file| Err((file, document.syntax)),
+            )
+        });
         self.response_viewer.insert(key, document);
+        if self.shell.active_tab() == Some(key) {
+            self.response_viewer.ensure_available_tab(key);
+        }
         if let Some(body) = pretty_body {
             cx.spawn(async move |view, cx| {
                 let pretty = cx
@@ -2953,10 +2966,17 @@ impl ProbeApp {
             })
             .detach();
         }
-        if let Some(body) = inspection_body {
+        if let Some(source) = inspection_source {
             cx.spawn(async move |view, cx| {
                 let inspection = cx
-                    .background_spawn(async move { inspect_response_body(&body) })
+                    .background_spawn(async move {
+                        match source {
+                            Ok(body) => inspect_response_body(&body),
+                            Err((file, ResponseBodySyntax::Json)) => inspect_json_file(file.path()),
+                            Err((file, ResponseBodySyntax::Xml)) => inspect_xml_file(file.path()),
+                            Err((_, ResponseBodySyntax::Plain)) => Default::default(),
+                        }
+                    })
                     .await;
                 let _ = view.update(cx, |view, cx| {
                     view.response_viewer
@@ -2966,6 +2986,47 @@ impl ProbeApp {
             })
             .detach();
         }
+    }
+
+    fn load_response_page(
+        &mut self,
+        key: RequestKey,
+        direction: PageDirection,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ResponseState::Complete(response)) = self.execution.response(key) else {
+            return;
+        };
+        let Some(file) = response.body_file.clone() else {
+            return;
+        };
+        let Some((generation, offset)) = self.response_viewer.begin_page(key, direction) else {
+            return;
+        };
+        let length = response
+            .size
+            .saturating_sub(offset)
+            .min(RESPONSE_PAGE_BYTES);
+        cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_spawn(async move { read_response_page(&file, offset, length) })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                match result {
+                    Ok(body) => view
+                        .response_viewer
+                        .apply_page(key, generation, offset, body),
+                    Err(error) => view.response_viewer.fail_page(
+                        key,
+                        generation,
+                        format!("Could not read retained response: {error}"),
+                    ),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn cancel_request(&mut self, key: RequestKey, cx: &mut Context<Self>) {

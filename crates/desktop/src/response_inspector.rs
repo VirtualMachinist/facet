@@ -1,11 +1,17 @@
 //! JSON and XML response inspection for JWTs, Unix timestamps, and Pretty-tab jumps.
 
-use std::ops::Range;
+use std::{fmt, fs::File, io::BufReader, ops::Range, path::Path};
 
 use chrono::{DateTime, Local, TimeDelta, TimeZone, Utc};
+use quick_xml::{
+    Reader, XmlVersion,
+    events::{BytesStart, Event},
+};
+use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 
 pub(crate) const INSPECT_MAX_BYTES: usize = 512 * 1024;
 const INSPECT_MAX_VALUES: usize = 10_000;
+const INSPECTION_LIMIT_REACHED: &str = "probe inspection value limit reached";
 const JWT_STANDARD_CLAIMS: &[&str] = &["exp", "iat", "nbf", "iss", "sub"];
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -101,6 +107,216 @@ pub(crate) fn inspect_response_body(body: &[u8]) -> ResponseInspection {
         return ResponseInspection::default();
     };
     inspect_xml_response(source)
+}
+
+/// Inspects a complete JSON response without retaining its document tree.
+pub(crate) fn inspect_json_file(path: &Path) -> ResponseInspection {
+    let Ok(file) = File::open(path) else {
+        return ResponseInspection {
+            skipped: Some("Could not read the retained response body.".to_owned()),
+            ..ResponseInspection::default()
+        };
+    };
+    let mut inspector = StreamingJsonInspector::default();
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(file));
+    let result = StreamingJsonSeed {
+        inspector: &mut inspector,
+        path: Vec::new(),
+        key: None,
+    }
+    .deserialize(&mut deserializer);
+    if inspector.limit_reached {
+        inspector.inspection.skipped =
+            Some("Inspection stopped after the first 10000 response values.".to_owned());
+    } else if result.is_err() || deserializer.end().is_err() {
+        return ResponseInspection {
+            skipped: Some("Response is not valid JSON.".to_owned()),
+            ..ResponseInspection::default()
+        };
+    }
+    inspector.inspection
+}
+
+/// Inspects a complete XML response using a bounded event buffer.
+pub(crate) fn inspect_xml_file(path: &Path) -> ResponseInspection {
+    let Ok(file) = File::open(path) else {
+        return ResponseInspection {
+            skipped: Some("Could not read the retained response body.".to_owned()),
+            ..ResponseInspection::default()
+        };
+    };
+    let mut reader = Reader::from_reader(BufReader::new(file));
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    let mut path = Vec::<String>::new();
+    let mut inspection = ResponseInspection::default();
+    let mut visited = 0_usize;
+    let mut limit_reached = false;
+    let mut invalid = false;
+    let mut root_seen = false;
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(element)) => {
+                if path.is_empty() {
+                    if root_seen {
+                        invalid = true;
+                    }
+                    root_seen = true;
+                }
+                let name = element.name().as_ref().to_owned();
+                path.push(name);
+                match inspect_streaming_xml_attributes(
+                    &element,
+                    &path,
+                    &mut inspection,
+                    &mut visited,
+                ) {
+                    StreamingXmlStatus::Continue => {}
+                    StreamingXmlStatus::LimitReached => limit_reached = true,
+                    StreamingXmlStatus::Invalid => invalid = true,
+                }
+            }
+            Ok(Event::Empty(element)) => {
+                if path.is_empty() {
+                    if root_seen {
+                        invalid = true;
+                    }
+                    root_seen = true;
+                }
+                let name = element.name().as_ref().to_owned();
+                path.push(name);
+                match inspect_streaming_xml_attributes(
+                    &element,
+                    &path,
+                    &mut inspection,
+                    &mut visited,
+                ) {
+                    StreamingXmlStatus::Continue => {}
+                    StreamingXmlStatus::LimitReached => limit_reached = true,
+                    StreamingXmlStatus::Invalid => invalid = true,
+                }
+                path.pop();
+            }
+            Ok(Event::Text(text)) => {
+                if path.is_empty() {
+                    invalid = !text.xml10_content().trim().is_empty();
+                } else {
+                    match quick_xml::escape::unescape(&text.xml10_content()) {
+                        Ok(value) => {
+                            limit_reached = inspect_streaming_xml_value(
+                                value.as_ref(),
+                                &format!("/{}", path.join("/")),
+                                path.last().map(String::as_str),
+                                &mut inspection,
+                                &mut visited,
+                            );
+                        }
+                        Err(_) => invalid = true,
+                    }
+                }
+            }
+            Ok(Event::CData(text)) => {
+                if path.is_empty() {
+                    invalid = true;
+                } else {
+                    limit_reached = inspect_streaming_xml_value(
+                        &text.xml10_content(),
+                        &format!("/{}", path.join("/")),
+                        path.last().map(String::as_str),
+                        &mut inspection,
+                        &mut visited,
+                    );
+                }
+            }
+            Ok(Event::End(_)) => {
+                if path.pop().is_none() {
+                    invalid = true;
+                }
+            }
+            Ok(Event::Eof) => {
+                invalid |= !root_seen || !path.is_empty();
+                break;
+            }
+            Ok(Event::GeneralRef(_)) if path.is_empty() => invalid = true,
+            Err(_) => {
+                invalid = true;
+                break;
+            }
+            _ => {}
+        }
+        if invalid || limit_reached {
+            break;
+        }
+        buffer.clear();
+    }
+    if invalid {
+        return ResponseInspection {
+            skipped: Some("Response is not valid XML.".to_owned()),
+            ..ResponseInspection::default()
+        };
+    }
+    if limit_reached {
+        inspection.skipped =
+            Some("Inspection stopped after the first 10000 response values.".to_owned());
+    }
+    inspection
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamingXmlStatus {
+    Continue,
+    LimitReached,
+    Invalid,
+}
+
+fn inspect_streaming_xml_attributes(
+    element: &BytesStart<'_>,
+    path: &[String],
+    inspection: &mut ResponseInspection,
+    visited: &mut usize,
+) -> StreamingXmlStatus {
+    for attribute in element.attributes() {
+        let Ok(attribute) = attribute else {
+            return StreamingXmlStatus::Invalid;
+        };
+        let name = attribute.key.as_ref().to_owned();
+        let Ok(value) = attribute.normalized_value(XmlVersion::Implicit1_0) else {
+            return StreamingXmlStatus::Invalid;
+        };
+        if inspect_streaming_xml_value(
+            value.as_ref(),
+            &format!("/{}/@{name}", path.join("/")),
+            Some(&name),
+            inspection,
+            visited,
+        ) {
+            return StreamingXmlStatus::LimitReached;
+        }
+    }
+    StreamingXmlStatus::Continue
+}
+
+fn inspect_streaming_xml_value(
+    value: &str,
+    path: &str,
+    key: Option<&str>,
+    inspection: &mut ResponseInspection,
+    visited: &mut usize,
+) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+        return false;
+    }
+    if *visited >= INSPECT_MAX_VALUES {
+        return true;
+    }
+    *visited += 1;
+    if let Some(finding) = inspect_jwt_text(value, path) {
+        inspection.jwts.push(finding);
+    } else if let Some(finding) = inspect_timestamp_text(value, path, key, false) {
+        inspection.timestamps.push(finding);
+    }
+    false
 }
 
 pub(crate) fn inspection_text(inspection: &ResponseInspection) -> String {
@@ -599,9 +815,183 @@ impl JsonInspector {
     }
 }
 
+#[derive(Clone)]
 enum PathSegment {
     Key(String),
     Index(usize),
+}
+
+#[derive(Default)]
+struct StreamingJsonInspector {
+    inspection: ResponseInspection,
+    visited: usize,
+    limit_reached: bool,
+}
+
+impl StreamingJsonInspector {
+    fn string(&mut self, value: &str, path: &[PathSegment], key: Option<&str>) {
+        if self.visited >= INSPECT_MAX_VALUES {
+            return;
+        }
+        self.visited += 1;
+        let path = json_path(path);
+        if let Some(finding) = inspect_jwt_text(value, &path) {
+            self.inspection.jwts.push(finding);
+        } else if let Some(finding) = inspect_timestamp_text(value, &path, key, false) {
+            self.inspection.timestamps.push(finding);
+        }
+    }
+
+    fn scalar(&mut self, value: serde_json::Value, path: &[PathSegment], key: Option<&str>) {
+        if self.visited >= INSPECT_MAX_VALUES {
+            return;
+        }
+        self.visited += 1;
+        let path = json_path(path);
+        if let Some(finding) = inspect_jwt(&value, &path) {
+            self.inspection.jwts.push(finding);
+        } else if let Some(finding) = inspect_timestamp(&value, &path, key, false) {
+            self.inspection.timestamps.push(finding);
+        }
+    }
+}
+
+struct StreamingJsonSeed<'a> {
+    inspector: &'a mut StreamingJsonInspector,
+    path: Vec<PathSegment>,
+    key: Option<String>,
+}
+
+impl<'de> DeserializeSeed<'de> for StreamingJsonSeed<'_> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if self.inspector.visited >= INSPECT_MAX_VALUES {
+            self.inspector.limit_reached = true;
+            return Err(D::Error::custom(INSPECTION_LIMIT_REACHED));
+        }
+        deserializer.deserialize_any(StreamingJsonVisitor(self))
+    }
+}
+
+struct StreamingJsonVisitor<'a>(StreamingJsonSeed<'a>);
+
+impl<'de> Visitor<'de> for StreamingJsonVisitor<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<(), A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        self.0.inspector.visited = self.0.inspector.visited.saturating_add(1);
+        while let Some(key) = map.next_key::<String>()? {
+            let mut path = self.0.path.clone();
+            path.push(PathSegment::Key(key.clone()));
+            map.next_value_seed(StreamingJsonSeed {
+                inspector: self.0.inspector,
+                path,
+                key: Some(key),
+            })?;
+        }
+        Ok(())
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<(), A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        self.0.inspector.visited = self.0.inspector.visited.saturating_add(1);
+        let mut index = 0;
+        loop {
+            let mut path = self.0.path.clone();
+            path.push(PathSegment::Index(index));
+            if sequence
+                .next_element_seed(StreamingJsonSeed {
+                    inspector: self.0.inspector,
+                    path,
+                    key: self.0.key.clone(),
+                })?
+                .is_none()
+            {
+                break;
+            }
+            index += 1;
+        }
+        Ok(())
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<(), E> {
+        self.0
+            .inspector
+            .string(value, &self.0.path, self.0.key.as_deref());
+        Ok(())
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(&value)
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<(), E> {
+        self.0.inspector.scalar(
+            serde_json::Value::Number(value.into()),
+            &self.0.path,
+            self.0.key.as_deref(),
+        );
+        Ok(())
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<(), E> {
+        self.0.inspector.scalar(
+            serde_json::Value::Number(value.into()),
+            &self.0.path,
+            self.0.key.as_deref(),
+        );
+        Ok(())
+    }
+
+    fn visit_f64<E>(self, value: f64) -> Result<(), E> {
+        if let Some(number) = serde_json::Number::from_f64(value) {
+            self.0.inspector.scalar(
+                serde_json::Value::Number(number),
+                &self.0.path,
+                self.0.key.as_deref(),
+            );
+        }
+        Ok(())
+    }
+
+    fn visit_bool<E>(self, value: bool) -> Result<(), E> {
+        self.0.inspector.scalar(
+            serde_json::Value::Bool(value),
+            &self.0.path,
+            self.0.key.as_deref(),
+        );
+        Ok(())
+    }
+
+    fn visit_none<E>(self) -> Result<(), E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_unit()
+    }
+
+    fn visit_unit<E>(self) -> Result<(), E> {
+        self.0
+            .inspector
+            .scalar(serde_json::Value::Null, &self.0.path, self.0.key.as_deref());
+        Ok(())
+    }
 }
 
 fn json_path(path: &[PathSegment]) -> String {
@@ -943,9 +1333,12 @@ fn expiration_relative(epoch_millis: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::{
-        InspectSelection, inspect_response_body, inspection_detail_text,
-        inspection_selection_at_offset, inspection_text, inspection_value_ranges,
+        InspectSelection, inspect_json_file, inspect_response_body, inspect_xml_file,
+        inspection_detail_text, inspection_selection_at_offset, inspection_text,
+        inspection_value_ranges,
     };
 
     #[test]
@@ -967,6 +1360,147 @@ mod tests {
                 .iter()
                 .any(|claim| claim.name == "exp" && claim.timestamp.is_some())
         );
+    }
+
+    #[test]
+    fn streaming_inspection_reaches_findings_after_the_memory_preview() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-streaming-inspection-{}-{unique}.json",
+            std::process::id()
+        ));
+        let source = format!(
+            r#"{{"padding":"{}","createdAt":1787482800}}"#,
+            "x".repeat(1024 * 1024)
+        );
+        std::fs::write(&path, source).unwrap();
+
+        let inspection = inspect_json_file(&path);
+
+        assert_eq!(inspection.timestamps.len(), 1);
+        assert_eq!(inspection.timestamps[0].path, "createdAt");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_xml_inspection_reaches_findings_after_the_memory_preview() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-streaming-inspection-{}-{unique}.xml",
+            std::process::id()
+        ));
+        let source = format!(
+            r#"<root><padding>{}</padding><item createdAt="1787482800"/></root>"#,
+            "x".repeat(1024 * 1024)
+        );
+        std::fs::write(&path, source).unwrap();
+
+        let inspection = inspect_xml_file(&path);
+
+        assert_eq!(inspection.timestamps.len(), 1);
+        assert_eq!(inspection.timestamps[0].path, "/root/item/@createdAt");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_json_inspection_rejects_trailing_data_without_partial_findings() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-invalid-streaming-inspection-{}-{unique}.json",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"{"createdAt":1787482800} trailing"#).unwrap();
+
+        let inspection = inspect_json_file(&path);
+
+        assert!(inspection.timestamps.is_empty());
+        assert_eq!(
+            inspection.skipped.as_deref(),
+            Some("Response is not valid JSON.")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_json_inspection_stops_at_the_value_limit() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-limited-streaming-inspection-{}-{unique}.json",
+            std::process::id()
+        ));
+        let source = format!(
+            "[{},{{\"createdAt\":1787482800}}]",
+            std::iter::repeat_n("0", 10_000)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        std::fs::write(&path, source).unwrap();
+
+        let inspection = inspect_json_file(&path);
+
+        assert!(inspection.timestamps.is_empty());
+        assert_eq!(
+            inspection.skipped.as_deref(),
+            Some("Inspection stopped after the first 10000 response values.")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_xml_inspection_rejects_invalid_tail_without_partial_findings() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-invalid-streaming-inspection-{}-{unique}.xml",
+            std::process::id()
+        ));
+        std::fs::write(&path, r#"<root createdAt="1787482800"><broken></root>"#).unwrap();
+
+        let inspection = inspect_xml_file(&path);
+
+        assert!(inspection.timestamps.is_empty());
+        assert_eq!(
+            inspection.skipped.as_deref(),
+            Some("Response is not valid XML.")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn streaming_xml_inspection_reads_cdata_values() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-cdata-streaming-inspection-{}-{unique}.xml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"<root><createdAt><![CDATA[1787482800]]></createdAt></root>"#,
+        )
+        .unwrap();
+
+        let inspection = inspect_xml_file(&path);
+
+        assert_eq!(inspection.timestamps.len(), 1);
+        assert_eq!(inspection.timestamps[0].path, "/root/createdAt");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -2635,7 +2635,12 @@ impl ProbeApp {
             .flex()
             .items_center()
             .gap(px(theme.metrics.spacing_1));
-        for (index, tab) in ResponseViewerTab::ALL.into_iter().enumerate() {
+        let available_tabs = if document.file_backed {
+            &ResponseViewerTab::FILE_BACKED[..]
+        } else {
+            &ResponseViewerTab::ALL[..]
+        };
+        for (index, tab) in available_tabs.iter().copied().enumerate() {
             let tab_view = cx.weak_entity();
             let selected = self.response_viewer.tab() == tab;
             let label = if tab == ResponseViewerTab::Inspect {
@@ -2655,7 +2660,7 @@ impl ProbeApp {
                     label,
                     selected,
                     index + 1,
-                    ResponseViewerTab::ALL.len(),
+                    available_tabs.len(),
                     move |_, _, cx| {
                         let _ = tab_view.update(cx, |view, cx| {
                             view.response_viewer.set_tab(tab);
@@ -2678,11 +2683,93 @@ impl ProbeApp {
         let mut has_banner = false;
         if document.truncated {
             has_banner = true;
+            let previous_view = cx.weak_entity();
+            let next_view = cx.weak_entity();
+            let can_previous = document.can_load_previous_page();
+            let can_next = document.can_load_next_page();
+            let first_byte = document.page_offset.saturating_add(1);
+            let last_byte = document.page_offset.saturating_add(document.page_len);
             banners = banners.child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(theme.metrics.spacing_2))
                     .text_color(theme.colors.status.warning)
                     .text_size(px(theme.typography.caption_size))
-                    .child("Response body is truncated at the in-memory limit."),
+                    .child(
+                        div().flex_1().min_w(px(0.0)).child(format!(
+                            "The complete response is retained on disk. Showing bytes {first_byte}–{last_byte} of {}; search covers this page only.",
+                            document.total_size
+                        )),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(theme.metrics.spacing_1))
+                            .child(
+                                Button::new("response-page-previous")
+                                    .disabled(!can_previous)
+                                    .px(px(theme.metrics.spacing_2))
+                                    .h(px(theme.metrics.control_height - 8.0))
+                                    .rounded(px(theme.metrics.radius_small))
+                                    .border_1()
+                                    .border_color(theme.colors.borders.standard)
+                                    .styles(move |styles| {
+                                        styles.disabled(move |button| {
+                                            button
+                                                .bg(theme.colors.selection.inactive_background)
+                                                .border_color(theme.colors.borders.subtle)
+                                                .text_color(theme.colors.actions.disabled_foreground)
+                                        })
+                                    })
+                                    .hover(move |button| {
+                                        button.bg(theme.colors.selection.inactive_background)
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        let _ = previous_view.update(cx, |view, cx| {
+                                            view.load_response_page(
+                                                key,
+                                                PageDirection::Previous,
+                                                cx,
+                                            );
+                                        });
+                                    })
+                                    .child("Previous"),
+                            )
+                            .child(
+                                Button::new("response-page-next")
+                                    .disabled(!can_next)
+                                    .px(px(theme.metrics.spacing_2))
+                                    .h(px(theme.metrics.control_height - 8.0))
+                                    .rounded(px(theme.metrics.radius_small))
+                                    .border_1()
+                                    .border_color(theme.colors.borders.standard)
+                                    .styles(move |styles| {
+                                        styles.disabled(move |button| {
+                                            button
+                                                .bg(theme.colors.selection.inactive_background)
+                                                .border_color(theme.colors.borders.subtle)
+                                                .text_color(theme.colors.actions.disabled_foreground)
+                                        })
+                                    })
+                                    .hover(move |button| {
+                                        button.bg(theme.colors.selection.inactive_background)
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        let _ = next_view.update(cx, |view, cx| {
+                                            view.load_response_page(
+                                                key,
+                                                PageDirection::Next,
+                                                cx,
+                                            );
+                                        });
+                                    })
+                                    .child("Next"),
+                            ),
+                    ),
             );
         }
         if let Some(notice) = &document.pretty_notice
@@ -2852,6 +2939,7 @@ impl ProbeApp {
                         });
                     },
                 )
+                .soft_wrap(true)
                 .inspection_reveal(inspection_reveal),
             ))
             .into_any_element()

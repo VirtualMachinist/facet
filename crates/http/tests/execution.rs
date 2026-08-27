@@ -497,6 +497,7 @@ async fn sends_multipart_text_and_file_parts_from_the_execution_base_directory()
             &request,
             &ExecutionOptions {
                 base_directory: Some(directory),
+                ..ExecutionOptions::default()
             },
         )
         .await
@@ -536,6 +537,7 @@ async fn streams_selected_file_body() {
             &request,
             &ExecutionOptions {
                 base_directory: Some(directory),
+                ..ExecutionOptions::default()
             },
         )
         .await
@@ -630,19 +632,53 @@ async fn reports_timeout_and_cancellation_separately() {
 #[tokio::test]
 async fn bounds_in_memory_responses_and_streams_file_output() {
     let body = vec![b'x'; MAX_IN_MEMORY_RESPONSE_BYTES + 32 * 1024];
+    let spool_directory = temporary_file("response-spool");
     let (base_url, captured) = serve_once("200 OK", &[], &body).await.unwrap();
     let response = HttpEngine::new()
         .unwrap()
         .execute(
             &request("GET", format!("{base_url}/bounded")),
+            &ExecutionOptions {
+                response_directory: Some(spool_directory.clone()),
+                ..ExecutionOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    captured.await.unwrap().unwrap();
+    assert_eq!(response.size, body.len());
+    assert_eq!(response.body, body[..MAX_IN_MEMORY_RESPONSE_BYTES]);
+    assert!(!response.body_complete);
+    let body_file = response
+        .body_file
+        .as_ref()
+        .expect("large body should spool");
+    let spool_path = body_file.path().to_owned();
+    assert_eq!(std::fs::read(&spool_path).unwrap(), body);
+    let response_clone = response.clone();
+    drop(response);
+    assert!(spool_path.exists(), "a clone must retain the spool file");
+    drop(response_clone);
+    assert!(
+        !spool_path.exists(),
+        "the final owner must remove the spool file"
+    );
+    std::fs::remove_dir(spool_directory).unwrap();
+
+    let (base_url, captured) = serve_once("200 OK", &[], &body).await.unwrap();
+    let response = HttpEngine::new()
+        .unwrap()
+        .execute(
+            &request("GET", format!("{base_url}/bounded-without-retention")),
             &ExecutionOptions::default(),
         )
         .await
         .unwrap();
     captured.await.unwrap().unwrap();
     assert_eq!(response.size, body.len());
-    assert!(response.body.is_empty());
+    assert_eq!(response.body, body[..MAX_IN_MEMORY_RESPONSE_BYTES]);
     assert!(!response.body_complete);
+    assert!(response.body_file.is_none());
 
     let output = temporary_file("streamed-response.bin");
     let (base_url, captured) = serve_once("200 OK", &[], &body).await.unwrap();
@@ -659,6 +695,7 @@ async fn bounds_in_memory_responses_and_streams_file_output() {
     assert_eq!(response.size, body.len());
     assert!(response.body.is_empty());
     assert!(!response.body_complete);
+    assert!(response.body_file.is_none());
     assert_eq!(std::fs::read(&output).unwrap(), body);
     std::fs::remove_file(output).unwrap();
 }

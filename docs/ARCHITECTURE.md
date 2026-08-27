@@ -426,11 +426,21 @@ terminal signals or a GUI framework. The CLI adapts Ctrl-C to this boundary; des
 can later adapt task or view cancellation to the same API.
 
 Completed responses contain status, reason, final URL, duration, size, deterministically
-sorted headers, and at most 1 MiB of in-memory body data. Once that bound is crossed the
-engine drains the response without retaining partial bytes. `--output` streams chunks to a
-temporary file and replaces the requested destination only after the complete response is
-written and synced. Response retention and history policies remain outside the frontend and
-can evolve without changing request construction.
+sorted headers, and at most 1 MiB of in-memory body data. Once that bound is crossed, the
+engine keeps the leading 1 MiB as the first presentation page and, when requested by the caller,
+streams the complete body to an automatically managed spool file. Cloned response handles share
+ownership of that file, and
+the final owner removes it. Frontends that need the complete body provide a cache directory;
+callers such as the CLI can drain the remainder without retaining it. The desktop reads subsequent
+1 MiB pages off the UI thread, searches only the resident page, and renders those pages as
+soft-wrapped Raw text without retaining a duplicate Pretty representation. Pretty is hidden for
+file-backed responses because formatting an isolated page would not produce a valid document.
+Inspect remains available and scans file-backed JSON and XML through streaming parsers without
+constructing a complete document tree. `--output`
+remains distinct: it streams chunks to a temporary file and replaces the requested user-owned
+destination only after the complete response is written and synced.
+Response retention and history policies remain outside the frontend and can evolve without
+changing request construction.
 
 
 ## Persistence

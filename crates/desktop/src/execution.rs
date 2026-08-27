@@ -1,12 +1,14 @@
 use std::{
     collections::BTreeMap,
+    io::{Read, Seek, SeekFrom},
     path::Path,
     time::{Duration, Instant},
 };
 
 use crate::filesystem::workspace_base_directory;
+use directories::ProjectDirs;
 use probe_core::{HttpRequest, RequestKey};
-use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse};
+use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse, ResponseBodyFile};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -208,6 +210,28 @@ pub(crate) fn execute_http_request(
     })
 }
 
+pub(crate) fn response_cache_directory() -> std::path::PathBuf {
+    ProjectDirs::from("dev", "Probe", "Probe")
+        .map(|directories| directories.cache_dir().join("responses"))
+        .unwrap_or_else(|| std::env::temp_dir().join("probe-responses"))
+}
+
+pub(crate) fn read_response_page(
+    file: &ResponseBodyFile,
+    offset: usize,
+    length: usize,
+) -> Result<Vec<u8>, String> {
+    let mut source = std::fs::File::open(file.path()).map_err(|error| error.to_string())?;
+    source
+        .seek(SeekFrom::Start(offset as u64))
+        .map_err(|error| error.to_string())?;
+    let mut body = vec![0; length];
+    source
+        .read_exact(&mut body)
+        .map_err(|error| error.to_string())?;
+    Ok(body)
+}
+
 pub(crate) fn format_duration(duration: Duration) -> String {
     if duration.as_secs() > 0 {
         format!("{:.2} s", duration.as_secs_f64())
@@ -380,6 +404,7 @@ mod tests {
             headers: Vec::new(),
             body: Vec::new(),
             body_complete: true,
+            body_file: None,
         }
     }
 
