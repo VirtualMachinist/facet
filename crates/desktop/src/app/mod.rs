@@ -79,8 +79,8 @@ use crate::{
     },
     response_inspector::{InspectSelection, inspect_response_body, inspection_detail_text},
     response_viewer::{
-        PreparedDocument, ResponseViewerState, ResponseViewerTab, prepare_document,
-        pretty_json_body,
+        PreparedDocument, ResponseBodySyntax, ResponseViewerState, ResponseViewerTab,
+        prepare_document, pretty_json_body,
     },
     session::{SessionState, SessionStore},
     shell::{PaneLayout, ResizePane, ShellState},

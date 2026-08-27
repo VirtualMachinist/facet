@@ -25,6 +25,24 @@ pub(crate) enum ResponseViewerTab {
     Inspect,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ResponseBodySyntax {
+    #[default]
+    Plain,
+    Json,
+    Xml,
+}
+
+impl ResponseBodySyntax {
+    pub(crate) const fn language(self) -> &'static str {
+        match self {
+            Self::Plain => "",
+            Self::Json => "json",
+            Self::Xml => "xml",
+        }
+    }
+}
+
 impl ResponseViewerTab {
     pub(crate) const ALL: [Self; 4] = [Self::Pretty, Self::Raw, Self::Headers, Self::Inspect];
 
@@ -50,6 +68,7 @@ pub(crate) struct PreparedDocument {
     pub pretty_text: String,
     pub pretty_pending: bool,
     pub pretty_notice: Option<String>,
+    pub syntax: ResponseBodySyntax,
     pub binary: bool,
     pub truncated: bool,
     pub headers: Vec<ResponseHeader>,
@@ -245,6 +264,7 @@ pub(crate) fn prepare_document(
                 pretty_text: String::new(),
                 pretty_pending: false,
                 pretty_notice: None,
+                syntax: ResponseBodySyntax::Plain,
                 binary: false,
                 truncated,
                 headers: response.headers.clone(),
@@ -265,6 +285,7 @@ pub(crate) fn prepare_document(
                 pretty_text: String::new(),
                 pretty_pending: false,
                 pretty_notice: Some(format!("Binary response body ({} bytes).", response.size)),
+                syntax: ResponseBodySyntax::Plain,
                 binary: true,
                 truncated,
                 headers: response.headers.clone(),
@@ -279,7 +300,8 @@ pub(crate) fn prepare_document(
     }
 
     let raw_text = String::from_utf8_lossy(&response.body).into_owned();
-    let json_candidate = looks_like_json(response);
+    let syntax = response_body_syntax(response);
+    let json_candidate = syntax == ResponseBodySyntax::Json;
     let pretty_pending = json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
     let inspection_pending = json_candidate && response.body.len() <= INSPECT_MAX_BYTES;
     let inspection = if !json_candidate || inspection_pending {
@@ -292,6 +314,8 @@ pub(crate) fn prepare_document(
     } else if json_candidate {
         let pretty = pretty_json_body(&response.body);
         (pretty.text, pretty.notice, false)
+    } else if syntax == ResponseBodySyntax::Xml {
+        (raw_text.clone(), None, false)
     } else {
         (
             raw_text.clone(),
@@ -309,6 +333,7 @@ pub(crate) fn prepare_document(
             pretty_text,
             pretty_pending,
             pretty_notice,
+            syntax,
             binary: false,
             truncated,
             headers: response.headers.clone(),
@@ -341,14 +366,25 @@ pub(crate) fn pretty_json_body(body: &[u8]) -> PrettyBody {
     }
 }
 
-pub(crate) fn looks_like_json(response: &HttpResponse) -> bool {
+pub(crate) fn response_body_syntax(response: &HttpResponse) -> ResponseBodySyntax {
     if let Some(content_type) = content_type(response)
         && content_type.to_ascii_lowercase().contains("json")
     {
-        return true;
+        return ResponseBodySyntax::Json;
+    }
+    if let Some(content_type) = content_type(response)
+        && content_type.to_ascii_lowercase().contains("xml")
+    {
+        return ResponseBodySyntax::Xml;
     }
     let trimmed = trim_ascii_start(&response.body);
-    matches!(trimmed.first(), Some(b'{' | b'['))
+    if matches!(trimmed.first(), Some(b'{' | b'[')) {
+        ResponseBodySyntax::Json
+    } else if trimmed.first() == Some(&b'<') {
+        ResponseBodySyntax::Xml
+    } else {
+        ResponseBodySyntax::Plain
+    }
 }
 
 fn content_type(response: &HttpResponse) -> Option<&str> {
@@ -488,8 +524,8 @@ mod tests {
     use probe_http::{HttpResponse, ResponseHeader};
 
     use super::{
-        PreparedDocument, ResponseViewerTab, join_header_lines, looks_like_json, prepare_document,
-        pretty_json_body, search_headers, search_text,
+        PreparedDocument, ResponseBodySyntax, ResponseViewerTab, join_header_lines,
+        prepare_document, pretty_json_body, response_body_syntax, search_headers, search_text,
     };
 
     fn response(body: &[u8], content_type: &str) -> HttpResponse {
@@ -582,7 +618,7 @@ mod tests {
     #[test]
     fn binary_and_json_sniffing_prepare_the_expected_document() {
         let json = response(br#"{"ok":true}"#, "application/json");
-        assert!(looks_like_json(&json));
+        assert_eq!(response_body_syntax(&json), ResponseBodySyntax::Json);
         let (document, pending, inspection_pending) = prepare_document(&json, 1);
         assert!(!pending);
         assert!(inspection_pending);
@@ -609,6 +645,26 @@ mod tests {
             pretty_notice.as_deref(),
             Some("Response is not valid JSON.")
         );
+    }
+
+    #[test]
+    fn xml_responses_select_xml_highlighting_in_the_pretty_tab() {
+        let source = r#"<?xml version="1.0"?><root id="1"><item/></root>"#;
+        let xml = response(source.as_bytes(), "application/problem+xml; charset=utf-8");
+        assert_eq!(response_body_syntax(&xml), ResponseBodySyntax::Xml);
+
+        let (document, pending, inspection_pending) = prepare_document(&xml, 1);
+        assert!(!pending);
+        assert!(!inspection_pending);
+        assert_eq!(document.syntax.language(), "xml");
+        assert_eq!(document.pretty_text, source);
+        assert!(document.pretty_notice.is_none());
+    }
+
+    #[test]
+    fn xml_is_sniffed_when_content_type_is_not_specific() {
+        let xml = response(b" \n<root><item/></root>", "text/plain");
+        assert_eq!(response_body_syntax(&xml), ResponseBodySyntax::Xml);
     }
 
     #[test]

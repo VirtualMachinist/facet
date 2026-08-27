@@ -2186,6 +2186,89 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn xml_response_keeps_its_syntax_after_visiting_raw(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = bundled_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    let request_key = workspace.requests()[0].key();
+    window
+        .update(cx, |view, _, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_request(request_key, cx);
+            let (cancellation, _) = tokio::sync::oneshot::channel();
+            let generation = view.execution.begin(request_key, cancellation);
+            let body = br#"<root id="1"><item/></root>"#.to_vec();
+            view.complete_execution(
+                request_key,
+                generation,
+                Ok(HttpResponse {
+                    status: 200,
+                    reason: "OK".to_owned(),
+                    url: "https://api.example.test/data.xml".to_owned(),
+                    duration: Duration::from_millis(12),
+                    size: body.len(),
+                    headers: vec![ResponseHeader {
+                        name: "content-type".to_owned(),
+                        value: "application/xml".to_owned(),
+                    }],
+                    body,
+                    body_complete: true,
+                }),
+                cx,
+            );
+            cx.notify();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, cx| {
+            assert_eq!(
+                view.response_viewer
+                    .document(request_key)
+                    .expect("response document")
+                    .syntax
+                    .language(),
+                "xml"
+            );
+            view.response_viewer.set_tab(ResponseViewerTab::Raw);
+            cx.notify();
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, cx| {
+            view.response_viewer.set_tab(ResponseViewerTab::Pretty);
+            cx.notify();
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(view.response_viewer.tab(), ResponseViewerTab::Pretty);
+            assert_eq!(
+                view.response_viewer
+                    .document(request_key)
+                    .expect("response document")
+                    .syntax
+                    .language(),
+                "xml"
+            );
+        })
+        .expect("test window should remain open");
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(visual.debug_bounds("response-body").is_some());
+}
+
+#[gpui::test]
 fn large_response_body_only_renders_visible_rows(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {

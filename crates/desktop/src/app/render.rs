@@ -2750,6 +2750,7 @@ impl ProbeApp {
         let inspect_view = cx.weak_entity();
         let inspect_ranges = document.inspection_ranges.clone();
         let inspect_context_enabled = self.response_viewer.tab() == ResponseViewerTab::Pretty
+            && document.syntax == ResponseBodySyntax::Json
             && document.pretty_notice.is_none();
         let pretty_reveal = if self.response_viewer.tab() == ResponseViewerTab::Pretty {
             self.pretty_reveal.get()
@@ -2787,10 +2788,8 @@ impl ProbeApp {
                 components::ResponseBodyInputOptions::new(
                     &[],
                     0,
-                    if self.response_viewer.tab() == ResponseViewerTab::Pretty
-                        && document.pretty_notice.is_none()
-                    {
-                        "json"
+                    if self.response_viewer.tab() == ResponseViewerTab::Pretty {
+                        document.syntax.language()
                     } else {
                         ""
                     },

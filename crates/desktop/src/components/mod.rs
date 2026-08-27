@@ -2129,6 +2129,14 @@ struct EditorField {
     _subscription: Subscription,
 }
 
+fn editor_value_needs_refresh(
+    language_changed: bool,
+    current_value: &SharedString,
+    next_value: &SharedString,
+) -> bool {
+    language_changed || current_value != next_value
+}
+
 impl EditorField {
     fn on_event(
         this: &mut Self,
@@ -2298,7 +2306,11 @@ impl RenderOnce for ProbeEditor {
                 if language_changed {
                     editor.set_highlighter(self.language.clone(), cx);
                 }
-                if editor.value() != self.value {
+                // gpui-base clears its parser when the language changes and
+                // rebuilds it on the next text update. Pretty and Raw XML are
+                // often byte-identical, so force that update when only the
+                // language changed as well.
+                if editor_value_needs_refresh(language_changed, &editor.value(), &self.value) {
                     editor.set_value(self.value.clone(), window, cx);
                 }
                 if editor.search_session().open {

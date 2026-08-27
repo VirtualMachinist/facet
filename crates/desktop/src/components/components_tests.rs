@@ -12,9 +12,9 @@ use gpui_base::{
 
 use super::{
     EditorInsets, ProbeEditor, VariableContext, VariableHighlightElement, body_text_highlights,
-    clipboard_has_pasteable_text, dropdown, editor_paint_style, input_text_scroll_offset,
-    menu_button, single_line, variable_highlight_runs, variable_ranges, variable_span_layout,
-    variable_tooltip_presentation,
+    clipboard_has_pasteable_text, dropdown, editor_paint_style, editor_value_needs_refresh,
+    input_text_scroll_offset, menu_button, single_line, variable_highlight_runs, variable_ranges,
+    variable_span_layout, variable_tooltip_presentation,
 };
 use crate::theme::Theme;
 use probe_core::path_variable_ranges;
@@ -34,6 +34,13 @@ enum TextContextMenuHarnessKind {
 struct TextContextMenuHarness {
     kind: TextContextMenuHarnessKind,
     input: Option<Entity<InputState>>,
+}
+
+#[test]
+fn changing_editor_language_refreshes_unchanged_text() {
+    let xml: SharedString = r#"<root id="1"/>"#.into();
+    assert!(editor_value_needs_refresh(true, &xml, &xml));
+    assert!(!editor_value_needs_refresh(false, &xml, &xml));
 }
 
 impl Render for TextContextMenuHarness {
