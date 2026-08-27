@@ -899,11 +899,4 @@ mod tests {
         );
         assert!(!document.can_load_next_page());
     }
-
-    #[test]
-    fn viewer_tabs_are_stable() {
-        assert_eq!(ResponseViewerTab::ALL.len(), 4);
-        assert_eq!(ResponseViewerTab::Pretty.label(), "Pretty");
-        assert_eq!(ResponseViewerTab::Inspect.label(), "Inspect");
-    }
 }

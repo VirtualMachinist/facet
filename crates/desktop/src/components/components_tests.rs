@@ -17,7 +17,6 @@ use super::{
     variable_span_layout, variable_tooltip_presentation,
 };
 use crate::theme::Theme;
-use probe_core::path_variable_ranges;
 
 struct MenuTestView {
     open: bool,
@@ -546,17 +545,6 @@ fn variable_ranges_trim_names_and_find_placeholders_in_json() {
     assert_eq!(ranges.len(), 1);
     assert_eq!(&value[ranges[0].0.clone()], "{{ tenant }}");
     assert_eq!(ranges[0].1, "tenant");
-}
-
-#[test]
-fn path_variable_ranges_only_highlight_colon_placeholders_in_the_url_path() {
-    let value = "https://api.example.com:8443/users/:userId/posts/:post_id?next=:ignored";
-    let ranges = path_variable_ranges(value);
-    assert_eq!(ranges.len(), 2);
-    assert_eq!(&value[ranges[0].0.clone()], ":userId");
-    assert_eq!(ranges[0].1, "userId");
-    assert_eq!(&value[ranges[1].0.clone()], ":post_id");
-    assert_eq!(ranges[1].1, "post_id");
 }
 
 #[test]

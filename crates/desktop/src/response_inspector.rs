@@ -1333,13 +1333,35 @@ fn expiration_relative(epoch_millis: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        path::Path,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::{
-        InspectSelection, inspect_json_file, inspect_response_body, inspect_xml_file,
-        inspection_detail_text, inspection_selection_at_offset, inspection_text,
+        InspectSelection, ResponseInspection, inspect_json_file, inspect_response_body,
+        inspect_xml_file, inspection_detail_text, inspection_selection_at_offset, inspection_text,
         inspection_value_ranges,
     };
+
+    fn inspect_temp_source(
+        suffix: &str,
+        source: impl AsRef<[u8]>,
+        inspect: fn(&Path) -> ResponseInspection,
+    ) -> ResponseInspection {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "probe-streaming-inspection-{}-{unique}.{suffix}",
+            std::process::id()
+        ));
+        std::fs::write(&path, source).unwrap();
+        let inspection = inspect(&path);
+        std::fs::remove_file(path).unwrap();
+        inspection
+    }
 
     #[test]
     fn inspection_detects_structurally_valid_jwts() {
@@ -1364,143 +1386,82 @@ mod tests {
 
     #[test]
     fn streaming_inspection_reaches_findings_after_the_memory_preview() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-streaming-inspection-{}-{unique}.json",
-            std::process::id()
-        ));
-        let source = format!(
-            r#"{{"padding":"{}","createdAt":1787482800}}"#,
-            "x".repeat(1024 * 1024)
-        );
-        std::fs::write(&path, source).unwrap();
+        let padding = "x".repeat(1024 * 1024);
+        let cases: [(&str, String, fn(&Path) -> ResponseInspection, &str); 2] = [
+            (
+                "json",
+                format!(r#"{{"padding":"{padding}","createdAt":1787482800}}"#),
+                inspect_json_file,
+                "createdAt",
+            ),
+            (
+                "xml",
+                format!(
+                    r#"<root><padding>{padding}</padding><item createdAt="1787482800"/></root>"#
+                ),
+                inspect_xml_file,
+                "/root/item/@createdAt",
+            ),
+        ];
 
-        let inspection = inspect_json_file(&path);
-
-        assert_eq!(inspection.timestamps.len(), 1);
-        assert_eq!(inspection.timestamps[0].path, "createdAt");
-        std::fs::remove_file(path).unwrap();
+        for (suffix, source, inspect, expected_path) in cases {
+            let inspection = inspect_temp_source(suffix, source, inspect);
+            assert_eq!(inspection.timestamps.len(), 1, "{suffix}");
+            assert_eq!(inspection.timestamps[0].path, expected_path);
+        }
     }
 
     #[test]
-    fn streaming_xml_inspection_reaches_findings_after_the_memory_preview() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-streaming-inspection-{}-{unique}.xml",
-            std::process::id()
-        ));
-        let source = format!(
-            r#"<root><padding>{}</padding><item createdAt="1787482800"/></root>"#,
-            "x".repeat(1024 * 1024)
-        );
-        std::fs::write(&path, source).unwrap();
+    fn streaming_inspection_rejects_invalid_input_without_partial_findings() {
+        let cases: [(&str, &str, fn(&Path) -> ResponseInspection, &str); 2] = [
+            (
+                "json",
+                r#"{"createdAt":1787482800} trailing"#,
+                inspect_json_file,
+                "Response is not valid JSON.",
+            ),
+            (
+                "xml",
+                r#"<root createdAt="1787482800"><broken></root>"#,
+                inspect_xml_file,
+                "Response is not valid XML.",
+            ),
+        ];
 
-        let inspection = inspect_xml_file(&path);
-
-        assert_eq!(inspection.timestamps.len(), 1);
-        assert_eq!(inspection.timestamps[0].path, "/root/item/@createdAt");
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn streaming_json_inspection_rejects_trailing_data_without_partial_findings() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-invalid-streaming-inspection-{}-{unique}.json",
-            std::process::id()
-        ));
-        std::fs::write(&path, r#"{"createdAt":1787482800} trailing"#).unwrap();
-
-        let inspection = inspect_json_file(&path);
-
-        assert!(inspection.timestamps.is_empty());
-        assert_eq!(
-            inspection.skipped.as_deref(),
-            Some("Response is not valid JSON.")
-        );
-        std::fs::remove_file(path).unwrap();
+        for (suffix, source, inspect, skipped) in cases {
+            let inspection = inspect_temp_source(suffix, source, inspect);
+            assert!(inspection.timestamps.is_empty(), "{suffix}");
+            assert_eq!(inspection.skipped.as_deref(), Some(skipped));
+        }
     }
 
     #[test]
     fn streaming_json_inspection_stops_at_the_value_limit() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-limited-streaming-inspection-{}-{unique}.json",
-            std::process::id()
-        ));
         let source = format!(
             "[{},{{\"createdAt\":1787482800}}]",
             std::iter::repeat_n("0", 10_000)
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        std::fs::write(&path, source).unwrap();
-
-        let inspection = inspect_json_file(&path);
+        let inspection = inspect_temp_source("json", source, inspect_json_file);
 
         assert!(inspection.timestamps.is_empty());
         assert_eq!(
             inspection.skipped.as_deref(),
             Some("Inspection stopped after the first 10000 response values.")
         );
-        std::fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn streaming_xml_inspection_rejects_invalid_tail_without_partial_findings() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-invalid-streaming-inspection-{}-{unique}.xml",
-            std::process::id()
-        ));
-        std::fs::write(&path, r#"<root createdAt="1787482800"><broken></root>"#).unwrap();
-
-        let inspection = inspect_xml_file(&path);
-
-        assert!(inspection.timestamps.is_empty());
-        assert_eq!(
-            inspection.skipped.as_deref(),
-            Some("Response is not valid XML.")
-        );
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn streaming_xml_inspection_reads_cdata_values() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "probe-cdata-streaming-inspection-{}-{unique}.xml",
-            std::process::id()
-        ));
-        std::fs::write(
-            &path,
+        let inspection = inspect_temp_source(
+            "xml",
             r#"<root><createdAt><![CDATA[1787482800]]></createdAt></root>"#,
-        )
-        .unwrap();
-
-        let inspection = inspect_xml_file(&path);
+            inspect_xml_file,
+        );
 
         assert_eq!(inspection.timestamps.len(), 1);
         assert_eq!(inspection.timestamps[0].path, "/root/createdAt");
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

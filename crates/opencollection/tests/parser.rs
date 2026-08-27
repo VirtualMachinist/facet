@@ -64,19 +64,27 @@ fn parses_collection_folders_and_http_requests() {
 }
 
 #[test]
-fn preserves_unsupported_fields_during_round_trip() {
-    let source = fixture("phase1-round-trip.yml");
-    let parsed = parse(&source).expect("fixture should parse");
-    let serialized = parsed.to_yaml().expect("fixture should serialize");
-    let reparsed = parse(&serialized).expect("serialized fixture should parse");
+fn fixtures_round_trip_without_data_loss() {
+    for name in [
+        "phase1-round-trip.yml",
+        "phase1-bodies-auth-environments.yml",
+    ] {
+        let source = fixture(name);
+        let parsed = parse(&source).unwrap_or_else(|_| panic!("{name} should parse"));
+        let serialized = parsed
+            .to_yaml()
+            .unwrap_or_else(|_| panic!("{name} should serialize"));
+        let reparsed =
+            parse(&serialized).unwrap_or_else(|_| panic!("{name} serialized should parse"));
 
-    assert_eq!(parsed.collection(), reparsed.collection());
+        assert_eq!(parsed.collection(), reparsed.collection(), "{name}");
 
-    let before: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&source).expect("source should be YAML");
-    let after: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&serialized).expect("serialized output should be YAML");
-    assert_eq!(before, after);
+        let before: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&source).expect("source should be YAML");
+        let after: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&serialized).expect("serialized output should be YAML");
+        assert_eq!(before, after, "{name}");
+    }
 }
 
 #[test]
@@ -198,19 +206,6 @@ fn parses_bodies_authentication_and_environments() {
             "client_credentials".to_owned()
         ))
     );
-}
-
-#[test]
-fn complete_fixture_round_trips_without_data_loss() {
-    let source = fixture("phase1-bodies-auth-environments.yml");
-    let parsed = parse(&source).expect("complete fixture should parse");
-    let serialized = parsed.to_yaml().expect("complete fixture should serialize");
-
-    let before: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&source).expect("source should be YAML");
-    let after: serde_yaml_ng::Value =
-        serde_yaml_ng::from_str(&serialized).expect("serialized output should be YAML");
-    assert_eq!(before, after);
 }
 
 #[test]

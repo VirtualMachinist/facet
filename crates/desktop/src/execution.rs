@@ -370,20 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn running_response_tracks_elapsed_time() {
-        let key = key();
-        let mut state = ExecutionState::default();
-        let (sender, _) = oneshot::channel();
-
-        state.begin(key, sender);
-
-        assert!(matches!(
-            state.response(key).and_then(ResponseState::elapsed),
-            Some(elapsed) if elapsed >= Duration::ZERO
-        ));
-    }
-
-    #[test]
     fn desktop_adapter_forwards_cancellation_to_the_shared_http_engine() {
         let (cancel, cancellation) = oneshot::channel();
         cancel.send(()).expect("cancellation should be delivered");

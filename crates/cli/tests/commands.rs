@@ -124,6 +124,23 @@ fn run_json(arguments: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn run_with_stdin(arguments: &[&str], stdin: &[u8]) -> std::process::Output {
+    let mut child = probe()
+        .args(arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("command should start");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin)
+        .expect("stdin should be writable");
+    child.wait_with_output().expect("command should finish")
+}
+
 #[test]
 fn help_starts_successfully() {
     let output = probe()
@@ -493,22 +510,7 @@ fn lists_requests_deterministically_as_json() {
 #[test]
 fn reads_a_bundled_workspace_from_stdin() {
     let source = fs::read(fixture("phase1-bundled.yml")).unwrap();
-    let mut child = probe()
-        .args(["request", "list", "-", "--json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("list command should start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&source)
-        .expect("fixture should be written to stdin");
-    let output = child
-        .wait_with_output()
-        .expect("list command should finish");
+    let output = run_with_stdin(&["request", "list", "-", "--json"], &source);
 
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
@@ -629,31 +631,51 @@ fn set_requires_at_least_one_explicit_field() {
 }
 
 #[test]
-fn set_rejects_stdin_as_read_only() {
-    let source = fs::read(fixture("phase1-round-trip.yml")).unwrap();
-    let mut child = probe()
-        .args([
-            "request",
-            "set",
-            "-",
-            "items/0",
-            "--url",
-            "https://example.com/updated",
-            "--json",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("set command should start");
-    child.stdin.take().unwrap().write_all(&source).unwrap();
-    let output = child.wait_with_output().expect("set command should finish");
+fn mutating_commands_reject_stdin_as_read_only() {
+    let request_set = [
+        "request",
+        "set",
+        "-",
+        "items/0",
+        "--url",
+        "https://example.com/updated",
+        "--json",
+    ];
+    let request_create = ["request", "create", "-", "--name", "Read only", "--json"];
+    let environment_set = [
+        "environment",
+        "set",
+        "-",
+        "--environment",
+        "development",
+        "--name",
+        "token",
+        "--value",
+        "rotated",
+        "--json",
+    ];
+    let environment_create = ["environment", "create", "-", "--name", "staging", "--json"];
+    let cases: &[(&str, &[&str])] = &[
+        ("phase1-round-trip.yml", request_set.as_slice()),
+        ("phase16-bundled.yml", request_create.as_slice()),
+        ("phase4-environments.yml", environment_set.as_slice()),
+        ("phase4-environments.yml", environment_create.as_slice()),
+    ];
 
-    assert_eq!(output.status.code(), Some(7));
-    assert!(output.stderr.is_empty());
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["exitCode"], 7);
-    assert_eq!(value["error"]["category"], "persistence_read_only");
+    for (fixture_name, arguments) in cases {
+        let source = fs::read(fixture(fixture_name)).unwrap();
+        let output = run_with_stdin(arguments, &source);
+        assert_eq!(
+            output.status.code(),
+            Some(7),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(output.stderr.is_empty(), "{arguments:?}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["exitCode"], 7);
+        assert_eq!(value["error"]["category"], "persistence_read_only");
+    }
 }
 
 #[test]
@@ -681,43 +703,23 @@ fn gets_request_resolved_with_selected_environment() {
 }
 
 #[test]
-fn reports_environment_and_missing_variable_errors() {
-    let missing_environment = probe()
-        .args(["request", "get"])
-        .arg(fixture("phase4-environments.yml"))
-        .arg("items/0")
-        .args(["--environment", "production", "--json"])
-        .output()
-        .expect("get command should run");
-    assert_eq!(missing_environment.status.code(), Some(5));
-    let value: Value = serde_json::from_slice(&missing_environment.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "environment_not_found");
-
-    let missing_variable = probe()
-        .args(["request", "get"])
-        .arg(fixture("phase4-environments.yml"))
-        .arg("items/1")
-        .args(["--environment", "development", "--json"])
-        .output()
-        .expect("get command should run");
-    assert_eq!(missing_variable.status.code(), Some(5));
-    let value: Value = serde_json::from_slice(&missing_variable.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "missing_variable");
-}
-
-#[test]
-fn reports_unavailable_collection_secret() {
-    let output = probe()
-        .args(["request", "get"])
-        .arg(fixture("phase4-environments.yml"))
-        .arg("items/2")
-        .args(["--environment", "development", "--json"])
-        .output()
-        .expect("get command should run");
-
-    assert_eq!(output.status.code(), Some(5));
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "secret_variable_unavailable");
+fn reports_environment_resolution_errors() {
+    for (selector, environment, category) in [
+        ("items/0", "production", "environment_not_found"),
+        ("items/1", "development", "missing_variable"),
+        ("items/2", "development", "secret_variable_unavailable"),
+    ] {
+        let output = probe()
+            .args(["request", "get"])
+            .arg(fixture("phase4-environments.yml"))
+            .arg(selector)
+            .args(["--environment", environment, "--json"])
+            .output()
+            .expect("get command should run");
+        assert_eq!(output.status.code(), Some(5), "{category}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["category"], category);
+    }
 }
 
 #[test]
@@ -1021,27 +1023,6 @@ fn structural_cli_errors_have_stable_categories() {
 }
 
 #[test]
-fn structural_cli_rejects_stdin_as_read_only() {
-    let source = fs::read(fixture("phase16-bundled.yml")).unwrap();
-    let mut child = probe()
-        .args(["request", "create", "-", "--name", "Read only", "--json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("structure command should start");
-    child.stdin.take().unwrap().write_all(&source).unwrap();
-    let output = child
-        .wait_with_output()
-        .expect("structure command should finish");
-
-    assert_eq!(output.status.code(), Some(7));
-    assert!(output.stderr.is_empty());
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "persistence_read_only");
-}
-
-#[test]
 fn sets_and_unsets_environment_variables_as_json() {
     let workspace = temporary_path("phase-env-workspace.yml");
     fs::copy(fixture("phase4-environments.yml"), &workspace).unwrap();
@@ -1179,39 +1160,6 @@ fn environment_commands_have_stable_errors() {
 }
 
 #[test]
-fn environment_set_rejects_stdin_as_read_only() {
-    let source = fs::read(fixture("phase4-environments.yml")).unwrap();
-    let mut child = probe()
-        .args([
-            "environment",
-            "set",
-            "-",
-            "--environment",
-            "development",
-            "--name",
-            "token",
-            "--value",
-            "rotated",
-            "--json",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("environment set should start");
-    child.stdin.take().unwrap().write_all(&source).unwrap();
-    let output = child
-        .wait_with_output()
-        .expect("environment set should finish");
-
-    assert_eq!(output.status.code(), Some(7));
-    assert!(output.stderr.is_empty());
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["exitCode"], 7);
-    assert_eq!(value["error"]["category"], "persistence_read_only");
-}
-
-#[test]
 fn lists_environments_as_json() {
     let output = probe()
         .args(["environment", "list"])
@@ -1292,25 +1240,4 @@ fn environment_create_has_stable_errors() {
     assert_eq!(invalid.status.code(), Some(2));
     let value: Value = serde_json::from_slice(&invalid.stdout).unwrap();
     assert_eq!(value["error"]["category"], "invalid_arguments");
-}
-
-#[test]
-fn environment_create_rejects_stdin_as_read_only() {
-    let source = fs::read(fixture("phase4-environments.yml")).unwrap();
-    let mut child = probe()
-        .args(["environment", "create", "-", "--name", "staging", "--json"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("environment create should start");
-    child.stdin.take().unwrap().write_all(&source).unwrap();
-    let output = child
-        .wait_with_output()
-        .expect("environment create should finish");
-
-    assert_eq!(output.status.code(), Some(7));
-    assert!(output.stderr.is_empty());
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "persistence_read_only");
 }

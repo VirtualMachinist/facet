@@ -564,17 +564,13 @@ fn create_environment_rejects_inheritance_cycles() {
 }
 
 #[test]
-fn revert_created_environment_removes_an_unused_environment() {
+fn revert_created_environment_removes_unused_names_but_keeps_parents() {
     let mut environments = vec![environment("base", None, vec![])];
     probe_core::create_environment(&mut environments, "staging".to_owned(), None).unwrap();
     probe_core::revert_created_environment(&mut environments, "staging");
     assert_eq!(environments.len(), 1);
     assert_eq!(environments[0].name, "base");
-}
 
-#[test]
-fn revert_created_environment_keeps_parents_with_children() {
-    let mut environments = vec![environment("base", None, vec![])];
     probe_core::create_environment(
         &mut environments,
         "staging".to_owned(),

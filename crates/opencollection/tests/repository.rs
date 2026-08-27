@@ -100,6 +100,11 @@ fn loads_bundled_file_with_structural_selectors() {
             .and_then(|request| request.metadata.name.as_deref()),
         Some("List pets")
     );
+    assert_eq!(loaded.folders()[0].selector(), "items/0");
+    assert_eq!(
+        loaded.folder_selector(loaded.folders()[0].key()),
+        Some("items/0")
+    );
 }
 
 #[test]
@@ -145,18 +150,6 @@ fn unbundled_loader_preserves_valid_dot_probe_items() {
     assert!(loaded.folder_key(".probe-visible").is_some());
     assert!(loaded.request_key(".probe-visible.yml").is_some());
     fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn bundled_folders_have_structural_selectors() {
-    let loaded = load_workspace(fixture("phase1-bundled.yml"))
-        .expect("bundled workspace fixture should load");
-
-    assert_eq!(loaded.folders()[0].selector(), "items/0");
-    assert_eq!(
-        loaded.folder_selector(loaded.folders()[0].key()),
-        Some("items/0")
-    );
 }
 
 #[test]
