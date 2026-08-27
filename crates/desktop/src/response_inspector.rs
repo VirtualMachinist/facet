@@ -1,4 +1,4 @@
-//! Response body inspection for JWTs, Unix timestamps, and Pretty-tab jumps.
+//! JSON and XML response inspection for JWTs, Unix timestamps, and Pretty-tab jumps.
 
 use std::ops::Range;
 
@@ -29,6 +29,7 @@ impl ResponseInspection {
 pub(crate) struct JwtFinding {
     pub path: String,
     pub search: String,
+    pub source_range: Option<Range<usize>>,
     pub header_json: String,
     pub payload_json: String,
     pub claims: Vec<JwtClaim>,
@@ -46,6 +47,7 @@ pub(crate) struct JwtClaim {
 pub(crate) struct TimestampFinding {
     pub path: String,
     pub search: String,
+    pub source_range: Option<Range<usize>>,
     pub raw: String,
     pub timestamp: TimestampDisplay,
     pub confidence: u8,
@@ -86,16 +88,19 @@ pub(crate) fn inspect_response_body(body: &[u8]) -> ResponseInspection {
             ..ResponseInspection::default()
         };
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) {
+        let mut inspector = JsonInspector::default();
+        inspector.visit(&value, &mut Vec::new(), None);
+        if inspector.visited >= INSPECT_MAX_VALUES {
+            inspector.inspection.skipped =
+                Some("Inspection stopped after the first 10000 response values.".to_owned());
+        }
+        return inspector.inspection;
+    }
+    let Ok(source) = std::str::from_utf8(body) else {
         return ResponseInspection::default();
     };
-    let mut inspector = JsonInspector::default();
-    inspector.visit(&value, &mut Vec::new(), None);
-    if inspector.visited >= INSPECT_MAX_VALUES {
-        inspector.inspection.skipped =
-            Some("Inspection stopped after the first 10000 JSON values.".to_owned());
-    }
-    inspector.inspection
+    inspect_xml_response(source)
 }
 
 pub(crate) fn inspection_text(inspection: &ResponseInspection) -> String {
@@ -230,6 +235,10 @@ pub(crate) fn inspection_value_ranges(
     if inspection.is_empty() {
         return Vec::new();
     }
+    let source_ranges = inspection_source_ranges(inspection);
+    if !source_ranges.is_empty() {
+        return source_ranges;
+    }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(pretty_text) else {
         return Vec::new();
     };
@@ -244,6 +253,36 @@ pub(crate) fn inspection_value_ranges(
         &mut cursor,
         &mut ranges,
     );
+    ranges
+}
+
+fn inspection_source_ranges(inspection: &ResponseInspection) -> Vec<InspectionRange> {
+    let mut ranges = Vec::with_capacity(inspection.count());
+    ranges.extend(
+        inspection
+            .jwts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, finding)| {
+                finding.source_range.clone().map(|range| InspectionRange {
+                    range,
+                    selection: InspectSelection::Jwt(index),
+                })
+            }),
+    );
+    ranges.extend(
+        inspection
+            .timestamps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, finding)| {
+                finding.source_range.clone().map(|range| InspectionRange {
+                    range,
+                    selection: InspectSelection::Timestamp(index),
+                })
+            }),
+    );
+    ranges.sort_by_key(|entry| entry.range.start);
     ranges
 }
 
@@ -373,6 +412,153 @@ fn timestamp_detail_text(timestamp: &TimestampFinding) -> String {
     text
 }
 
+fn inspect_xml_response(source: &str) -> ResponseInspection {
+    let Ok(document) = roxmltree::Document::parse(source) else {
+        return ResponseInspection::default();
+    };
+    let mut inspector = XmlInspector {
+        source,
+        ..XmlInspector::default()
+    };
+    inspector.visit_element(document.root_element(), String::new());
+    if inspector.visited >= INSPECT_MAX_VALUES {
+        inspector.inspection.skipped =
+            Some("Inspection stopped after the first 10000 response values.".to_owned());
+    }
+    inspector.inspection
+}
+
+#[derive(Default)]
+struct XmlInspector<'a> {
+    source: &'a str,
+    inspection: ResponseInspection,
+    visited: usize,
+}
+
+impl XmlInspector<'_> {
+    fn visit_element(&mut self, element: roxmltree::Node<'_, '_>, parent_path: String) {
+        if self.visited >= INSPECT_MAX_VALUES {
+            return;
+        }
+        let name = xml_element_name(element);
+        let segment = xml_element_segment(element, &name);
+        let path = if parent_path.is_empty() {
+            format!("/{segment}")
+        } else {
+            format!("{parent_path}/{segment}")
+        };
+
+        for attribute in element.attributes() {
+            if self.visited >= INSPECT_MAX_VALUES {
+                return;
+            }
+            let attribute_name = xml_attribute_name(element, attribute);
+            self.inspect_scalar(
+                attribute.value(),
+                format!("{path}/@{attribute_name}"),
+                Some(attribute.name()),
+                attribute.range_value(),
+            );
+        }
+
+        let text_count = element.children().filter(|child| child.is_text()).count();
+        let mut text_index = 0;
+        for child in element.children() {
+            if self.visited >= INSPECT_MAX_VALUES {
+                return;
+            }
+            if child.is_element() {
+                self.visit_element(child, path.clone());
+            } else if child.is_text() {
+                text_index += 1;
+                let text_path = if text_count == 1 {
+                    path.clone()
+                } else {
+                    format!("{path}/text()[{text_index}]")
+                };
+                self.inspect_scalar(
+                    child.text().unwrap_or_default(),
+                    text_path,
+                    Some(element.tag_name().name()),
+                    child.range(),
+                );
+            }
+        }
+    }
+
+    fn inspect_scalar(
+        &mut self,
+        value: &str,
+        path: String,
+        key: Option<&str>,
+        source_range: Range<usize>,
+    ) {
+        let value = value.trim();
+        if value.is_empty() {
+            return;
+        }
+        self.visited += 1;
+        let source_range = xml_scalar_source_range(self.source, source_range, value);
+        if let Some(mut finding) = inspect_jwt_text(value, &path) {
+            finding.source_range = Some(source_range);
+            self.inspection.jwts.push(finding);
+        } else if let Some(mut finding) = inspect_timestamp_text(value, &path, key, false) {
+            finding.source_range = Some(source_range);
+            self.inspection.timestamps.push(finding);
+        }
+    }
+}
+
+fn xml_element_name(element: roxmltree::Node<'_, '_>) -> String {
+    let tag = element.tag_name();
+    tag.namespace()
+        .and_then(|namespace| element.lookup_prefix(namespace))
+        .map(|prefix| format!("{prefix}:{}", tag.name()))
+        .unwrap_or_else(|| tag.name().to_owned())
+}
+
+fn xml_attribute_name(
+    element: roxmltree::Node<'_, '_>,
+    attribute: roxmltree::Attribute<'_, '_>,
+) -> String {
+    attribute
+        .namespace()
+        .and_then(|namespace| element.lookup_prefix(namespace))
+        .map(|prefix| format!("{prefix}:{}", attribute.name()))
+        .unwrap_or_else(|| attribute.name().to_owned())
+}
+
+fn xml_element_segment(element: roxmltree::Node<'_, '_>, name: &str) -> String {
+    let Some(parent) = element.parent().filter(|parent| parent.is_element()) else {
+        return name.to_owned();
+    };
+    let tag = element.tag_name();
+    let same_name = |sibling: &roxmltree::Node<'_, '_>| {
+        sibling.is_element()
+            && sibling.tag_name().name() == tag.name()
+            && sibling.tag_name().namespace() == tag.namespace()
+    };
+    let count = parent.children().filter(same_name).count();
+    if count <= 1 {
+        return name.to_owned();
+    }
+    let index = parent
+        .children()
+        .take_while(|sibling| *sibling != element)
+        .filter(same_name)
+        .count()
+        + 1;
+    format!("{name}[{index}]")
+}
+
+fn xml_scalar_source_range(source: &str, range: Range<usize>, value: &str) -> Range<usize> {
+    source
+        .get(range.clone())
+        .and_then(|raw| raw.find(value))
+        .map(|offset| range.start + offset..range.start + offset + value.len())
+        .unwrap_or(range)
+}
+
 #[derive(Default)]
 struct JsonInspector {
     inspection: ResponseInspection,
@@ -445,7 +631,10 @@ fn json_path(path: &[PathSegment]) -> String {
 }
 
 fn inspect_jwt(value: &serde_json::Value, path: &str) -> Option<JwtFinding> {
-    let token = value.as_str()?;
+    inspect_jwt_text(value.as_str()?, path)
+}
+
+fn inspect_jwt_text(token: &str, path: &str) -> Option<JwtFinding> {
     if token.matches('.').count() != 2 {
         return None;
     }
@@ -480,6 +669,7 @@ fn inspect_jwt(value: &serde_json::Value, path: &str) -> Option<JwtFinding> {
     Some(JwtFinding {
         path: path.to_owned(),
         search: token.to_owned(),
+        source_range: None,
         header_json: serde_json::to_string_pretty(&header).ok()?,
         payload_json: serde_json::to_string_pretty(&payload).ok()?,
         claims,
@@ -558,6 +748,29 @@ fn inspect_timestamp(
     explicit: bool,
 ) -> Option<TimestampFinding> {
     let (raw, number) = timestamp_number(value)?;
+    inspect_timestamp_number(raw, number, path, key, explicit)
+}
+
+fn inspect_timestamp_text(
+    raw: &str,
+    path: &str,
+    key: Option<&str>,
+    explicit: bool,
+) -> Option<TimestampFinding> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let number = raw.parse::<i64>().ok()?;
+    inspect_timestamp_number(raw.to_owned(), number, path, key, explicit)
+}
+
+fn inspect_timestamp_number(
+    raw: String,
+    number: i64,
+    path: &str,
+    key: Option<&str>,
+    explicit: bool,
+) -> Option<TimestampFinding> {
     let candidate = classify_unix_timestamp(number)?;
     let mut confidence = if explicit {
         8
@@ -573,6 +786,7 @@ fn inspect_timestamp(
     Some(TimestampFinding {
         path: path.to_owned(),
         search: raw.clone(),
+        source_range: None,
         raw,
         timestamp: TimestampDisplay {
             epoch_millis: candidate.epoch_millis,
@@ -752,6 +966,61 @@ mod tests {
                 .claims
                 .iter()
                 .any(|claim| claim.name == "exp" && claim.timestamp.is_some())
+        );
+    }
+
+    #[test]
+    fn xml_inspection_detects_attribute_and_element_values() {
+        let token = concat!(
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.",
+            "eyJzdWIiOiIxMjMiLCJpYXQiOjE3ODc0ODI4MDAsImV4cCI6MTc4NzQ4NjQwMH0.",
+            "signature"
+        );
+        let source = format!(
+            r#"<response createdAt="1787482800"><accessToken>{token}</accessToken><item updated_at="1787482800123"/></response>"#
+        );
+        let inspection = inspect_response_body(source.as_bytes());
+
+        assert_eq!(inspection.jwts.len(), 1);
+        assert_eq!(inspection.jwts[0].path, "/response/accessToken");
+        assert_eq!(inspection.timestamps.len(), 2);
+        assert!(
+            inspection
+                .timestamps
+                .iter()
+                .any(|finding| finding.path == "/response/@createdAt")
+        );
+        assert!(
+            inspection
+                .timestamps
+                .iter()
+                .any(|finding| finding.path == "/response/item/@updated_at")
+        );
+
+        let ranges = inspection_value_ranges(&source, &inspection);
+        assert_eq!(ranges.len(), 3);
+        for range in ranges {
+            let selected = &source[range.range];
+            assert!(selected == token || selected.starts_with("1787482800"));
+        }
+    }
+
+    #[test]
+    fn xml_inspection_paths_include_namespaces_and_repeated_sibling_indexes() {
+        let source = r#"<n:response xmlns:n="urn:test"><n:item createdAt="1787482800"/><n:item createdAt="1787486400"/></n:response>"#;
+        let inspection = inspect_response_body(source.as_bytes());
+        let paths = inspection
+            .timestamps
+            .iter()
+            .map(|finding| finding.path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                "/n:response/n:item[1]/@createdAt",
+                "/n:response/n:item[2]/@createdAt"
+            ]
         );
     }
 

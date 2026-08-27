@@ -2186,7 +2186,7 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn xml_response_keeps_its_syntax_after_visiting_raw(cx: &mut TestAppContext) {
+fn xml_response_inspects_values_and_keeps_syntax_after_visiting_raw(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -2203,7 +2203,7 @@ fn xml_response_keeps_its_syntax_after_visiting_raw(cx: &mut TestAppContext) {
             view.select_request(request_key, cx);
             let (cancellation, _) = tokio::sync::oneshot::channel();
             let generation = view.execution.begin(request_key, cancellation);
-            let body = br#"<root id="1"><item/></root>"#.to_vec();
+            let body = br#"<root createdAt="1787482800"><item/></root>"#.to_vec();
             view.complete_execution(
                 request_key,
                 generation,
@@ -2236,6 +2236,17 @@ fn xml_response_keeps_its_syntax_after_visiting_raw(cx: &mut TestAppContext) {
                     .syntax
                     .language(),
                 "xml"
+            );
+            let document = view
+                .response_viewer
+                .document(request_key)
+                .expect("response document");
+            assert_eq!(document.inspection.timestamps.len(), 1);
+            assert_eq!(document.inspection.timestamps[0].path, "/root/@createdAt");
+            assert_eq!(document.inspection_ranges.len(), 1);
+            assert_eq!(
+                &document.pretty_text[document.inspection_ranges[0].range.clone()],
+                "1787482800"
             );
             view.response_viewer.set_tab(ResponseViewerTab::Raw);
             cx.notify();

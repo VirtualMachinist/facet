@@ -302,9 +302,10 @@ pub(crate) fn prepare_document(
     let raw_text = String::from_utf8_lossy(&response.body).into_owned();
     let syntax = response_body_syntax(response);
     let json_candidate = syntax == ResponseBodySyntax::Json;
+    let inspection_candidate = matches!(syntax, ResponseBodySyntax::Json | ResponseBodySyntax::Xml);
     let pretty_pending = json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
-    let inspection_pending = json_candidate && response.body.len() <= INSPECT_MAX_BYTES;
-    let inspection = if !json_candidate || inspection_pending {
+    let inspection_pending = inspection_candidate && response.body.len() <= INSPECT_MAX_BYTES;
+    let inspection = if !inspection_candidate || inspection_pending {
         ResponseInspection::default()
     } else {
         inspect_response_body(&response.body)
@@ -655,7 +656,7 @@ mod tests {
 
         let (document, pending, inspection_pending) = prepare_document(&xml, 1);
         assert!(!pending);
-        assert!(!inspection_pending);
+        assert!(inspection_pending);
         assert_eq!(document.syntax.language(), "xml");
         assert_eq!(document.pretty_text, source);
         assert!(document.pretty_notice.is_none());
