@@ -315,9 +315,8 @@ gpui-base `Editor` in read-only mode. Probe retains the original response text,
 searches the active representation, applies language highlighting through
 gpui-base's highlighter seam (Syntect for JSON on the Pretty tab), overlays
 search matches as decorations, and lets the editor virtualize the viewport.
-JSON larger than 64 KiB is pretty-printed on a background executor, while
-syntax highlighting is disabled above the same bound so request switching
-stays responsive.
+JSON larger than 64 KiB is pretty-printed on a background executor. Syntax
+highlighting scans buffers up to 16 MiB, matching the in-memory response page.
 
 The request tree keeps a flat list of lightweight references for currently visible
 expanded nodes. Its fixed-height GPUI list is virtualized, so scrolling constructs and

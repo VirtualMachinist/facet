@@ -20,10 +20,15 @@ use syntect::{
 use crate::theme::{SyntaxColors, Theme};
 
 static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-const MAX_HIGHLIGHT_BYTES: usize = 64 * 1024;
+/// Match the in-memory response page so retained bodies can still be colored.
+const MAX_HIGHLIGHT_BYTES: usize = 16 * 1024 * 1024;
 
 fn should_highlight(text: &Rope) -> bool {
-    text.len() <= MAX_HIGHLIGHT_BYTES
+    within_highlight_budget(text.len())
+}
+
+fn within_highlight_budget(len: usize) -> bool {
+    len <= MAX_HIGHLIGHT_BYTES
 }
 
 pub(crate) fn factory() -> InputHighlighterFactory {
@@ -300,12 +305,62 @@ mod tests {
 
     #[test]
     fn highlighting_is_bounded_for_large_editor_buffers() {
-        assert!(should_highlight(&Rope::from_str(
-            &"x".repeat(MAX_HIGHLIGHT_BYTES)
-        )));
-        assert!(!should_highlight(&Rope::from_str(
-            &"x".repeat(MAX_HIGHLIGHT_BYTES + 1)
-        )));
+        assert!(within_highlight_budget(MAX_HIGHLIGHT_BYTES));
+        assert!(!within_highlight_budget(MAX_HIGHLIGHT_BYTES + 1));
+        assert!(should_highlight(&Rope::from_str("{\"ok\":true}")));
+    }
+
+    #[test]
+    #[ignore = "manual highlighter performance probe"]
+    fn highlight_scan_timings() {
+        let _ = &*SYNTAX_SET;
+        highlight("json", "{}");
+
+        for &(label, bytes) in &[
+            ("64 KiB", 64 * 1024),
+            ("1 MiB", 1024 * 1024),
+            ("16 MiB", MAX_HIGHLIGHT_BYTES),
+        ] {
+            let pretty = json_document(bytes, true);
+            let minified = json_document(bytes, false);
+            let pretty_time = time_reparse("json", &pretty);
+            let minified_time = time_reparse("json", &minified);
+            eprintln!(
+                "{label}: pretty {} bytes in {pretty_time:?}, minified {} bytes in {minified_time:?}",
+                pretty.len(),
+                minified.len()
+            );
+        }
+    }
+
+    fn json_document(target_bytes: usize, pretty: bool) -> String {
+        let line = if pretty {
+            "  \"key\": \"value\",\n"
+        } else {
+            "\"key\":\"value\","
+        };
+        let prefix = if pretty { "{\n" } else { "{" };
+        let suffix = if pretty {
+            "  \"end\": 1\n}"
+        } else {
+            "\"end\":1}"
+        };
+        let n = target_bytes.saturating_sub(prefix.len() + suffix.len()) / line.len();
+        let mut document = String::with_capacity(target_bytes);
+        document.push_str(prefix);
+        for _ in 0..n {
+            document.push_str(line);
+        }
+        document.push_str(suffix);
+        document
+    }
+
+    fn time_reparse(language: &str, text: &str) -> std::time::Duration {
+        let started = std::time::Instant::now();
+        let highlights = highlight(language, text);
+        let elapsed = started.elapsed();
+        assert!(!highlights.is_empty(), "expected highlight spans");
+        elapsed
     }
 
     #[test]
