@@ -228,11 +228,7 @@ pub(crate) fn inspect_xml_file(path: &Path) -> ResponseInspection {
                     );
                 }
             }
-            Ok(Event::End(_)) => {
-                if path.pop().is_none() {
-                    invalid = true;
-                }
-            }
+            Ok(Event::End(_)) => invalid |= path.pop().is_none(),
             Ok(Event::Eof) => {
                 invalid |= !root_seen || !path.is_empty();
                 break;
@@ -1387,52 +1383,40 @@ mod tests {
     #[test]
     fn streaming_inspection_reaches_findings_after_the_memory_preview() {
         let padding = "x".repeat(1024 * 1024);
-        let cases: [(&str, String, fn(&Path) -> ResponseInspection, &str); 2] = [
-            (
-                "json",
-                format!(r#"{{"padding":"{padding}","createdAt":1787482800}}"#),
-                inspect_json_file,
-                "createdAt",
-            ),
-            (
-                "xml",
-                format!(
-                    r#"<root><padding>{padding}</padding><item createdAt="1787482800"/></root>"#
-                ),
-                inspect_xml_file,
-                "/root/item/@createdAt",
-            ),
-        ];
+        let json = inspect_temp_source(
+            "json",
+            format!(r#"{{"padding":"{padding}","createdAt":1787482800}}"#),
+            inspect_json_file,
+        );
+        assert_eq!(json.timestamps.len(), 1);
+        assert_eq!(json.timestamps[0].path, "createdAt");
 
-        for (suffix, source, inspect, expected_path) in cases {
-            let inspection = inspect_temp_source(suffix, source, inspect);
-            assert_eq!(inspection.timestamps.len(), 1, "{suffix}");
-            assert_eq!(inspection.timestamps[0].path, expected_path);
-        }
+        let xml = inspect_temp_source(
+            "xml",
+            format!(r#"<root><padding>{padding}</padding><item createdAt="1787482800"/></root>"#),
+            inspect_xml_file,
+        );
+        assert_eq!(xml.timestamps.len(), 1);
+        assert_eq!(xml.timestamps[0].path, "/root/item/@createdAt");
     }
 
     #[test]
     fn streaming_inspection_rejects_invalid_input_without_partial_findings() {
-        let cases: [(&str, &str, fn(&Path) -> ResponseInspection, &str); 2] = [
-            (
-                "json",
-                r#"{"createdAt":1787482800} trailing"#,
-                inspect_json_file,
-                "Response is not valid JSON.",
-            ),
-            (
-                "xml",
-                r#"<root createdAt="1787482800"><broken></root>"#,
-                inspect_xml_file,
-                "Response is not valid XML.",
-            ),
-        ];
+        let json = inspect_temp_source(
+            "json",
+            r#"{"createdAt":1787482800} trailing"#,
+            inspect_json_file,
+        );
+        assert!(json.timestamps.is_empty());
+        assert_eq!(json.skipped.as_deref(), Some("Response is not valid JSON."));
 
-        for (suffix, source, inspect, skipped) in cases {
-            let inspection = inspect_temp_source(suffix, source, inspect);
-            assert!(inspection.timestamps.is_empty(), "{suffix}");
-            assert_eq!(inspection.skipped.as_deref(), Some(skipped));
-        }
+        let xml = inspect_temp_source(
+            "xml",
+            r#"<root createdAt="1787482800"><broken></root>"#,
+            inspect_xml_file,
+        );
+        assert!(xml.timestamps.is_empty());
+        assert_eq!(xml.skipped.as_deref(), Some("Response is not valid XML."));
     }
 
     #[test]
