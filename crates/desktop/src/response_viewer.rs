@@ -1,10 +1,12 @@
 //! Read-only response presentation: Pretty, Raw (Text/Base64), Headers, Inspect, and Search.
 //!
 //! This module retains response text without altering it, searches the active
-//! representation, and pretty-prints JSON off the UI thread. Syntax coloring is
+//! representation, and pretty-prints JSON and XML off the UI thread. Syntax coloring is
 //! applied by the gpui-base `Editor` highlighter.
 
 use std::ops::Range;
+
+use quick_xml::{Reader, events::Event, writer::Writer};
 
 use crate::response_inspector::{
     INSPECT_MAX_BYTES, InspectSelection, InspectionRange, ResponseInspection,
@@ -13,7 +15,7 @@ use crate::response_inspector::{
 };
 use probe_http::{HttpResponse, ResponseHeader};
 
-/// JSON pretty-print and Base64 encoding larger than this run on a background executor.
+/// JSON/XML pretty-print and Base64 encoding larger than this run on a background executor.
 pub(crate) const SYNC_PRETTY_BYTES: usize = 64 * 1024;
 pub(crate) const RESPONSE_PAGE_BYTES: usize = probe_http::MAX_IN_MEMORY_RESPONSE_BYTES;
 const BASE64_LINE_LENGTH: usize = 76;
@@ -262,9 +264,14 @@ impl ResponseViewerState {
         if document.generation != generation || !document.pretty_pending {
             return;
         }
+        let pretty_succeeded = pretty.notice.is_none();
         document.pretty_text = pretty.text;
         document.pretty_notice = pretty.notice;
         document.pretty_pending = false;
+        if pretty_succeeded && document.syntax == ResponseBodySyntax::Xml {
+            document.inspection = inspect_response_body(document.pretty_text.as_bytes());
+            document.inspection_selection = first_inspection_selection(&document.inspection);
+        }
         document.inspection_ranges =
             inspection_value_ranges(&document.pretty_text, &document.inspection);
     }
@@ -494,9 +501,9 @@ pub(crate) fn prepare_document(
     let raw_text = String::from_utf8_lossy(&response.body).into_owned();
     let syntax = response_body_syntax(response);
     let truncated = !response.body_complete;
-    let json_candidate = syntax == ResponseBodySyntax::Json;
-    let inspection_candidate = matches!(syntax, ResponseBodySyntax::Json | ResponseBodySyntax::Xml);
-    let pretty_pending = !truncated && json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
+    let pretty_candidate = matches!(syntax, ResponseBodySyntax::Json | ResponseBodySyntax::Xml);
+    let inspection_candidate = pretty_candidate;
+    let pretty_pending = !truncated && pretty_candidate && response.body.len() > SYNC_PRETTY_BYTES;
     let inspection_pending = (file_backed && inspection_candidate)
         || (!truncated && inspection_candidate && response.body.len() <= INSPECT_MAX_BYTES);
     let inspection = if truncated && !file_backed {
@@ -514,20 +521,32 @@ pub(crate) fn prepare_document(
     } else {
         inspect_response_body(&response.body)
     };
-    let (pretty_text, pretty_notice, pretty_pending) = if truncated {
-        (String::new(), None, false)
+    let (pretty_text, pretty_notice, pretty_pending, inspection) = if truncated {
+        (String::new(), None, false, inspection)
     } else if pretty_pending {
-        (raw_text.clone(), Some("Formatting JSON…".to_owned()), true)
-    } else if json_candidate {
+        let notice = match syntax {
+            ResponseBodySyntax::Json => "Formatting JSON…",
+            ResponseBodySyntax::Xml => "Formatting XML…",
+            ResponseBodySyntax::Plain => "Formatting…",
+        };
+        (raw_text.clone(), Some(notice.to_owned()), true, inspection)
+    } else if syntax == ResponseBodySyntax::Json {
         let pretty = pretty_json_body(&response.body);
-        (pretty.text, pretty.notice, false)
+        (pretty.text, pretty.notice, false, inspection)
     } else if syntax == ResponseBodySyntax::Xml {
-        (raw_text.clone(), None, false)
+        let pretty = pretty_xml_body(&response.body);
+        let inspection = if pretty.notice.is_none() {
+            inspect_response_body(pretty.text.as_bytes())
+        } else {
+            inspection
+        };
+        (pretty.text, pretty.notice, false, inspection)
     } else {
         (
             raw_text.clone(),
-            Some("Pretty formatting is available for JSON responses.".to_owned()),
+            Some("Pretty formatting is available for JSON and XML responses.".to_owned()),
             false,
+            inspection,
         )
     };
     let inspection_ranges = inspection_value_ranges(&pretty_text, &inspection);
@@ -555,6 +574,17 @@ fn body_is_binary(body: &[u8], file_backed: bool) -> bool {
     }
 }
 
+pub(crate) fn pretty_body(body: &[u8], syntax: ResponseBodySyntax) -> PrettyBody {
+    match syntax {
+        ResponseBodySyntax::Json => pretty_json_body(body),
+        ResponseBodySyntax::Xml => pretty_xml_body(body),
+        ResponseBodySyntax::Plain => PrettyBody {
+            text: String::from_utf8_lossy(body).into_owned(),
+            notice: None,
+        },
+    }
+}
+
 pub(crate) fn pretty_json_body(body: &[u8]) -> PrettyBody {
     match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(value) => match serde_json::to_string_pretty(&value) {
@@ -572,6 +602,57 @@ pub(crate) fn pretty_json_body(body: &[u8]) -> PrettyBody {
             notice: Some("Response is not valid JSON.".to_owned()),
         },
     }
+}
+
+pub(crate) fn pretty_xml_body(body: &[u8]) -> PrettyBody {
+    let source = match std::str::from_utf8(body) {
+        Ok(source) => source,
+        Err(_) => {
+            return PrettyBody {
+                text: String::from_utf8_lossy(body).into_owned(),
+                notice: Some("Could not pretty-print this XML response.".to_owned()),
+            };
+        }
+    };
+    match pretty_xml_text(source) {
+        Ok(pretty) => PrettyBody {
+            text: pretty,
+            notice: None,
+        },
+        Err(PrettyXmlError::Invalid) => PrettyBody {
+            text: source.to_owned(),
+            notice: Some("Response is not valid XML.".to_owned()),
+        },
+        Err(PrettyXmlError::Write) => PrettyBody {
+            text: source.to_owned(),
+            notice: Some("Could not pretty-print this XML response.".to_owned()),
+        },
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrettyXmlError {
+    Invalid,
+    Write,
+}
+
+fn pretty_xml_text(source: &str) -> Result<String, PrettyXmlError> {
+    let mut reader = Reader::from_str(source);
+    let mut writer = Writer::new_with_indent(Vec::new(), b' ', 2);
+    let mut buffer = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Eof) => break,
+            Ok(event) => {
+                writer
+                    .write_event(event.borrow())
+                    .map_err(|_| PrettyXmlError::Write)?;
+            }
+            Err(_) => return Err(PrettyXmlError::Invalid),
+        }
+        buffer.clear();
+    }
+    String::from_utf8(writer.into_inner()).map_err(|_| PrettyXmlError::Write)
 }
 
 fn page_bytes(document: &PreparedDocument) -> &[u8] {
@@ -794,7 +875,8 @@ mod tests {
     use super::{
         PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, RawBodyView, ResponseBodySyntax,
         ResponseViewerTab, body_is_binary, encode_base64, join_header_lines, prepare_document,
-        pretty_json_body, response_body_syntax, search_headers, search_text,
+        pretty_body, pretty_json_body, pretty_xml_body, response_body_syntax, search_headers,
+        search_text,
     };
 
     fn response(body: &[u8], content_type: &str) -> HttpResponse {
@@ -1021,6 +1103,40 @@ mod tests {
     }
 
     #[test]
+    fn pretty_xml_indents_elements() {
+        let source = r#"<?xml version="1.0"?><root id="1"><item/></root>"#;
+        let pretty = pretty_xml_body(source.as_bytes());
+        assert!(pretty.notice.is_none());
+        assert!(pretty.text.contains('\n'));
+        assert!(pretty.text.contains("<root"));
+        assert!(pretty.text.contains("<item"));
+    }
+
+    #[test]
+    fn invalid_xml_keeps_raw_text_and_explains_pretty_failure() {
+        let response = response(
+            br#"<root createdAt="1787482800"><broken></root>"#,
+            "application/xml",
+        );
+        let (PreparedDocument { pretty_notice, .. }, pending, inspection_pending) =
+            prepare_document(&response, 1);
+        assert!(!pending);
+        assert!(inspection_pending);
+        assert_eq!(pretty_notice.as_deref(), Some("Response is not valid XML."));
+    }
+
+    #[test]
+    fn pretty_body_dispatches_by_syntax() {
+        let json = pretty_body(br#"{"ok":true}"#, ResponseBodySyntax::Json);
+        assert!(json.notice.is_none());
+        assert!(json.text.contains('\n'));
+
+        let xml = pretty_body(br#"<root><item/></root>"#, ResponseBodySyntax::Xml);
+        assert!(xml.notice.is_none());
+        assert!(xml.text.contains('\n'));
+    }
+
+    #[test]
     fn xml_responses_select_xml_highlighting_in_the_pretty_tab() {
         let source = r#"<?xml version="1.0"?><root id="1"><item/></root>"#;
         let xml = response(source.as_bytes(), "application/problem+xml; charset=utf-8");
@@ -1030,7 +1146,8 @@ mod tests {
         assert!(!pending);
         assert!(inspection_pending);
         assert_eq!(document.syntax.language(), "xml");
-        assert_eq!(document.pretty_text, source);
+        assert_ne!(document.pretty_text, source);
+        assert!(document.pretty_text.contains('\n'));
         assert!(document.pretty_notice.is_none());
     }
 

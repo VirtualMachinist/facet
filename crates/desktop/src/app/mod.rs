@@ -83,7 +83,7 @@ use crate::{
     },
     response_viewer::{
         PageDirection, PreparedDocument, RESPONSE_PAGE_BYTES, RawBodyView, ResponseBodySyntax,
-        ResponseViewerState, ResponseViewerTab, encode_base64, prepare_document, pretty_json_body,
+        ResponseViewerState, ResponseViewerTab, encode_base64, prepare_document, pretty_body,
     },
     session::{SessionState, SessionStore},
     shell::{PaneLayout, ResizePane, ShellState},
@@ -2952,7 +2952,7 @@ impl ProbeApp {
         };
         let generation = self.response_viewer.allocate_generation();
         let (document, pretty_pending, inspection_pending) = prepare_document(response, generation);
-        let pretty_body = pretty_pending.then(|| response.body.clone());
+        let pretty_job = pretty_pending.then(|| (response.body.clone(), document.syntax));
         let inspection_source = inspection_pending.then(|| {
             response.body_file.clone().map_or_else(
                 || Ok(response.body.clone()),
@@ -2964,10 +2964,10 @@ impl ProbeApp {
             self.response_viewer.ensure_available_tab(key);
         }
         self.start_base64_encoding(key, cx);
-        if let Some(body) = pretty_body {
+        if let Some((body, syntax)) = pretty_job {
             cx.spawn(async move |view, cx| {
                 let pretty = cx
-                    .background_spawn(async move { pretty_json_body(&body) })
+                    .background_spawn(async move { pretty_body(&body, syntax) })
                     .await;
                 let _ = view.update(cx, |view, cx| {
                     view.response_viewer.apply_pretty(key, generation, pretty);
