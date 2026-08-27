@@ -2065,6 +2065,7 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
                     body,
                     body_complete: true,
                     body_file: None,
+                    body_retention_error: None,
                 }),
                 cx,
             );
@@ -2221,6 +2222,7 @@ fn xml_response_inspects_values_and_keeps_syntax_after_visiting_raw(cx: &mut Tes
                     body,
                     body_complete: true,
                     body_file: None,
+                    body_retention_error: None,
                 }),
                 cx,
             );
@@ -2321,6 +2323,7 @@ fn large_response_body_only_renders_visible_rows(cx: &mut TestAppContext) {
                     body,
                     body_complete: true,
                     body_file: None,
+                    body_retention_error: None,
                 }),
                 cx,
             );

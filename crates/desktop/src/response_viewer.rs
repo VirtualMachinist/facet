@@ -52,7 +52,7 @@ impl ResponseBodySyntax {
 
 impl ResponseViewerTab {
     pub(crate) const ALL: [Self; 4] = [Self::Pretty, Self::Raw, Self::Headers, Self::Inspect];
-    pub(crate) const FILE_BACKED: [Self; 3] = [Self::Raw, Self::Headers, Self::Inspect];
+    pub(crate) const TRUNCATED: [Self; 3] = [Self::Raw, Self::Headers, Self::Inspect];
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
@@ -80,6 +80,7 @@ pub(crate) struct PreparedDocument {
     pub binary: bool,
     pub file_backed: bool,
     pub truncated: bool,
+    pub retention_notice: Option<String>,
     pub page_offset: usize,
     pub page_len: usize,
     pub total_size: usize,
@@ -147,7 +148,7 @@ impl ResponseViewerState {
             && self
                 .documents
                 .get(&key)
-                .is_some_and(|document| document.file_backed)
+                .is_some_and(|document| document.truncated)
         {
             self.tab = ResponseViewerTab::Raw;
         }
@@ -371,6 +372,7 @@ pub(crate) fn prepare_document(
                 binary: false,
                 file_backed: response.body_file.is_some(),
                 truncated,
+                retention_notice: response.body_retention_error.clone(),
                 page_offset: 0,
                 page_len: 0,
                 total_size: response.size,
@@ -398,6 +400,7 @@ pub(crate) fn prepare_document(
                 binary: true,
                 file_backed: response.body_file.is_some(),
                 truncated,
+                retention_notice: response.body_retention_error.clone(),
                 page_offset: 0,
                 page_len: response.body.len(),
                 total_size: response.size,
@@ -417,15 +420,25 @@ pub(crate) fn prepare_document(
     let syntax = response_body_syntax(response);
     let json_candidate = syntax == ResponseBodySyntax::Json;
     let inspection_candidate = matches!(syntax, ResponseBodySyntax::Json | ResponseBodySyntax::Xml);
-    let pretty_pending = !file_backed && json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
+    let pretty_pending = !truncated && json_candidate && response.body.len() > SYNC_PRETTY_BYTES;
     let inspection_pending = (file_backed && inspection_candidate)
-        || (!file_backed && inspection_candidate && response.body.len() <= INSPECT_MAX_BYTES);
-    let inspection = if !inspection_candidate || inspection_pending {
+        || (!truncated && inspection_candidate && response.body.len() <= INSPECT_MAX_BYTES);
+    let inspection = if truncated && !file_backed {
+        ResponseInspection {
+            skipped: Some(
+                response
+                    .body_retention_error
+                    .clone()
+                    .unwrap_or_else(|| "The complete response body was not retained.".to_owned()),
+            ),
+            ..ResponseInspection::default()
+        }
+    } else if !inspection_candidate || inspection_pending {
         ResponseInspection::default()
     } else {
         inspect_response_body(&response.body)
     };
-    let (pretty_text, pretty_notice, pretty_pending) = if file_backed {
+    let (pretty_text, pretty_notice, pretty_pending) = if truncated {
         (String::new(), None, false)
     } else if pretty_pending {
         (raw_text.clone(), Some("Formatting JSON…".to_owned()), true)
@@ -455,6 +468,7 @@ pub(crate) fn prepare_document(
             binary: false,
             file_backed,
             truncated,
+            retention_notice: response.body_retention_error.clone(),
             page_offset: 0,
             page_len: response.body.len(),
             total_size: response.size,
@@ -675,6 +689,7 @@ mod tests {
             body: body.to_vec(),
             body_complete: true,
             body_file: None,
+            body_retention_error: None,
         }
     }
 
@@ -836,7 +851,7 @@ mod tests {
         assert!(!viewer.document(key).unwrap().can_load_previous_page());
         assert!(viewer.document(key).unwrap().can_load_next_page());
         assert_eq!(
-            ResponseViewerTab::FILE_BACKED,
+            ResponseViewerTab::TRUNCATED,
             [
                 ResponseViewerTab::Raw,
                 ResponseViewerTab::Headers,
@@ -862,6 +877,27 @@ mod tests {
         assert!(!body_is_binary(b"text\xE2\x82", true));
         assert!(body_is_binary(b"text\xE2\x82", false));
         assert!(body_is_binary(b"text\xFF", true));
+    }
+
+    #[test]
+    fn an_unretained_large_response_exposes_only_the_raw_preview() {
+        let mut large = response(br#"{"createdAt":1787482800}"#, "application/json");
+        large.size = RESPONSE_PAGE_BYTES + 1;
+        large.body_complete = false;
+        large.body_retention_error = Some("Response cache quota reached.".to_owned());
+
+        let (document, pretty_pending, inspection_pending) = prepare_document(&large, 9);
+
+        assert!(document.truncated);
+        assert!(!document.file_backed);
+        assert!(document.pretty_text.is_empty());
+        assert!(!pretty_pending);
+        assert!(!inspection_pending);
+        assert_eq!(
+            document.inspection.skipped.as_deref(),
+            Some("Response cache quota reached.")
+        );
+        assert!(!document.can_load_next_page());
     }
 
     #[test]

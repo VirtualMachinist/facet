@@ -442,6 +442,13 @@ destination only after the complete response is written and synced.
 Response retention and history policies remain outside the frontend and can evolve without
 changing request construction.
 
+The desktop response cache has a 512 MiB global quota. Cache sessions hold filesystem leases so
+multiple Probe processes do not recover or delete one another's live responses. Initialization and
+subsequent reservations remove session directories whose lease was released by a crash. Quota
+accounting includes live response files from every active session. If a response cannot fit in the
+remaining quota, Probe deletes its partial spool, continues draining the network response, and
+returns the 1 MiB preview with a retention warning; existing retained responses are not evicted.
+
 
 ## Persistence
 

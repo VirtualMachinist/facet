@@ -66,7 +66,7 @@ use crate::{
     components,
     execution::{
         ExecutionState, ResponseState, body_file_path_for_storage, execute_http_request,
-        format_duration, format_size, read_response_page, response_cache_directory,
+        format_duration, format_size, read_response_page, response_cache,
     },
     filesystem::{
         WATCH_DEBOUNCE, WorkspaceWatcher, event_affects_workspace, rename_hints,
@@ -240,6 +240,7 @@ pub(crate) struct ProbeApp {
     pending_application_dialogs: VecDeque<ApplicationDialog>,
     request_editor: RequestEditorState,
     execution: ExecutionState,
+    response_cache: probe_http::ResponseCache,
     response_viewer: ResponseViewerState,
     tree_scroll: UniformListScrollHandle,
     inspector_scroll: UniformListScrollHandle,
@@ -298,6 +299,12 @@ impl ProbeApp {
         let workspace_import_popup_focus = cx.focus_handle();
         let sidebar_import_trigger_focus = cx.focus_handle();
         let sidebar_import_popup_focus = cx.focus_handle();
+        let response_cache = response_cache();
+        let initializing_response_cache = response_cache.clone();
+        cx.background_spawn(async move {
+            let _ = initializing_response_cache.initialize();
+        })
+        .detach();
 
         Self {
             focus_handle,
@@ -353,6 +360,7 @@ impl ProbeApp {
             pending_application_dialogs: VecDeque::new(),
             request_editor: RequestEditorState::default(),
             execution: ExecutionState::default(),
+            response_cache,
             response_viewer: ResponseViewerState::default(),
             tree_scroll: UniformListScrollHandle::new(),
             inspector_scroll: UniformListScrollHandle::new(),
@@ -2891,7 +2899,7 @@ impl ProbeApp {
                 .workspace_path
                 .as_deref()
                 .and_then(workspace_base_directory),
-            response_directory: Some(response_cache_directory()),
+            response_cache: Some(self.response_cache.clone()),
         };
         let (cancellation_sender, cancellation_receiver) = tokio::sync::oneshot::channel();
         let (result_sender, result_receiver) = tokio::sync::oneshot::channel();

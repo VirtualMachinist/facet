@@ -7,12 +7,13 @@ use std::{
     ffi::OsString,
     fmt,
     future::{Future, pending},
+    io,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use probe_core::{
@@ -31,31 +32,95 @@ const DEFAULT_MAX_REDIRECTS: usize = 10;
 /// Maximum response body retained by the default in-memory execution methods.
 pub const MAX_IN_MEMORY_RESPONSE_BYTES: usize = 1024 * 1024;
 static RESPONSE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static RESPONSE_CACHE_SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem context used while constructing request bodies.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExecutionOptions {
     /// Base directory for relative request-body file paths.
     pub base_directory: Option<PathBuf>,
-    /// Directory used for automatically managed large-response spool files.
+    /// Shared cache used for automatically managed large-response spool files.
     ///
     /// When absent, the complete large body is drained without being retained.
-    /// Callers that need paging or inspection should provide a cache directory.
-    pub response_directory: Option<PathBuf>,
+    pub response_cache: Option<ResponseCache>,
 }
+
+/// A process-safe, quota-bounded cache for complete large response bodies.
+#[derive(Clone, Debug)]
+pub struct ResponseCache {
+    inner: Arc<ResponseCacheInner>,
+}
+
+#[derive(Debug)]
+struct ResponseCacheInner {
+    directory: PathBuf,
+    quota_bytes: u64,
+    session: Mutex<Option<ResponseCacheSession>>,
+}
+
+#[derive(Debug)]
+struct ResponseCacheSession {
+    directory: PathBuf,
+    _lease: std::fs::File,
+}
+
+impl ResponseCache {
+    /// Creates a lazily initialized cache rooted at `directory`.
+    #[must_use]
+    pub fn new(directory: PathBuf, quota_bytes: u64) -> Self {
+        Self {
+            inner: Arc::new(ResponseCacheInner {
+                directory,
+                quota_bytes,
+                session: Mutex::new(None),
+            }),
+        }
+    }
+
+    /// Returns the maximum combined size of retained response bodies.
+    #[must_use]
+    pub fn quota_bytes(&self) -> u64 {
+        self.inner.quota_bytes
+    }
+
+    /// Initializes the process session and removes cache sessions left by crashes.
+    ///
+    /// This performs filesystem I/O and should run off a UI thread.
+    pub fn initialize(&self) -> io::Result<()> {
+        self.ensure_session().map(drop)
+    }
+}
+
+impl PartialEq for ResponseCache {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.directory == other.inner.directory
+            && self.inner.quota_bytes == other.inner.quota_bytes
+    }
+}
+
+impl Eq for ResponseCache {}
 
 /// An automatically managed complete response body stored on disk.
 ///
 /// Clones share ownership. The file is removed when the final owner is dropped.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ResponseBodyFile {
     inner: Arc<ResponseBodyFileInner>,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct ResponseBodyFileInner {
     path: PathBuf,
+    _cache: ResponseCache,
 }
+
+impl PartialEq for ResponseBodyFile {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.path == other.inner.path
+    }
+}
+
+impl Eq for ResponseBodyFile {}
 
 impl ResponseBodyFile {
     /// Returns the complete body's path for bounded or streaming reads.
@@ -69,6 +134,184 @@ impl Drop for ResponseBodyFileInner {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+struct ResponseCacheReservation {
+    file: std::fs::File,
+    body_file: ResponseBodyFile,
+    max_bytes: u64,
+}
+
+enum ResponseCacheReservationError {
+    QuotaExceeded,
+    Io(io::Error),
+}
+
+impl ResponseCache {
+    fn reserve(
+        &self,
+        expected_bytes: Option<u64>,
+        minimum_bytes: u64,
+    ) -> Result<ResponseCacheReservation, ResponseCacheReservationError> {
+        let session_directory = self
+            .ensure_session()
+            .map_err(ResponseCacheReservationError::Io)?;
+        let _quota_lock = open_lock_file(&self.inner.directory.join("quota.lock"))
+            .and_then(|file| {
+                file.lock()?;
+                Ok(file)
+            })
+            .map_err(ResponseCacheReservationError::Io)?;
+        recover_orphaned_response_sessions(&self.inner.directory, Some(&session_directory))
+            .map_err(ResponseCacheReservationError::Io)?;
+        let used = retained_response_bytes(&self.inner.directory)
+            .map_err(ResponseCacheReservationError::Io)?;
+        let available = self.inner.quota_bytes.saturating_sub(used);
+        let reserved_bytes = expected_bytes
+            .map(|expected| expected.max(minimum_bytes))
+            .unwrap_or(available);
+        if reserved_bytes > available || reserved_bytes < MAX_IN_MEMORY_RESPONSE_BYTES as u64 {
+            return Err(ResponseCacheReservationError::QuotaExceeded);
+        }
+
+        loop {
+            let sequence = RESPONSE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let path = session_directory.join(format!("response-{sequence}.body"));
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true).write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            match options.open(&path) {
+                Ok(file) => {
+                    if let Err(error) = set_private_file_permissions(&file)
+                        .and_then(|()| file.set_len(reserved_bytes))
+                    {
+                        drop(file);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(ResponseCacheReservationError::Io(error));
+                    }
+                    return Ok(ResponseCacheReservation {
+                        file,
+                        body_file: ResponseBodyFile {
+                            inner: Arc::new(ResponseBodyFileInner {
+                                path,
+                                _cache: self.clone(),
+                            }),
+                        },
+                        max_bytes: reserved_bytes,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(ResponseCacheReservationError::Io(error)),
+            }
+        }
+    }
+
+    fn ensure_session(&self) -> io::Result<PathBuf> {
+        let mut session = self
+            .inner
+            .session
+            .lock()
+            .map_err(|_| io::Error::other("response cache state is unavailable"))?;
+        if let Some(session) = session.as_ref() {
+            return Ok(session.directory.clone());
+        }
+
+        std::fs::create_dir_all(&self.inner.directory)?;
+        let quota_lock = open_lock_file(&self.inner.directory.join("quota.lock"))?;
+        quota_lock.lock()?;
+        recover_orphaned_response_sessions(&self.inner.directory, None)?;
+
+        let session_directory = loop {
+            let sequence = RESPONSE_CACHE_SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let path = self.inner.directory.join(format!(
+                "session-{}-{timestamp}-{sequence}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        };
+        let lease = open_lock_file(&session_directory.join("session.lock"))?;
+        lease.lock()?;
+        *session = Some(ResponseCacheSession {
+            directory: session_directory.clone(),
+            _lease: lease,
+        });
+        Ok(session_directory)
+    }
+}
+
+fn open_lock_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    set_private_file_permissions(&file)?;
+    Ok(file)
+}
+
+fn set_private_file_permissions(file: &std::fs::File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = file;
+    Ok(())
+}
+
+fn recover_orphaned_response_sessions(base: &Path, current: Option<&Path>) -> io::Result<()> {
+    for entry in std::fs::read_dir(base)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !file_type.is_dir() || !name.starts_with("session-") || current == Some(path.as_path()) {
+            continue;
+        }
+        let Ok(lease) = open_lock_file(&path.join("session.lock")) else {
+            continue;
+        };
+        if lease.try_lock().is_ok() {
+            drop(lease);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+    Ok(())
+}
+
+fn retained_response_bytes(base: &Path) -> io::Result<u64> {
+    let mut total = 0_u64;
+    for entry in std::fs::read_dir(base)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        for file in std::fs::read_dir(entry.path())? {
+            let file = file?;
+            if file.file_type()?.is_file() && file.file_name().to_string_lossy().ends_with(".body")
+            {
+                total = total.saturating_add(file.metadata()?.len());
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// A response header retained independently of the HTTP implementation.
@@ -97,12 +340,14 @@ pub struct HttpResponse {
     pub headers: Vec<ResponseHeader>,
     /// Raw response body, bounded to [`MAX_IN_MEMORY_RESPONSE_BYTES`].
     ///
-    /// For a file-backed response this is the leading preview of the complete body.
+    /// When incomplete, this is the leading preview of the complete body.
     pub body: Vec<u8>,
     /// Whether `body` contains the complete response body.
     pub body_complete: bool,
     /// Complete automatically managed body when it exceeded the in-memory bound.
     pub body_file: Option<ResponseBodyFile>,
+    /// Why the complete body could not be retained, when applicable.
+    pub body_retention_error: Option<String>,
 }
 
 /// A request-construction, cancellation, timeout, or transport failure.
@@ -308,16 +553,23 @@ impl HttpEngine {
         let builder = build_request(&client, request, options).await?;
         let started = Instant::now();
         let mut response = builder.send().await.map_err(map_reqwest_error)?;
+        let expected_response_size = response.content_length();
         let status = response.status();
         let url = response.url().to_string();
         let mut headers = response_headers(response.headers());
         headers.sort_by(|left, right| (&left.name, &left.value).cmp(&(&right.name, &right.value)));
-        let (body, size, body_complete, body_file) = if let Some(output) = output {
-            let size = stream_response_to_file(&mut response, output).await?;
-            (Vec::new(), size, false, None)
-        } else {
-            collect_bounded_response(&mut response, options.response_directory.as_deref()).await?
-        };
+        let (body, size, body_complete, body_file, body_retention_error) =
+            if let Some(output) = output {
+                let size = stream_response_to_file(&mut response, output).await?;
+                (Vec::new(), size, false, None, None)
+            } else {
+                collect_bounded_response(
+                    &mut response,
+                    options.response_cache.as_ref(),
+                    expected_response_size,
+                )
+                .await?
+            };
         Ok(HttpResponse {
             status: status.as_u16(),
             reason: status.canonical_reason().unwrap_or_default().to_owned(),
@@ -328,6 +580,7 @@ impl HttpEngine {
             body,
             body_complete,
             body_file,
+            body_retention_error,
         })
     }
 
@@ -344,18 +597,38 @@ impl HttpEngine {
 
 async fn collect_bounded_response(
     response: &mut Response,
-    response_directory: Option<&Path>,
-) -> Result<(Vec<u8>, usize, bool, Option<ResponseBodyFile>), HttpError> {
+    response_cache: Option<&ResponseCache>,
+    expected_size: Option<u64>,
+) -> Result<
+    (
+        Vec<u8>,
+        usize,
+        bool,
+        Option<ResponseBodyFile>,
+        Option<String>,
+    ),
+    HttpError,
+> {
     let mut body = Vec::new();
     let mut size = 0_usize;
-    let mut spool: Option<(tokio::fs::File, ResponseBodyFile)> = None;
+    let mut spool: Option<ActiveResponseSpool> = None;
     let mut exceeded_memory_limit = false;
+    let mut retention_error = None;
     while let Some(chunk) = response.chunk().await.map_err(map_reqwest_error)? {
         size = size.checked_add(chunk.len()).ok_or_else(|| {
             HttpError::Transport("response body size exceeds platform limits".to_owned())
         })?;
-        if let Some((file, _)) = &mut spool {
-            file.write_all(&chunk).await.map_err(response_spool_error)?;
+        if let Some(active) = &mut spool {
+            let next_size = active.written.saturating_add(chunk.len() as u64);
+            if next_size > active.max_bytes {
+                retention_error = Some(response_cache_quota_message(active.cache_quota_bytes));
+                spool = None;
+            } else if let Err(error) = active.file.write_all(&chunk).await {
+                retention_error = Some(format!("Could not retain the complete response: {error}"));
+                spool = None;
+            } else {
+                active.written = next_size;
+            }
             continue;
         }
         if exceeded_memory_limit {
@@ -366,59 +639,106 @@ async fn collect_bounded_response(
         body.extend_from_slice(&chunk[..preview_len]);
         if preview_len < chunk.len() {
             exceeded_memory_limit = true;
-            if let Some(response_directory) = response_directory {
-                let (mut file, body_file) = create_response_spool_file(response_directory).await?;
-                file.write_all(&body).await.map_err(response_spool_error)?;
-                file.write_all(&chunk[preview_len..])
-                    .await
-                    .map_err(response_spool_error)?;
-                spool = Some((file, body_file));
+            if let Some(response_cache) = response_cache {
+                let cache = response_cache.clone();
+                let minimum_size = size as u64;
+                match tokio::task::spawn_blocking(move || {
+                    cache.reserve(expected_size, minimum_size)
+                })
+                .await
+                {
+                    Ok(Ok(reservation)) => {
+                        let initial_size = size as u64;
+                        if initial_size > reservation.max_bytes {
+                            retention_error =
+                                Some(response_cache_quota_message(response_cache.quota_bytes()));
+                        } else {
+                            let mut active =
+                                ActiveResponseSpool::new(reservation, response_cache.quota_bytes());
+                            let writes = async {
+                                active.file.write_all(&body).await?;
+                                active.file.write_all(&chunk[preview_len..]).await
+                            }
+                            .await;
+                            if let Err(error) = writes {
+                                retention_error = Some(format!(
+                                    "Could not retain the complete response: {error}"
+                                ));
+                            } else {
+                                active.written = initial_size;
+                                spool = Some(active);
+                            }
+                        }
+                    }
+                    Ok(Err(ResponseCacheReservationError::QuotaExceeded)) => {
+                        retention_error =
+                            Some(response_cache_quota_message(response_cache.quota_bytes()));
+                    }
+                    Ok(Err(ResponseCacheReservationError::Io(error))) => {
+                        retention_error =
+                            Some(format!("Could not initialize the response cache: {error}"));
+                    }
+                    Err(error) => {
+                        retention_error =
+                            Some(format!("Could not initialize the response cache: {error}"));
+                    }
+                }
             }
         }
     }
-    let body_file = if let Some((mut file, body_file)) = spool {
-        file.flush().await.map_err(response_spool_error)?;
-        drop(file);
-        Some(body_file)
+    let body_file = if let Some(mut active) = spool {
+        if let Err(error) = active.file.set_len(active.written).await {
+            retention_error = Some(format!("Could not retain the complete response: {error}"));
+            None
+        } else if let Err(error) = active.file.flush().await {
+            retention_error = Some(format!("Could not retain the complete response: {error}"));
+            None
+        } else {
+            let ActiveResponseSpool { body_file, .. } = active;
+            Some(body_file)
+        }
     } else {
         None
     };
-    Ok((body, size, !exceeded_memory_limit, body_file))
+    Ok((
+        body,
+        size,
+        !exceeded_memory_limit,
+        body_file,
+        retention_error,
+    ))
 }
 
-async fn create_response_spool_file(
-    response_directory: &Path,
-) -> Result<(tokio::fs::File, ResponseBodyFile), HttpError> {
-    tokio::fs::create_dir_all(response_directory)
-        .await
-        .map_err(response_spool_error)?;
-    loop {
-        let sequence = RESPONSE_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path =
-            response_directory.join(format!("response-{}-{sequence}.body", std::process::id()));
-        let mut options = tokio::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            options.mode(0o600);
-        }
-        match options.open(&path).await {
-            Ok(file) => {
-                return Ok((
-                    file,
-                    ResponseBodyFile {
-                        inner: Arc::new(ResponseBodyFileInner { path }),
-                    },
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(response_spool_error(error)),
+struct ActiveResponseSpool {
+    file: tokio::fs::File,
+    body_file: ResponseBodyFile,
+    written: u64,
+    max_bytes: u64,
+    cache_quota_bytes: u64,
+}
+
+impl ActiveResponseSpool {
+    fn new(reservation: ResponseCacheReservation, cache_quota_bytes: u64) -> Self {
+        Self {
+            file: tokio::fs::File::from_std(reservation.file),
+            body_file: reservation.body_file,
+            written: 0,
+            max_bytes: reservation.max_bytes,
+            cache_quota_bytes,
         }
     }
 }
 
-fn response_spool_error(error: std::io::Error) -> HttpError {
-    HttpError::Transport(format!("cannot retain response body: {error}"))
+fn response_cache_quota_message(quota_bytes: u64) -> String {
+    let mebibyte = 1024 * 1024;
+    let quota = if quota_bytes.is_multiple_of(mebibyte) {
+        format!("{} MiB", quota_bytes / mebibyte)
+    } else {
+        format!("{quota_bytes} byte")
+    };
+    format!(
+        "The complete response was not retained because the {quota} response cache quota was reached."
+    )
 }
 
 async fn stream_response_to_file(

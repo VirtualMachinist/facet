@@ -2635,8 +2635,8 @@ impl ProbeApp {
             .flex()
             .items_center()
             .gap(px(theme.metrics.spacing_1));
-        let available_tabs = if document.file_backed {
-            &ResponseViewerTab::FILE_BACKED[..]
+        let available_tabs = if document.truncated {
+            &ResponseViewerTab::TRUNCATED[..]
         } else {
             &ResponseViewerTab::ALL[..]
         };
@@ -2681,7 +2681,7 @@ impl ProbeApp {
             .flex_col()
             .gap(px(theme.metrics.spacing_1));
         let mut has_banner = false;
-        if document.truncated {
+        if document.file_backed {
             has_banner = true;
             let previous_view = cx.weak_entity();
             let next_view = cx.weak_entity();
@@ -2770,6 +2770,17 @@ impl ProbeApp {
                                     .child("Next"),
                             ),
                     ),
+            );
+        } else if document.truncated {
+            has_banner = true;
+            banners = banners.child(
+                div()
+                    .text_color(theme.colors.status.warning)
+                    .text_size(px(theme.typography.caption_size))
+                    .child(document.retention_notice.clone().unwrap_or_else(|| {
+                        "The response exceeds the in-memory limit and the complete body was not retained."
+                            .to_owned()
+                    })),
             );
         }
         if let Some(notice) = &document.pretty_notice

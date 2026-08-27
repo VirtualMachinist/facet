@@ -8,7 +8,9 @@ use std::{
 use crate::filesystem::workspace_base_directory;
 use directories::ProjectDirs;
 use probe_core::{HttpRequest, RequestKey};
-use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse, ResponseBodyFile};
+use probe_http::{
+    ExecutionOptions, HttpEngine, HttpError, HttpResponse, ResponseBodyFile, ResponseCache,
+};
 use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,10 +212,13 @@ pub(crate) fn execute_http_request(
     })
 }
 
-pub(crate) fn response_cache_directory() -> std::path::PathBuf {
-    ProjectDirs::from("dev", "Probe", "Probe")
+pub(crate) const RESPONSE_CACHE_QUOTA_BYTES: u64 = 512 * 1024 * 1024;
+
+pub(crate) fn response_cache() -> ResponseCache {
+    let directory = ProjectDirs::from("dev", "Probe", "Probe")
         .map(|directories| directories.cache_dir().join("responses"))
-        .unwrap_or_else(|| std::env::temp_dir().join("probe-responses"))
+        .unwrap_or_else(|| std::env::temp_dir().join("probe-responses"));
+    ResponseCache::new(directory, RESPONSE_CACHE_QUOTA_BYTES)
 }
 
 pub(crate) fn read_response_page(
@@ -405,6 +410,7 @@ mod tests {
             body: Vec::new(),
             body_complete: true,
             body_file: None,
+            body_retention_error: None,
         }
     }
 
