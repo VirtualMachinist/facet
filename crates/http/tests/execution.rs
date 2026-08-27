@@ -635,7 +635,10 @@ async fn reports_timeout_and_cancellation_separately() {
 async fn bounds_in_memory_responses_and_streams_file_output() {
     let body = vec![b'x'; MAX_IN_MEMORY_RESPONSE_BYTES + 32 * 1024];
     let spool_directory = temporary_file("response-spool");
-    let response_cache = ResponseCache::new(spool_directory.clone(), 8 * 1024 * 1024);
+    let response_cache = ResponseCache::new(
+        spool_directory.clone(),
+        MAX_IN_MEMORY_RESPONSE_BYTES as u64 * 2,
+    );
     let (base_url, captured) = serve_once("200 OK", &[], &body).await.unwrap();
     let response = HttpEngine::new()
         .unwrap()

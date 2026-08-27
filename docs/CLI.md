@@ -246,7 +246,7 @@ and `index` are `null` after deletion; `previousSelector` is `null` after creati
 }
 ```
 
-UTF-8 bodies up to 1 MiB are included directly. Larger and binary bodies are omitted
+UTF-8 bodies up to 16 MiB are included directly. Larger and binary bodies are omitted
 from stdout with `omitted: true`; rerun with `--output <file>` to retain them. When an
 output file is used, `outputPath` identifies it and `content` remains `null`.
 

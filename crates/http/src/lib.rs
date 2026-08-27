@@ -30,7 +30,7 @@ use tokio::io::AsyncWriteExt;
 
 const DEFAULT_MAX_REDIRECTS: usize = 10;
 /// Maximum response body retained by the default in-memory execution methods.
-pub const MAX_IN_MEMORY_RESPONSE_BYTES: usize = 1024 * 1024;
+pub const MAX_IN_MEMORY_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 static RESPONSE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static RESPONSE_CACHE_SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 

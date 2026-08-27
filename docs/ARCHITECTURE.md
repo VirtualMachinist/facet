@@ -426,13 +426,13 @@ terminal signals or a GUI framework. The CLI adapts Ctrl-C to this boundary; des
 can later adapt task or view cancellation to the same API.
 
 Completed responses contain status, reason, final URL, duration, size, deterministically
-sorted headers, and at most 1 MiB of in-memory body data. Once that bound is crossed, the
-engine keeps the leading 1 MiB as the first presentation page and, when requested by the caller,
+sorted headers, and at most 16 MiB of in-memory body data. Once that bound is crossed, the
+engine keeps the leading 16 MiB as the first presentation page and, when requested by the caller,
 streams the complete body to an automatically managed spool file. Cloned response handles share
 ownership of that file, and
 the final owner removes it. Frontends that need the complete body provide a cache directory;
 callers such as the CLI can drain the remainder without retaining it. The desktop reads subsequent
-1 MiB pages off the UI thread, searches only the resident page, and renders those pages as
+16 MiB pages off the UI thread, searches only the resident page, and renders those pages as
 soft-wrapped Raw text without retaining a duplicate Pretty representation. Pretty is hidden for
 file-backed responses because formatting an isolated page would not produce a valid document.
 Inspect remains available and scans file-backed JSON and XML through streaming parsers without
@@ -447,7 +447,7 @@ multiple Probe processes do not recover or delete one another's live responses. 
 subsequent reservations remove session directories whose lease was released by a crash. Quota
 accounting includes live response files from every active session. If a response cannot fit in the
 remaining quota, Probe deletes its partial spool, continues draining the network response, and
-returns the 1 MiB preview with a retention warning; existing retained responses are not evicted.
+returns the 16 MiB preview with a retention warning; existing retained responses are not evicted.
 
 
 ## Persistence

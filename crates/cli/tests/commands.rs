@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use probe_http::MAX_IN_MEMORY_RESPONSE_BYTES;
 use serde_json::Value;
 
 fn fixture(path: &str) -> PathBuf {
@@ -820,7 +821,7 @@ fn writes_response_body_to_an_explicit_file() {
 
 #[test]
 fn omits_large_response_body_from_stdout() {
-    let response_body = vec![b'x'; 1024 * 1024 + 1];
+    let response_body = vec![b'x'; MAX_IN_MEMORY_RESPONSE_BYTES + 1];
     let (server_url, server) = serve_once(response_body, "text/plain");
     let workspace = runtime_fixture(&server_url);
     let output = probe()
