@@ -22,10 +22,12 @@ mod repository;
 mod structure;
 
 pub use repository::{
-    CompletedEnvironmentCreate, CompletedEnvironmentSave, CompletedRequestSave, CreateError,
-    LoadError, LoadedWorkspace, LocatedFolder, LocatedRequest, PreparedEnvironmentCreate,
-    PreparedEnvironmentSave, PreparedRequestSave, SaveError, create_bundled_workspace,
-    create_bundled_workspace_from_collection, load_workspace, load_workspace_from_str,
+    CompletedEnvironmentCreate, CompletedEnvironmentDelete, CompletedEnvironmentReplace,
+    CompletedEnvironmentSave, CompletedRequestSave, CreateError, LoadError, LoadedWorkspace,
+    LocatedFolder, LocatedRequest, PreparedEnvironmentCreate, PreparedEnvironmentDelete,
+    PreparedEnvironmentReplace, PreparedEnvironmentSave, PreparedRequestSave, SaveError,
+    create_bundled_workspace, create_bundled_workspace_from_collection, load_workspace,
+    load_workspace_from_str,
 };
 pub use structure::{ItemKind, StructureError, StructureOperation, StructureResult};
 

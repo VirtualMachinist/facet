@@ -617,6 +617,7 @@ Implement in this order:
 Required core behavior:
 
 - create an environment with a unique name
+- rename and delete environments with inheritance validation
 - optional `extends` parent
 - duplicate-name, missing-parent, and inheritance-cycle protection
 - reuse `validate_environments` after mutation
@@ -626,6 +627,9 @@ Required repository behavior:
 - bundled collections append to `config.environments`
 - unbundled collections write a new `environments/<name>.yml` document
 - update `environment_persistence` after creation
+- atomically replace supported environment fields while preserving unknown and secret entries
+- unbundled rename moves `environments/<name>.yml` with exact-source conflict checks
+- delete bundled and unbundled leaf environments with exact-source conflict checks
 - exact-source conflict checks and atomic writes
 - fixture-based load, create, save, and reload tests for bundled and unbundled collections
 

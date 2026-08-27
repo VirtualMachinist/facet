@@ -108,6 +108,26 @@ pub enum EnvironmentResolutionError {
         /// Variable name.
         variable: String,
     },
+    /// Two variables in the same environment share a name, including across plain and secret kinds.
+    DuplicateVariable {
+        /// Environment containing the colliding names.
+        environment: String,
+        /// Variable name that appears more than once.
+        variable: String,
+    },
+    /// The environment is used as another environment's parent.
+    EnvironmentInUse(String),
+}
+
+/// A plain environment variable as it appears after inheritance, together with its source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveEnvironmentVariable {
+    /// Plain variable definition that currently wins for this name.
+    pub variable: Variable,
+    /// Environment that defines this effective value.
+    pub defined_in: String,
+    /// Index in the selected environment's variable list when this entry is local.
+    pub direct_index: Option<usize>,
 }
 
 /// Validates environment identity and inheritance independently of variable use.
@@ -232,6 +252,17 @@ impl fmt::Display for EnvironmentResolutionError {
                 formatter,
                 "variable '{variable}' is not defined on environment '{environment}'"
             ),
+            Self::DuplicateVariable {
+                environment,
+                variable,
+            } => write!(
+                formatter,
+                "environment '{environment}' has duplicate variable '{variable}'"
+            ),
+            Self::EnvironmentInUse(name) => write!(
+                formatter,
+                "environment '{name}' is extended by another environment"
+            ),
         }
     }
 }
@@ -297,6 +328,73 @@ pub fn revert_created_environment(environments: &mut Vec<Environment>, name: &st
     {
         environments.remove(index);
     }
+}
+
+/// Replaces one environment and revalidates the complete inheritance graph.
+pub fn replace_environment(
+    environments: &mut [Environment],
+    original_name: &str,
+    replacement: Environment,
+) -> Result<(), EnvironmentResolutionError> {
+    if replacement.name.is_empty() {
+        return Err(EnvironmentResolutionError::InvalidEnvironmentName);
+    }
+    let Some(index) = environments
+        .iter()
+        .position(|environment| environment.name == original_name)
+    else {
+        return Err(EnvironmentResolutionError::EnvironmentNotFound(
+            original_name.to_owned(),
+        ));
+    };
+    if replacement.name != original_name
+        && environments
+            .iter()
+            .any(|environment| environment.name == replacement.name)
+    {
+        return Err(EnvironmentResolutionError::DuplicateEnvironment(
+            replacement.name,
+        ));
+    }
+    validate_unique_variable_names(&replacement)?;
+
+    let mut candidate = environments.to_vec();
+    let renamed = replacement.name.clone();
+    candidate[index] = replacement;
+    if renamed != original_name {
+        for environment in &mut candidate {
+            if environment.extends.as_deref() == Some(original_name) {
+                environment.extends = Some(renamed.clone());
+            }
+        }
+    }
+    validate_environments(&candidate)?;
+    environments.clone_from_slice(&candidate);
+    Ok(())
+}
+
+/// Deletes an environment that is not used as another environment's parent.
+pub fn delete_environment(
+    environments: &mut Vec<Environment>,
+    name: &str,
+) -> Result<Environment, EnvironmentResolutionError> {
+    if environments
+        .iter()
+        .any(|environment| environment.extends.as_deref() == Some(name))
+    {
+        return Err(EnvironmentResolutionError::EnvironmentInUse(
+            name.to_owned(),
+        ));
+    }
+    let Some(index) = environments
+        .iter()
+        .position(|environment| environment.name == name)
+    else {
+        return Err(EnvironmentResolutionError::EnvironmentNotFound(
+            name.to_owned(),
+        ));
+    };
+    Ok(environments.remove(index))
 }
 
 /// Updates a plain variable on the selected environment, or adds an override.
@@ -371,6 +469,91 @@ pub fn unset_environment_variable(
     }
     environment.variables.remove(index);
     Ok(())
+}
+
+/// Rejects duplicate variable names across plain and secret entries in one environment.
+pub fn validate_unique_variable_names(
+    environment: &Environment,
+) -> Result<(), EnvironmentResolutionError> {
+    let mut names = BTreeSet::new();
+    for variable in &environment.variables {
+        let Some(name) = variable_entry_name(variable) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if !names.insert(name) {
+            return Err(EnvironmentResolutionError::DuplicateVariable {
+                environment: environment.name.clone(),
+                variable: name.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Returns effective plain variables for `selected`, including inherited values.
+///
+/// Child entries override parents by name. Disabled variables remain visible. Secrets
+/// are omitted from the result but still shadow inherited plains with the same name.
+#[must_use]
+pub fn effective_environment_variables(
+    environments: &[Environment],
+    selected: &Environment,
+) -> Vec<EffectiveEnvironmentVariable> {
+    let mut rows = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (index, variable) in selected.variables.iter().enumerate() {
+        match variable {
+            EnvironmentVariable::Plain(variable) => {
+                if let Some(name) = &variable.name {
+                    seen.insert(name.clone());
+                }
+                rows.push(EffectiveEnvironmentVariable {
+                    variable: variable.clone(),
+                    defined_in: selected.name.clone(),
+                    direct_index: Some(index),
+                });
+            }
+            EnvironmentVariable::Secret(variable) => {
+                if let Some(name) = &variable.name {
+                    seen.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    let mut visited_parents = BTreeSet::new();
+    let mut parent = selected.extends.as_deref();
+    while let Some(parent_name) = parent {
+        if !visited_parents.insert(parent_name.to_owned()) {
+            break;
+        }
+        let Some(environment) = environments
+            .iter()
+            .find(|environment| environment.name == parent_name)
+        else {
+            break;
+        };
+        for variable in &environment.variables {
+            let Some(name) = variable_entry_name(variable) else {
+                continue;
+            };
+            if !seen.insert(name.to_owned()) {
+                continue;
+            }
+            if let EnvironmentVariable::Plain(variable) = variable {
+                rows.push(EffectiveEnvironmentVariable {
+                    variable: variable.clone(),
+                    defined_in: environment.name.clone(),
+                    direct_index: None,
+                });
+            }
+        }
+        parent = environment.extends.as_deref();
+    }
+    rows
 }
 
 fn named_environment_mut<'a>(

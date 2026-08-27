@@ -1,7 +1,7 @@
 use std::{borrow::Cow, collections::BTreeMap, path::PathBuf};
 
 use gpui::Action;
-use probe_core::{ImportDiagnostic, ImportDiagnosticSeverity, RequestKey};
+use probe_core::{Environment, ImportDiagnostic, ImportDiagnosticSeverity, RequestKey};
 use probe_opencollection::ItemKind;
 use probe_postman::{ImportedPostmanCollection, PostmanImportPreview};
 use probe_yaak::{ImportedYaakWorkspace, YaakImportPreview, YaakWorkspaceSummary};
@@ -14,6 +14,21 @@ pub(crate) const IMPORT_DIAGNOSTIC_GROUP_LIMIT: usize = 8;
 pub(crate) enum ImportSource {
     Postman,
     Yaak,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EnvironmentManagerDialog {
+    pub(crate) original_name: String,
+    pub(crate) draft: Environment,
+}
+
+impl EnvironmentManagerDialog {
+    pub(crate) fn new(environment: &Environment) -> Self {
+        Self {
+            original_name: environment.name.clone(),
+            draft: environment.clone(),
+        }
+    }
 }
 
 pub(crate) enum PendingClose {
@@ -46,6 +61,11 @@ pub(crate) enum ApplicationDialog {
         name: String,
         detail: String,
     },
+    DeleteEnvironment {
+        name: String,
+        detail: String,
+    },
+    UnsavedEnvironment,
     FilesystemConflict {
         path: Option<PathBuf>,
         detail: String,
@@ -126,7 +146,10 @@ impl ApplicationDialog {
                 };
                 Cow::Owned(format!("Save changes to {} {noun}?", keys.len()))
             }
-            Self::Delete { name, .. } => Cow::Owned(format!("Delete “{name}”?")),
+            Self::UnsavedEnvironment => Cow::Borrowed("Save changes to this environment?"),
+            Self::Delete { name, .. } | Self::DeleteEnvironment { name, .. } => {
+                Cow::Owned(format!("Delete “{name}”?"))
+            }
             Self::FilesystemConflict { .. } => {
                 Cow::Borrowed("Collection changes conflict with local edits")
             }
@@ -147,8 +170,11 @@ impl ApplicationDialog {
                 env!("CARGO_PKG_VERSION"),
                 "\n\nA fast, native, local-first API client."
             ),
-            Self::Unsaved { .. } => "Unsaved changes will be lost if you discard them.",
+            Self::Unsaved { .. } | Self::UnsavedEnvironment => {
+                "Unsaved changes will be lost if you discard them."
+            }
             Self::Delete { detail, .. }
+            | Self::DeleteEnvironment { detail, .. }
             | Self::FilesystemConflict { detail, .. }
             | Self::ConfirmPartialYaakImport { detail, .. }
             | Self::ConfirmPartialPostmanImport { detail, .. } => detail,
@@ -170,8 +196,8 @@ impl ApplicationDialog {
     pub(crate) const fn action_specs(&self) -> Option<&'static [DialogActionSpec]> {
         match self {
             Self::About => Some(ABOUT_DIALOG_ACTIONS),
-            Self::Unsaved { .. } => Some(UNSAVED_DIALOG_ACTIONS),
-            Self::Delete { .. } => Some(DELETE_DIALOG_ACTIONS),
+            Self::Unsaved { .. } | Self::UnsavedEnvironment => Some(UNSAVED_DIALOG_ACTIONS),
+            Self::Delete { .. } | Self::DeleteEnvironment { .. } => Some(DELETE_DIALOG_ACTIONS),
             Self::FilesystemConflict { .. } => Some(FILESYSTEM_CONFLICT_DIALOG_ACTIONS),
             Self::SelectYaakWorkspace { .. } => None,
             Self::ConfirmPartialYaakImport { .. } | Self::ConfirmPartialPostmanImport { .. } => {

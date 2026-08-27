@@ -9,7 +9,10 @@ use gpui::{
     KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, MouseButton, TestAppContext, VisualTestContext,
     point, px, size,
 };
-use probe_core::{HttpRequest, QueryParameter, WorkspaceItemRef};
+use probe_core::{
+    EnvironmentVariable, HttpRequest, QueryParameter, Variable, VariableValue, VariableValueSet,
+    WorkspaceItemRef,
+};
 use probe_http::{HttpResponse, ResponseHeader};
 use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
 use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
@@ -79,6 +82,22 @@ fn destructive_only_dialogs_do_not_take_enter_as_primary_action() {
     assert_eq!(
         dialog.destructive_action(),
         Some(ApplicationDialogAction::Delete)
+    );
+}
+
+#[test]
+fn unsaved_environment_dialog_warns_before_discard() {
+    let dialog = ApplicationDialog::UnsavedEnvironment;
+
+    assert_eq!(dialog.title(), "Save changes to this environment?");
+    assert_eq!(
+        dialog.description(),
+        "Unsaved changes will be lost if you discard them."
+    );
+    assert_eq!(dialog.primary_action(), Some(ApplicationDialogAction::Save));
+    assert_eq!(
+        dialog.destructive_action(),
+        Some(ApplicationDialogAction::Discard)
     );
 }
 
@@ -606,6 +625,36 @@ fn writable_environment_fixture(suffix: &str) -> PathBuf {
     ));
     fs::copy(environment_fixture(), &path).unwrap();
     path
+}
+
+fn reconciled_workspace(workspace: probe_opencollection::LoadedWorkspace) -> ReconciledWorkspace {
+    let disk_baselines = workspace
+        .requests()
+        .iter()
+        .filter_map(|located| {
+            workspace
+                .workspace()
+                .request(located.key())
+                .cloned()
+                .map(|request| (located.selector().to_owned(), request))
+        })
+        .collect();
+    let selector_remaps = workspace
+        .requests()
+        .iter()
+        .map(|located| (located.selector().to_owned(), located.selector().to_owned()))
+        .chain(
+            workspace
+                .folders()
+                .iter()
+                .map(|located| (located.selector().to_owned(), located.selector().to_owned())),
+        )
+        .collect();
+    ReconciledWorkspace {
+        workspace,
+        disk_baselines,
+        selector_remaps,
+    }
 }
 
 fn hover_and_wait(
@@ -2409,7 +2458,7 @@ fn environment_switcher_is_visible_without_a_selected_request(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn environment_switcher_includes_create_environment(cx: &mut TestAppContext) {
+fn environment_switcher_includes_environment_actions(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -2436,6 +2485,740 @@ fn environment_switcher_includes_create_environment(cx: &mut TestAppContext) {
     visual
         .debug_bounds("request-environment-action-0")
         .expect("environment switcher should include Create environment");
+    visual
+        .debug_bounds("request-environment-action-1")
+        .expect("environment switcher should include Manage environments");
+}
+
+#[gpui::test]
+fn environment_manager_renders_editable_and_readonly_variable_fields(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("base".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("environment-manager-dialog")
+            .expect("environment manager should render");
+        visual
+            .debug_bounds("environment-manager-parent-trigger")
+            .expect("extends dropdown should render");
+        visual
+            .debug_bounds("environment-manager-variables")
+            .expect("variable table should render");
+        visual
+            .debug_bounds("environment-manager-add")
+            .expect("compact add-environment control should render");
+        assert!(
+            visual.debug_bounds("environment-manager-delete").is_none(),
+            "delete should live in the environment context menu, not the sidebar"
+        );
+        visual
+            .debug_bounds("environment-manager-add-variable")
+            .expect("inline add-variable action should render");
+        assert!(
+            visual
+                .debug_bounds("environment-manager-save-status")
+                .is_none(),
+            "save status should not render in the environment manager footer"
+        );
+        visual
+            .debug_bounds("environment-variable-value-host")
+            .expect("string values should remain editable");
+        visual
+            .debug_bounds("environment-variable-variant-tenant")
+            .expect("direct selectable-variant values should render as read-only");
+        assert!(
+            visual
+                .debug_bounds("environment-variable-value-tenant")
+                .is_none(),
+            "direct selectable-variant values must not use an editable input"
+        );
+    }
+
+    window
+        .update(cx, |view, _, cx| {
+            view.select_environment_manager_environment("development", cx);
+            let dialog = view
+                .environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open");
+            assert_eq!(dialog.original_name, "development");
+            dialog
+                .draft
+                .variables
+                .push(EnvironmentVariable::Plain(Variable {
+                    name: Some("retries".to_owned()),
+                    value: Some(VariableValueSet::Single(VariableValue::Typed {
+                        kind: probe_core::VariableValueType::Number,
+                        data: "3".to_owned(),
+                    })),
+                    disabled: false,
+                }));
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual
+        .debug_bounds("environment-variable-name-host")
+        .expect("direct variable names should be editable");
+    assert!(
+        visual
+            .debug_bounds("environment-variable-name-baseUrl")
+            .is_none(),
+        "inherited variable names should remain read-only"
+    );
+    visual
+        .debug_bounds("environment-variable-value-host")
+        .expect("string values should remain editable");
+    visual
+        .debug_bounds("environment-variable-value-retries")
+        .expect("typed single values should remain editable");
+    visual
+        .debug_bounds("environment-variable-variant-tenant")
+        .expect("inherited selectable-variant values should render as read-only");
+    assert!(
+        visual
+            .debug_bounds("environment-variable-value-tenant")
+            .is_none(),
+        "inherited selectable-variant values must not use an editable input"
+    );
+    visual
+        .debug_bounds("environment-manager-dirty")
+        .expect("unsaved environment changes should show a dirty indicator");
+}
+
+#[gpui::test]
+fn environment_manager_protects_dirty_draft_and_restores_create_focus(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            assert_eq!(
+                window.focused(cx),
+                Some(view.environment_manager_dialog_focus.clone())
+            );
+            view.open_create_environment_dialog(window, cx);
+            assert!(view.create_environment_dialog.is_some());
+            assert_eq!(
+                window.focused(cx),
+                Some(view.create_environment_dialog_focus.clone())
+            );
+            view.close_create_environment_dialog(window, cx);
+            assert!(view.create_environment_dialog.is_none());
+            assert_eq!(
+                window.focused(cx),
+                Some(view.environment_manager_dialog_focus.clone())
+            );
+            let dialog = view
+                .environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open");
+            dialog.draft.name = "renamed-development".to_owned();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let add = visual
+            .debug_bounds("environment-manager-add")
+            .expect("add-environment control should render");
+        visual.simulate_click(add.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.create_environment_dialog.is_none());
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.draft.name.as_str()),
+                Some("renamed-development")
+            );
+            view.open_create_environment_dialog(window, cx);
+            assert!(view.create_environment_dialog.is_none());
+            assert_eq!(
+                view.message.as_deref(),
+                Some("Save or discard unsaved environment changes first.")
+            );
+            view.create_named_environment("staging".to_owned(), window, cx);
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.draft.name.as_str()),
+                Some("renamed-development")
+            );
+        })
+        .expect("test window should remain open");
+}
+
+#[gpui::test]
+fn environment_manager_saves_plain_variables_and_parent(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-save")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            let dialog = view
+                .environment_manager_dialog
+                .as_mut()
+                .expect("manager should open");
+            dialog.draft.extends = None;
+            dialog
+                .draft
+                .variables
+                .push(EnvironmentVariable::Plain(Variable {
+                    name: Some("region".to_owned()),
+                    value: Some(VariableValueSet::Single(VariableValue::String(
+                        "ap-southeast-2".to_owned(),
+                    ))),
+                    disabled: false,
+                }));
+            view.save_environment_manager_dialog(window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(view.message.is_none(), "{:?}", view.message);
+        })
+        .expect("test window should remain open");
+    let reloaded = probe_opencollection::load_workspace(&fixture).expect("saved env should load");
+    let development = reloaded
+        .workspace()
+        .environments()
+        .iter()
+        .find(|environment| environment.name == "development")
+        .unwrap();
+    assert_eq!(development.extends, None);
+    assert!(development.variables.iter().any(|variable| matches!(
+        variable,
+        EnvironmentVariable::Plain(variable) if variable.name.as_deref() == Some("region")
+    )));
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_save_ignores_edits_made_while_busy(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-save-busy")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.save_environment_manager_dialog(window, cx);
+            assert!(view.environment_save_task.is_some());
+            view.apply_environment_manager_draft(cx, |dialog| {
+                dialog.draft.name = "hijacked".to_owned();
+            });
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should stay open during save")
+                .draft
+                .name = "hijacked".to_owned();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            let dialog = view
+                .environment_manager_dialog
+                .as_ref()
+                .expect("manager should rebind to the saved environment");
+            assert_eq!(dialog.original_name, "development");
+            assert_eq!(dialog.draft.name, "development");
+        })
+        .expect("test window should remain open");
+    let reloaded = probe_opencollection::load_workspace(&fixture).expect("saved env should load");
+    assert!(
+        reloaded
+            .workspace()
+            .environments()
+            .iter()
+            .any(|environment| environment.name == "development")
+    );
+    assert!(
+        reloaded
+            .workspace()
+            .environments()
+            .iter()
+            .all(|environment| environment.name != "hijacked")
+    );
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_deletes_a_leaf_environment(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-delete")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.delete_environment("development".to_owned(), window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.original_name.as_str()),
+                Some("base")
+            );
+            assert_eq!(
+                window.focused(cx),
+                Some(view.environment_manager_dialog_focus.clone())
+            );
+        })
+        .expect("test window should remain open");
+    let reloaded = probe_opencollection::load_workspace(&fixture).expect("saved env should load");
+    assert!(
+        reloaded
+            .workspace()
+            .environments()
+            .iter()
+            .all(|environment| environment.name != "development")
+    );
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_delete_preserves_a_dirty_draft_for_another_environment(
+    cx: &mut TestAppContext,
+) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-delete-other")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.create_named_environment("staging".to_owned(), window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            view.select_environment_manager_environment("development", cx);
+            let dialog = view
+                .environment_manager_dialog
+                .as_mut()
+                .expect("manager should be editing development");
+            assert_eq!(dialog.original_name, "development");
+            dialog.draft.name = "renamed-development".to_owned();
+            view.delete_environment("staging".to_owned(), window, cx);
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            let dialog = view
+                .environment_manager_dialog
+                .as_ref()
+                .expect("manager should keep the current draft");
+            assert_eq!(dialog.original_name, "development");
+            assert_eq!(dialog.draft.name, "renamed-development");
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_delete_selects_a_neighbor(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-delete-neighbor")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.create_named_environment("staging".to_owned(), window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            view.select_environment_manager_environment("development", cx);
+            view.delete_environment("development".to_owned(), window, cx);
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.original_name.as_str()),
+                Some("staging")
+            );
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_delete_of_the_last_environment_closes(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-delete-last")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.delete_environment("development".to_owned(), window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.original_name.as_str()),
+                Some("base")
+            );
+            view.delete_environment("base".to_owned(), window, cx);
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(view.environment_manager_dialog.is_none());
+            assert_eq!(window.focused(cx), Some(view.focus_handle.clone()));
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_closes_when_the_workspace_resets(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let other = http_environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    let other_workspace =
+        probe_opencollection::load_workspace(&other).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.open_environment_manager_dialog(window, cx);
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should open")
+                .draft
+                .name = "renamed-development".to_owned();
+            view.set_workspace(other, other_workspace);
+            assert!(view.environment_manager_dialog.is_none());
+            let reloaded =
+                probe_opencollection::load_workspace(&fixture).expect("fixture should reload");
+            view.set_workspace(fixture, reloaded);
+            view.open_environment_manager_dialog(window, cx);
+            view.close_workspace_now(cx);
+            assert!(view.environment_manager_dialog.is_none());
+        })
+        .expect("test window should be open");
+}
+
+#[gpui::test]
+fn environment_manager_rebinds_after_workspace_reload(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-reload")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.apply_reconciled_workspace(
+                reconciled_workspace(
+                    probe_opencollection::load_workspace(&fixture).expect("fixture should reload"),
+                ),
+                cx,
+            );
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.original_name.as_str()),
+                Some("development")
+            );
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open")
+                .draft
+                .name = "renamed-development".to_owned();
+            view.apply_reconciled_workspace(
+                reconciled_workspace(
+                    probe_opencollection::load_workspace(&fixture).expect("fixture should reload"),
+                ),
+                cx,
+            );
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.draft.name.as_str()),
+                Some("renamed-development")
+            );
+            assert!(view.message.is_none());
+        })
+        .expect("test window should be open");
+
+    let mut changed = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    let mut replacement = changed.workspace().environments()[1].clone();
+    replacement.extends = None;
+    let saved = changed
+        .prepare_environment_replace("development", replacement)
+        .unwrap()
+        .execute()
+        .unwrap();
+    changed.complete_environment_replace(saved);
+
+    window
+        .update(cx, |view, _, cx| {
+            view.apply_reconciled_workspace(reconciled_workspace(changed), cx);
+            let dialog = view
+                .environment_manager_dialog
+                .as_ref()
+                .expect("manager should rebind to disk");
+            assert_eq!(dialog.original_name, "development");
+            assert_eq!(dialog.draft.name, "development");
+            assert_eq!(dialog.draft.extends, None);
+            assert_eq!(
+                view.message.as_deref(),
+                Some("This environment changed on disk. Unsaved environment edits were discarded.")
+            );
+        })
+        .expect("test window should remain open");
+
+    let mut remaining =
+        probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    let saved = remaining
+        .prepare_environment_delete("development")
+        .unwrap()
+        .execute()
+        .unwrap();
+    remaining.complete_environment_delete(saved);
+
+    window
+        .update(cx, |view, _, cx| {
+            view.apply_reconciled_workspace(reconciled_workspace(remaining), cx);
+            assert!(view.environment_manager_dialog.is_none());
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn environment_manager_cancel_with_unsaved_changes_prompts(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            let dialog = view
+                .environment_manager_dialog
+                .as_mut()
+                .expect("manager should open");
+            dialog.draft.name = "renamed-development".to_owned();
+            view.request_close_environment_manager_dialog(window, cx);
+            assert!(matches!(
+                view.application_dialog,
+                Some(ApplicationDialog::UnsavedEnvironment)
+            ));
+            assert!(view.environment_manager_dialog.is_some());
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let cancel = visual
+            .debug_bounds("application-dialog-cancel")
+            .expect("unsaved environment warning should render Cancel");
+        visual.simulate_click(cancel.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.application_dialog.is_none());
+            assert_eq!(
+                view.environment_manager_dialog
+                    .as_ref()
+                    .map(|dialog| dialog.draft.name.as_str()),
+                Some("renamed-development")
+            );
+            view.request_close_environment_manager_dialog(window, cx);
+            view.handle_application_dialog_action(ApplicationDialogAction::Discard, window, cx);
+            assert!(view.application_dialog.is_none());
+            assert!(view.environment_manager_dialog.is_none());
+        })
+        .expect("test window should remain open");
+}
+
+#[gpui::test]
+fn environment_manager_context_menu_deletes_an_environment(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-context-delete")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        let dialog = visual
+            .debug_bounds("environment-manager-dialog")
+            .expect("environment manager should render");
+        window
+            .update(cx, |view, _, cx| {
+                view.open_environment_manager_context_menu(
+                    "development".to_owned(),
+                    dialog.center(),
+                    cx,
+                );
+            })
+            .expect("test window should remain open");
+        visual.run_until_parked();
+        let delete = visual
+            .debug_bounds("environment-manager-delete")
+            .expect("environment context menu should include Delete");
+        visual.simulate_click(delete.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(matches!(
+                view.application_dialog.as_ref(),
+                Some(ApplicationDialog::DeleteEnvironment { name, .. }) if name == "development"
+            ));
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
 }
 
 #[gpui::test]

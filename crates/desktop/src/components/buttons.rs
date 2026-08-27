@@ -13,7 +13,15 @@ pub(crate) fn primary_button(
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
-    action_button(theme, id, label, ActionButtonKind::Primary, None, on_click)
+    action_button(
+        theme,
+        id,
+        label,
+        ActionButtonKind::Primary,
+        None,
+        false,
+        on_click,
+    )
 }
 
 pub(crate) fn secondary_button(
@@ -28,6 +36,7 @@ pub(crate) fn secondary_button(
         label,
         ActionButtonKind::Secondary,
         None,
+        false,
         on_click,
     )
 }
@@ -69,6 +78,7 @@ fn action_button(
     label: impl Into<String>,
     kind: ActionButtonKind,
     shortcut_hint: Option<String>,
+    disabled: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let label = label.into();
@@ -84,16 +94,18 @@ fn action_button(
         .font_family(theme.typography.interface_family)
         .text_size(px(theme.typography.body_size))
         .border_1()
-        .cursor_pointer();
+        .when(!disabled, |button| button.cursor_pointer());
     match kind {
         ActionButtonKind::Primary => button
             .text_color(theme.colors.text.inverse)
             .bg(theme.colors.actions.accent)
             .border_color(theme.colors.actions.accent)
-            .hover(move |button| {
-                button
-                    .bg(theme.colors.actions.hover)
-                    .border_color(theme.colors.actions.hover)
+            .when(!disabled, |button| {
+                button.hover(move |button| {
+                    button
+                        .bg(theme.colors.actions.hover)
+                        .border_color(theme.colors.actions.hover)
+                })
             })
             .focus(move |button| {
                 button.shadow(focus_ring_shadow(
@@ -109,13 +121,22 @@ fn action_button(
                         .border_color(theme.colors.actions.disabled)
                 })
             })
+            .disabled(disabled)
             .on_click(on_click)
-            .child(action_button_label(theme, label, kind, shortcut_hint)),
+            .child(action_button_label(
+                theme,
+                label,
+                kind,
+                shortcut_hint,
+                disabled,
+            )),
         ActionButtonKind::Secondary => button
             .text_color(theme.colors.text.primary)
             .bg(theme.colors.surfaces.raised)
             .border_color(theme.colors.borders.standard)
-            .hover(move |button| button.bg(theme.colors.surfaces.window))
+            .when(!disabled, |button| {
+                button.hover(move |button| button.bg(theme.colors.surfaces.window))
+            })
             .focus(move |button| {
                 button
                     .border_color(theme.colors.borders.focused)
@@ -132,17 +153,26 @@ fn action_button(
                         .border_color(theme.colors.actions.disabled)
                 })
             })
+            .disabled(disabled)
             .on_click(on_click)
-            .child(action_button_label(theme, label, kind, shortcut_hint)),
+            .child(action_button_label(
+                theme,
+                label,
+                kind,
+                shortcut_hint,
+                disabled,
+            )),
         ActionButtonKind::DialogSecondary => button
             .text_color(theme.colors.text.secondary)
             .bg(gpui::transparent_black())
             .border_color(theme.colors.borders.standard)
-            .hover(move |button| {
-                button
-                    .text_color(theme.colors.text.primary)
-                    .bg(theme.colors.selection.inactive_background)
-                    .border_color(theme.colors.borders.standard)
+            .when(!disabled, |button| {
+                button.hover(move |button| {
+                    button
+                        .text_color(theme.colors.text.primary)
+                        .bg(theme.colors.selection.inactive_background)
+                        .border_color(theme.colors.borders.standard)
+                })
             })
             .focus(move |button| {
                 button
@@ -160,8 +190,15 @@ fn action_button(
                         .border_color(theme.colors.borders.subtle)
                 })
             })
+            .disabled(disabled)
             .on_click(on_click)
-            .child(action_button_label(theme, label, kind, shortcut_hint)),
+            .child(action_button_label(
+                theme,
+                label,
+                kind,
+                shortcut_hint,
+                disabled,
+            )),
         ActionButtonKind::Destructive => {
             let mut border: Hsla = theme.colors.status.error.into();
             border.a = match theme.appearance {
@@ -172,13 +209,15 @@ fn action_button(
                 .text_color(theme.colors.status.error)
                 .bg(gpui::transparent_black())
                 .border_color(border)
-                .hover(move |button| {
-                    let mut hover: Hsla = theme.colors.status.error.into();
-                    hover.a = match theme.appearance {
-                        crate::theme::ThemeAppearance::Light => 0.09,
-                        crate::theme::ThemeAppearance::Dark => 0.14,
-                    };
-                    button.bg(hover).border_color(theme.colors.status.error)
+                .when(!disabled, |button| {
+                    button.hover(move |button| {
+                        let mut hover: Hsla = theme.colors.status.error.into();
+                        hover.a = match theme.appearance {
+                            crate::theme::ThemeAppearance::Light => 0.09,
+                            crate::theme::ThemeAppearance::Dark => 0.14,
+                        };
+                        button.bg(hover).border_color(theme.colors.status.error)
+                    })
                 })
                 .focus(move |button| {
                     button
@@ -196,8 +235,15 @@ fn action_button(
                             .border_color(theme.colors.borders.subtle)
                     })
                 })
+                .disabled(disabled)
                 .on_click(on_click)
-                .child(action_button_label(theme, label, kind, shortcut_hint))
+                .child(action_button_label(
+                    theme,
+                    label,
+                    kind,
+                    shortcut_hint,
+                    disabled,
+                ))
         }
     }
 }
@@ -207,16 +253,21 @@ fn action_button_label(
     label: String,
     kind: ActionButtonKind,
     shortcut_hint: Option<String>,
+    disabled: bool,
 ) -> impl IntoElement {
     let Some(shortcut_hint) = shortcut_hint else {
         return div().child(label);
     };
 
-    let key_color: Hsla = match kind {
-        ActionButtonKind::Primary => theme.colors.text.inverse.into(),
-        ActionButtonKind::Destructive => theme.colors.status.error.into(),
-        ActionButtonKind::Secondary | ActionButtonKind::DialogSecondary => {
-            theme.colors.text.muted.into()
+    let key_color: Hsla = if disabled {
+        theme.colors.actions.disabled_foreground.into()
+    } else {
+        match kind {
+            ActionButtonKind::Primary => theme.colors.text.inverse.into(),
+            ActionButtonKind::Destructive => theme.colors.status.error.into(),
+            ActionButtonKind::Secondary | ActionButtonKind::DialogSecondary => {
+                theme.colors.text.muted.into()
+            }
         }
     };
     let mut hint_color = key_color;
@@ -261,6 +312,7 @@ pub(crate) fn dialog_action_button(
     label: impl Into<String>,
     style: DialogActionStyle,
     shortcut_hint: Option<String>,
+    disabled: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> Button {
     let kind = match style {
@@ -268,7 +320,7 @@ pub(crate) fn dialog_action_button(
         DialogActionStyle::Secondary => ActionButtonKind::DialogSecondary,
         DialogActionStyle::Destructive => ActionButtonKind::Destructive,
     };
-    action_button(theme, id, label, kind, shortcut_hint, on_click)
+    action_button(theme, id, label, kind, shortcut_hint, disabled, on_click)
 }
 
 pub(crate) fn dialog_choice_button(

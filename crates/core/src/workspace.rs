@@ -357,6 +357,32 @@ impl Workspace {
         crate::revert_created_environment(&mut self.environments, name);
     }
 
+    /// Replaces one environment and revalidates the inheritance graph.
+    pub fn replace_environment(
+        &mut self,
+        original_name: &str,
+        replacement: crate::Environment,
+    ) -> Result<(), crate::EnvironmentResolutionError> {
+        crate::replace_environment(&mut self.environments, original_name, replacement)
+    }
+
+    /// Returns effective plain variables for `selected`, including inherited values.
+    #[must_use]
+    pub fn effective_environment_variables(
+        &self,
+        selected: &crate::Environment,
+    ) -> Vec<crate::EffectiveEnvironmentVariable> {
+        crate::effective_environment_variables(&self.environments, selected)
+    }
+
+    /// Deletes an environment that has no children.
+    pub fn delete_environment(
+        &mut self,
+        name: &str,
+    ) -> Result<crate::Environment, crate::EnvironmentResolutionError> {
+        crate::delete_environment(&mut self.environments, name)
+    }
+
     /// Updates a plain variable on the named environment, or adds an override.
     pub fn set_environment_variable(
         &mut self,

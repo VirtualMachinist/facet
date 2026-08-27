@@ -18,6 +18,14 @@ fn variable(name: &str, value: &str) -> EnvironmentVariable {
     })
 }
 
+fn secret(name: &str) -> EnvironmentVariable {
+    EnvironmentVariable::Secret(SecretVariable {
+        name: Some(name.to_owned()),
+        value_type: None,
+        disabled: false,
+    })
+}
+
 fn environment(
     name: &str,
     extends: Option<&str>,
@@ -579,4 +587,133 @@ fn revert_created_environment_removes_unused_names_but_keeps_parents() {
     .unwrap();
     probe_core::revert_created_environment(&mut environments, "base");
     assert_eq!(environments.len(), 2);
+}
+
+#[test]
+fn replace_environment_validates_and_updates_child_references() {
+    let mut environments = vec![
+        environment("base", None, vec![]),
+        environment("development", Some("base"), vec![]),
+    ];
+    let mut replacement = environments[0].clone();
+    replacement.name = "shared".to_owned();
+    probe_core::replace_environment(&mut environments, "base", replacement).unwrap();
+    assert_eq!(environments[0].name, "shared");
+    assert_eq!(environments[1].extends.as_deref(), Some("shared"));
+
+    let before = environments.clone();
+    let mut invalid = environments[1].clone();
+    invalid.extends = Some("missing".to_owned());
+    assert!(matches!(
+        probe_core::replace_environment(&mut environments, "development", invalid),
+        Err(EnvironmentResolutionError::ParentEnvironmentNotFound { .. })
+    ));
+    assert_eq!(environments, before);
+}
+
+#[test]
+fn replace_environment_rejects_duplicate_variable_names() {
+    let original = environment(
+        "development",
+        None,
+        vec![variable("host", "dev.example.com")],
+    );
+    let cases = [
+        (
+            vec![
+                variable("host", "one.example.com"),
+                variable("host", "two.example.com"),
+            ],
+            "host",
+        ),
+        (vec![variable("token", "plain"), secret("token")], "token"),
+        (vec![secret("token"), variable("token", "plain")], "token"),
+    ];
+    for (variables, name) in cases {
+        let mut environments = vec![original.clone()];
+        let before = environments.clone();
+        let replacement = environment("development", None, variables);
+        assert_eq!(
+            probe_core::replace_environment(&mut environments, "development", replacement)
+                .unwrap_err(),
+            EnvironmentResolutionError::DuplicateVariable {
+                environment: "development".to_owned(),
+                variable: name.to_owned(),
+            }
+        );
+        assert_eq!(environments, before);
+    }
+}
+
+#[test]
+fn delete_environment_rejects_parents() {
+    let mut environments = vec![
+        environment("base", None, vec![]),
+        environment("development", Some("base"), vec![]),
+    ];
+    assert_eq!(
+        probe_core::delete_environment(&mut environments, "base").unwrap_err(),
+        EnvironmentResolutionError::EnvironmentInUse("base".to_owned())
+    );
+    probe_core::delete_environment(&mut environments, "development").unwrap();
+    assert_eq!(environments.len(), 1);
+}
+
+fn effective_names(rows: &[probe_core::EffectiveEnvironmentVariable]) -> Vec<(&str, &str, bool)> {
+    rows.iter()
+        .map(|row| {
+            (
+                row.variable.name.as_deref().unwrap_or(""),
+                row.defined_in.as_str(),
+                row.direct_index.is_some(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn effective_environment_variables_resolve_inheritance_overrides_and_secrets() {
+    let environments = vec![
+        environment(
+            "root",
+            None,
+            vec![variable("host", "root.example.com"), secret("shadowed")],
+        ),
+        environment(
+            "base",
+            Some("root"),
+            vec![
+                variable("host", "base.example.com"),
+                variable("region", "us"),
+                EnvironmentVariable::Plain(Variable {
+                    name: Some("disabled".to_owned()),
+                    value: Some(VariableValueSet::Single(VariableValue::String(
+                        "hidden".to_owned(),
+                    ))),
+                    disabled: true,
+                }),
+                variable("token", "parent-token"),
+            ],
+        ),
+        environment(
+            "development",
+            Some("base"),
+            vec![secret("token"), variable("local", "dev")],
+        ),
+    ];
+    let rows = probe_core::effective_environment_variables(&environments, &environments[2]);
+    assert_eq!(
+        effective_names(&rows),
+        vec![
+            ("local", "development", true),
+            ("host", "base", false),
+            ("region", "base", false),
+            ("disabled", "base", false),
+        ]
+    );
+    assert!(
+        rows.iter().any(|row| {
+            row.variable.name.as_deref() == Some("disabled") && row.variable.disabled
+        })
+    );
 }

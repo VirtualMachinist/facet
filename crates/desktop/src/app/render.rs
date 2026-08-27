@@ -974,6 +974,7 @@ impl ProbeApp {
         );
         let environment_view = cx.weak_entity();
         let create_environment_view = cx.weak_entity();
+        let manage_environment_view = cx.weak_entity();
         tabs = tabs.child(
             div().flex_none().px(px(theme.metrics.spacing_2)).child(
                 components::dropdown(
@@ -993,6 +994,11 @@ impl ProbeApp {
                 .with_action("Create environment…", move |window, cx| {
                     let _ = create_environment_view.update(cx, |view, cx| {
                         view.open_create_environment_dialog(window, cx);
+                    });
+                })
+                .with_action("Manage environments…", move |window, cx| {
+                    let _ = manage_environment_view.update(cx, |view, cx| {
+                        view.open_environment_manager_dialog(window, cx);
                     });
                 }),
             ),
@@ -1418,6 +1424,7 @@ impl ProbeApp {
                                 "Enable query parameter"
                             },
                             !parameter.disabled,
+                            false,
                             move |enabled, _, cx| {
                                 let _ = enabled_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -1569,6 +1576,7 @@ impl ProbeApp {
                             ("header-enabled", index),
                             "Enable header",
                             !header.disabled,
+                            false,
                             move |enabled, _, cx| {
                                 let _ = enabled_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -1815,6 +1823,7 @@ impl ProbeApp {
                             ("form-field-enabled", index),
                             "Enable form field",
                             !field.disabled,
+                            false,
                             move |enabled, _, cx| {
                                 let _ = enabled_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -2047,6 +2056,7 @@ impl ProbeApp {
                             ("multipart-enabled", index),
                             "Enable multipart part",
                             !part.disabled,
+                            false,
                             move |enabled, _, cx| {
                                 let _ = enabled_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -2212,6 +2222,7 @@ impl ProbeApp {
                             ("body-file-selected", index),
                             "Select body file",
                             file.selected,
+                            false,
                             move |selected, _, cx| {
                                 let _ = selected_view.update(cx, |view, cx| {
                                     view.edit_request(
@@ -3532,6 +3543,11 @@ impl Render for ProbeApp {
                 }),
             )
             .on_action(
+                cx.listener(|view, _: &SubmitEnvironmentManagerDialog, window, cx| {
+                    view.save_environment_manager_dialog(window, cx);
+                }),
+            )
+            .on_action(
                 cx.listener(|view, _: &SubmitApplicationDialog, window, cx| {
                     view.submit_application_dialog_primary(window, cx);
                 }),
@@ -3549,6 +3565,16 @@ impl Render for ProbeApp {
             .on_action(
                 cx.listener(|view, _: &CancelCreateEnvironmentDialog, window, cx| {
                     view.close_create_environment_dialog(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &CancelEnvironmentManagerDialog, window, cx| {
+                    view.request_close_environment_manager_dialog(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|view, _: &DeleteSelectedEnvironment, window, cx| {
+                    view.delete_selected_environment_from_manager(window, cx);
                 }),
             )
             .on_action(
@@ -3648,6 +3674,8 @@ impl Render for ProbeApp {
                     ),
             )
             .child(self.render_structure_dialog(theme, window, cx))
+            .child(self.render_environment_manager_dialog(theme, window, cx))
+            .child(self.render_environment_manager_context_menu(theme, window, cx))
             .child(self.render_create_environment_dialog(theme, window, cx))
             .child(self.render_application_dialog(theme, window, cx))
             .child(self.render_request_tab_tooltip(theme))

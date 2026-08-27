@@ -299,6 +299,20 @@ workspace-scoped presentation state, so every
 open request shares the same selected environment. The switcher can create a new
 environment: Probe prompts for a name, updates the in-memory workspace, then persists
 through the same OpenCollection repository create used by the CLI, off the UI thread.
+The same switcher opens a workspace-scoped environment manager. It edits one retained
+environment document as a validated draft and persists name, parent, enabled-state, value,
+addition, and removal changes through one atomic repository replacement. Unbundled rename
+moves `environments/<name>.yml` rather than leaving the previous filename behind. Effective plain
+variables, including inherited values and their defining environment, come from a shared
+core operation rather than a desktop-only inheritance walk. Secrets remain omitted from
+the manager while still participating in name shadowing. Duplicate plain and secret names
+are rejected at the core/repository boundary before memory or disk change. Inherited
+variables remain visually attributable to their source; editing one creates an override on
+the selected environment. Secret declarations are preserved in retained YAML but are
+intentionally omitted from this editor until Probe has a supported runtime value provider.
+Environment deletion rejects parents, uses exact-source conflict checks, and updates the
+in-memory workspace only after persistence succeeds. An unsaved manager draft disables
+environment creation so Add Environment cannot replace it.
 The last selection for each
 collection is restored from the desktop session. Unsaved body representations are
 retained as local editor drafts per request, allowing users to switch body types without
@@ -401,7 +415,10 @@ future interfaces share exactly the same behavior. Resolution operates on the lo
 in-memory workspace: parent environments are applied before children, child variables
 override by name, and variable values may reference other variables. Cyclic
 inheritance, cyclic interpolation, missing variables, and invalid variant selection
-produce typed errors.
+produce typed errors. The same crate also exposes the effective plain variables for a
+selected environment, together with the environment that currently defines each name,
+so desktop presentation does not reimplement inheritance, overrides, or secret
+shadowing.
 
 The resolver returns a cloned, resolved request and leaves the canonical parsed model
 unchanged. It currently interpolates method, URL, headers, query and path parameters, supported

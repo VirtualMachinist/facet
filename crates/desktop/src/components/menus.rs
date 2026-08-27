@@ -47,9 +47,18 @@ fn shortcut_label_for_binding(binding: &gpui::KeyBinding) -> String {
     binding
         .keystrokes()
         .iter()
-        .map(ToString::to_string)
+        .map(shortcut_label_for_keystroke)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn shortcut_label_for_keystroke(keystroke: &gpui::KeybindingKeystroke) -> String {
+    let label = keystroke.to_string();
+    if let Some(prefix) = label.strip_suffix("enter") {
+        format!("{prefix}⏎")
+    } else {
+        label
+    }
 }
 
 pub(crate) fn app_menu_trigger(
@@ -408,18 +417,24 @@ pub(crate) fn switch(
     id: impl Into<ElementId>,
     label: impl Into<String>,
     checked: bool,
+    disabled: bool,
     on_checked_change: impl Fn(bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let label = label.into();
     Switch::new(id)
         .checked(checked)
+        .disabled(disabled)
         .accessibility_label(label)
         .w(px(36.0))
         .h(px(20.0))
         .flex()
         .items_center()
-        .cursor_pointer()
-        .on_change(move |value, _, window, cx| on_checked_change(value, window, cx))
+        .when(!disabled, |switch| switch.cursor_pointer())
+        .on_change(move |value, _, window, cx| {
+            if !disabled {
+                on_checked_change(value, window, cx);
+            }
+        })
         .child(
             SwitchTrack::new("switch-track")
                 .checked(checked)

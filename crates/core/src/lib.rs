@@ -12,9 +12,10 @@ mod path_parameters;
 mod workspace;
 
 pub use environment::{
-    EnvironmentResolutionError, ResolvedEnvironment, create_environment, resolve_environment,
-    resolve_request, revert_created_environment, set_environment_variable,
-    unset_environment_variable, validate_environments,
+    EffectiveEnvironmentVariable, EnvironmentResolutionError, ResolvedEnvironment,
+    create_environment, delete_environment, effective_environment_variables, replace_environment,
+    resolve_environment, resolve_request, revert_created_environment, set_environment_variable,
+    unset_environment_variable, validate_environments, validate_unique_variable_names,
 };
 pub use path_parameters::{
     add_path_parameter, apply_path_parameters, ensure_path_parameters_from_url,

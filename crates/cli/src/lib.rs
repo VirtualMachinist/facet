@@ -440,6 +440,7 @@ impl CliError {
             EnvironmentResolutionError::SecretVariableUnavailable(_) => {
                 "secret_variable_unavailable"
             }
+            EnvironmentResolutionError::DuplicateVariable { .. } => "duplicate_variable",
             _ => "environment_resolution",
         };
         Self {

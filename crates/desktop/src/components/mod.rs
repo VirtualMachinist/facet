@@ -40,12 +40,10 @@ pub(crate) use buttons::{
     DialogActionStyle, dialog_action_button, dialog_choice_button, primary_button,
     secondary_button, secondary_menu_trigger,
 };
-use icons::{
-    CHECK_SVG, CHEVRON_RIGHT_SVG, SEARCH_SVG, folder_open_icon, library_icon, plus_icon, trash_icon,
-};
+use icons::{CHECK_SVG, CHEVRON_RIGHT_SVG, SEARCH_SVG, folder_open_icon, library_icon};
 pub(crate) use icons::{
-    add_menu_button, chevron_icon, close_icon, home_button, hover_fill, locate_icon, save_icon,
-    sidebar_toggle, tree_folder_icon,
+    add_menu_button, chevron_icon, close_icon, home_button, hover_fill, locate_icon, plus_icon,
+    save_icon, sidebar_toggle, trash_icon, tree_folder_icon,
 };
 use menus::{MenuButtonStyle, context_menu_separator, menu_button_with_style};
 pub(crate) use menus::{
@@ -1062,7 +1060,7 @@ impl FieldInput {
 }
 
 #[derive(IntoElement)]
-struct ProbeTextInput {
+pub(crate) struct ProbeTextInput {
     theme: Theme,
     id: ElementId,
     value: SharedString,
@@ -1333,13 +1331,20 @@ pub(crate) fn dialog_text_input(
     autofocus: bool,
     on_value_change: impl Fn(SharedString, &mut Window, &mut App) + 'static,
     on_enter: impl Fn(SharedString, &mut Window, &mut App) + 'static,
-) -> gpui::AnyElement {
+) -> ProbeTextInput {
     let mut input = text_input_base(theme, id, value, placeholder);
     input.on_change = Some(Rc::new(on_value_change));
     input.on_enter = Some(Rc::new(on_enter));
     input.autofocus = autofocus;
-    input.quiet_focus = true;
-    input.into_any_element()
+    input
+}
+
+impl ProbeTextInput {
+    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+        self.readonly = disabled;
+        self.autofocus &= !disabled;
+        self
+    }
 }
 
 pub(crate) fn sidebar_search_input(
@@ -1454,7 +1459,7 @@ pub(crate) fn editor_add_button(
     id: impl Into<ElementId>,
     label: impl Into<String>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     editor_button_base(theme, id, false, on_click)
         .gap(px(theme.metrics.spacing_1))
         .child(plus_icon(theme))
@@ -1519,7 +1524,7 @@ pub(crate) fn remove_row_button(
     id: impl Into<ElementId>,
     aria_label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Button {
     icon_button(
         theme,
         id,
@@ -1623,6 +1628,7 @@ pub(crate) fn dropdown<T: Clone + Eq + 'static>(
             .collect(),
         width,
         actions: Vec::new(),
+        disabled: false,
         on_value_change: Rc::new(on_value_change),
     }
 }
@@ -1644,6 +1650,7 @@ pub(crate) fn dropdown_with_option_colors<T: Clone + Eq + 'static>(
         options,
         width,
         actions: Vec::new(),
+        disabled: false,
         on_value_change: Rc::new(on_value_change),
     }
 }
@@ -1657,6 +1664,7 @@ pub(crate) struct ProbeDropdown<T: Clone + Eq + 'static> {
     options: Vec<(T, String, Option<gpui::Rgba>)>,
     width: f32,
     actions: Vec<DropdownAction>,
+    disabled: bool,
     on_value_change: DropdownChangeHandler<T>,
 }
 
@@ -1670,6 +1678,11 @@ impl<T: Clone + Eq + 'static> ProbeDropdown<T> {
             label: label.into(),
             on_activate: Rc::new(on_activate),
         });
+        self
+    }
+
+    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -1868,20 +1881,33 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
             .bg(theme.colors.surfaces.raised)
             .border_1()
             .border_color(theme.colors.borders.standard)
-            .text_color(selected_color)
+            .text_color(if self.disabled {
+                theme.colors.actions.disabled_foreground
+            } else {
+                selected_color
+            })
             .debug_selector(move || format!("{id}-trigger"))
-            .hover(move |trigger| trigger.bg(theme.colors.selection.inactive_background))
+            .when(!self.disabled, |trigger| {
+                trigger.hover(move |trigger| trigger.bg(theme.colors.selection.inactive_background))
+            })
             .focus(move |trigger| trigger.border_color(theme.colors.borders.focused))
+            .disabled(self.disabled)
             .on_click({
                 let controller = controller.clone();
                 let list_focus = list_focus.clone();
-                move |_, window, cx| controller.toggle_open(&list_focus, window, cx)
+                let disabled = self.disabled;
+                move |_, window, cx| {
+                    if disabled {
+                        return;
+                    }
+                    controller.toggle_open(&list_focus, window, cx)
+                }
             })
             .child(truncated_label(selected_label).min_w(px(0.0)).flex_1())
             .child(chevron_icon(theme, open));
 
         let select_root = Select::new(format!("{id}-select"))
-            .open(open)
+            .open(open && !self.disabled)
             .accessibility_label(self.aria_label)
             .focus_handle(&trigger_focus)
             .content_focus_handle(&list_focus)

@@ -110,8 +110,8 @@ pub(crate) fn tree_folder_icon(theme: Theme, expanded: bool, selected: bool) -> 
     icon.text_color(tree_item_icon_color(theme, selected))
 }
 
-pub(super) fn plus_icon(theme: Theme) -> gpui::Div {
-    library_icon("lucide-plus", &PLUS_SVG, theme.metrics.icon_small)
+pub(crate) fn plus_icon(_theme: Theme) -> gpui::Div {
+    library_icon("lucide-plus", &PLUS_SVG, 14.0)
 }
 
 pub(crate) fn hover_fill(color: gpui::Rgba) -> gpui::Rgba {
@@ -262,6 +262,6 @@ pub(super) fn folder_open_icon(color: gpui::Rgba) -> gpui::Div {
     library_icon("lucide-folder-open", &FOLDER_OPEN_SVG, 14.0).text_color(color)
 }
 
-pub(super) fn trash_icon(color: gpui::Rgba) -> gpui::Div {
+pub(crate) fn trash_icon(color: gpui::Rgba) -> gpui::Div {
     library_icon("lucide-trash-2", &TRASH_SVG, 14.0).text_color(color)
 }

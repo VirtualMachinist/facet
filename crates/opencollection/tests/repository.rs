@@ -1141,6 +1141,258 @@ fn environment_update_refuses_externally_modified_document() {
 }
 
 #[test]
+fn environment_replace_preserves_unknown_and_secret_fields() {
+    let path = temporary_path("env-replace.yml");
+    fs::copy(fixture("phase4-environments.yml"), &path).unwrap();
+    let mut loaded = load_workspace(&path).unwrap();
+    let mut replacement = loaded.workspace().environments()[1].clone();
+    replacement.extends = None;
+    replacement.variables.retain(|variable| match variable {
+        probe_core::EnvironmentVariable::Plain(variable) => {
+            variable.name.as_deref() != Some("host")
+        }
+        probe_core::EnvironmentVariable::Secret(_) => true,
+    });
+    replacement
+        .variables
+        .push(probe_core::EnvironmentVariable::Plain(
+            probe_core::Variable {
+                name: Some("region".to_owned()),
+                value: Some(probe_core::VariableValueSet::Single(
+                    probe_core::VariableValue::String("ap-southeast-2".to_owned()),
+                )),
+                disabled: true,
+            },
+        ));
+
+    let prepared = loaded
+        .prepare_environment_replace("development", replacement)
+        .unwrap();
+    let saved = prepared.execute().unwrap();
+    loaded.complete_environment_replace(saved);
+
+    let source = fs::read_to_string(&path).unwrap();
+    assert!(!source.contains("extends: base"));
+    assert!(source.contains("name: region"));
+    assert!(source.contains("disabled: true"));
+    assert!(source.contains("secret: true"));
+    let reloaded = load_workspace(&path).unwrap();
+    assert_eq!(
+        loaded.workspace().environments()[1],
+        reloaded.workspace().environments()[1]
+    );
+    assert_eq!(reloaded.workspace().environments()[1].extends, None);
+    assert!(reloaded.workspace().environments()[1].variables.iter().all(
+        |variable| match variable {
+            probe_core::EnvironmentVariable::Plain(variable) => {
+                variable.name.as_deref() != Some("host")
+            }
+            probe_core::EnvironmentVariable::Secret(_) => true,
+        }
+    ));
+
+    let mut base = loaded.workspace().environments()[0].clone();
+    base.variables
+        .retain(|variable| matches!(variable, probe_core::EnvironmentVariable::Plain(_)));
+    let prepared = loaded.prepare_environment_replace("base", base).unwrap();
+    let saved = prepared.execute().unwrap();
+    loaded.complete_environment_replace(saved);
+    let reloaded = load_workspace(&path).unwrap();
+    assert_eq!(
+        loaded.workspace().environments()[0],
+        reloaded.workspace().environments()[0]
+    );
+    assert!(
+        reloaded.workspace().environments()[0]
+            .variables
+            .iter()
+            .any(|variable| matches!(
+                variable,
+                probe_core::EnvironmentVariable::Secret(secret)
+                    if secret.name.as_deref() == Some("secretToken")
+            ))
+    );
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn environment_replace_rejects_variable_name_collisions_without_writing() {
+    let path = temporary_path("env-replace-collisions.yml");
+    fs::copy(fixture("phase4-environments.yml"), &path).unwrap();
+    let original = fs::read_to_string(&path).unwrap();
+    let loaded = load_workspace(&path).unwrap();
+    let base = loaded.workspace().environments()[0].clone();
+    let mut replacement = base.clone();
+    replacement.variables.retain(|variable| {
+        !matches!(
+            variable,
+            probe_core::EnvironmentVariable::Secret(secret)
+                if secret.name.as_deref() == Some("secretToken")
+        )
+    });
+    replacement
+        .variables
+        .push(probe_core::EnvironmentVariable::Plain(
+            probe_core::Variable {
+                name: Some("secretToken".to_owned()),
+                value: Some(probe_core::VariableValueSet::Single(
+                    probe_core::VariableValue::String("plain".to_owned()),
+                )),
+                disabled: false,
+            },
+        ));
+
+    let error = loaded
+        .prepare_environment_replace("base", replacement)
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            SaveError::Environment(EnvironmentResolutionError::DuplicateVariable {
+                ref environment,
+                ref variable,
+            }) if environment == "base" && variable == "secretToken"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(loaded.workspace().environments()[0], base);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn bundled_environment_delete_updates_following_indices() {
+    let path = temporary_path("env-delete.yml");
+    fs::copy(fixture("phase4-environments.yml"), &path).unwrap();
+    let mut loaded = load_workspace(&path).unwrap();
+    let prepared = loaded.prepare_environment_delete("development").unwrap();
+    let saved = prepared.execute().unwrap();
+    loaded.complete_environment_delete(saved);
+    assert!(
+        loaded
+            .workspace()
+            .environments()
+            .iter()
+            .all(|environment| environment.name != "development")
+    );
+    let reloaded = load_workspace(&path).unwrap();
+    assert_eq!(reloaded.workspace().environments().len(), 1);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn unbundled_environment_delete_removes_only_the_environment_document() {
+    let root = temporary_path("unbundled-env-delete");
+    copy_directory(&fixture("unbundled"), &root);
+    fs::write(
+        root.join("environments/development.yml"),
+        "name: development\nvariables:\n  - name: token\n    value: dev\n",
+    )
+    .unwrap();
+    let mut loaded = load_workspace(&root).unwrap();
+    let prepared = loaded.prepare_environment_delete("development").unwrap();
+    let saved = prepared.execute().unwrap();
+    loaded.complete_environment_delete(saved);
+    assert!(!root.join("environments/development.yml").exists());
+    assert!(root.join("opencollection.yml").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unbundled_environment_rename_moves_the_document() {
+    let root = temporary_path("unbundled-env-rename");
+    copy_directory(&fixture("unbundled"), &root);
+    let mut loaded = load_workspace(&root).unwrap();
+    let mut replacement = loaded
+        .workspace()
+        .environments()
+        .iter()
+        .find(|environment| environment.name == "development")
+        .cloned()
+        .unwrap();
+    replacement.name = "staging".to_owned();
+    let prepared = loaded
+        .prepare_environment_replace("development", replacement)
+        .unwrap();
+    let saved = prepared.execute().unwrap();
+    loaded.complete_environment_replace(saved);
+
+    assert!(!root.join("environments/development.yml").exists());
+    assert!(root.join("environments/staging.yml").exists());
+    let saved = fs::read_to_string(root.join("environments/staging.yml")).unwrap();
+    assert!(saved.contains("name: staging"));
+    assert!(saved.contains("color: green"));
+    let reloaded = load_workspace(&root).unwrap();
+    assert_eq!(
+        loaded
+            .workspace()
+            .environments()
+            .iter()
+            .map(|environment| environment.name.as_str())
+            .collect::<Vec<_>>(),
+        reloaded
+            .workspace()
+            .environments()
+            .iter()
+            .map(|environment| environment.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        reloaded
+            .workspace()
+            .environments()
+            .iter()
+            .any(|environment| environment.name == "staging")
+    );
+    loaded
+        .create_environment("development".to_owned(), None)
+        .unwrap();
+    assert!(root.join("environments/development.yml").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unbundled_environment_rename_refuses_an_existing_destination() {
+    let root = temporary_path("unbundled-env-rename-conflict");
+    copy_directory(&fixture("unbundled"), &root);
+    let loaded = load_workspace(&root).unwrap();
+    let original = fs::read_to_string(root.join("environments/development.yml")).unwrap();
+    fs::write(
+        root.join("environments/staging.yml"),
+        "name: staging\nvariables:\n  - name: token\n    value: staging\n",
+    )
+    .unwrap();
+    let mut replacement = loaded
+        .workspace()
+        .environments()
+        .iter()
+        .find(|environment| environment.name == "development")
+        .cloned()
+        .unwrap();
+    replacement.name = "staging".to_owned();
+    let error = loaded
+        .prepare_environment_replace("development", replacement)
+        .unwrap()
+        .execute()
+        .unwrap_err();
+    assert!(matches!(error, SaveError::ConcurrentModification(_)));
+    assert_eq!(
+        fs::read_to_string(root.join("environments/development.yml")).unwrap(),
+        original
+    );
+    assert_eq!(
+        loaded
+            .workspace()
+            .environments()
+            .iter()
+            .find(|environment| environment.name == "development")
+            .map(|environment| environment.name.as_str()),
+        Some("development")
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn environment_update_rejects_secrets_and_missing_environments() {
     let path = temporary_path("env-secrets.yml");
     fs::copy(fixture("phase4-environments.yml"), &path).unwrap();

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     fs::OpenOptions,
     io::{self, Write},
@@ -13,7 +13,7 @@ use probe_core::{
     EnvironmentResolutionError, EnvironmentVariable, FileReference, FolderKey, FormField, Header,
     MultipartPart, MultipartPartKind, MultipartValue, QueryParameter, RawBodyKind, RequestBody,
     RequestKey, RequestUpdate, Variable, VariableValue, VariableValueSet, VariableValueVariant,
-    Workspace, WorkspaceItemRef, validate_environments,
+    Workspace, WorkspaceItemRef, validate_environments, validate_unique_variable_names,
 };
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Value;
@@ -310,6 +310,142 @@ impl LoadedWorkspace {
         );
     }
 
+    /// Captures a validated replacement of one environment for background persistence.
+    ///
+    /// Secret variables are retained from the source document. The replacement may edit
+    /// the environment name, parent, and plain variables. Renaming a parent environment
+    /// is rejected because it would require a multi-document transaction.
+    pub fn prepare_environment_replace(
+        &self,
+        original_name: &str,
+        replacement: Environment,
+    ) -> Result<PreparedEnvironmentReplace, SaveError> {
+        if replacement.name != original_name
+            && self
+                .workspace
+                .environments()
+                .iter()
+                .any(|environment| environment.extends.as_deref() == Some(original_name))
+        {
+            return Err(SaveError::Environment(
+                EnvironmentResolutionError::EnvironmentInUse(original_name.to_owned()),
+            ));
+        }
+        let original = self
+            .workspace
+            .environments()
+            .iter()
+            .find(|environment| environment.name == original_name)
+            .cloned()
+            .ok_or_else(|| {
+                SaveError::Environment(EnvironmentResolutionError::EnvironmentNotFound(
+                    original_name.to_owned(),
+                ))
+            })?;
+        let replacement = environment_replacement_with_retained_secrets(&original, replacement)?;
+        let mut candidate = self.workspace.clone();
+        candidate
+            .replace_environment(original_name, replacement.clone())
+            .map_err(SaveError::Environment)?;
+        let persistence = self
+            .environment_persistence
+            .get(original_name)
+            .cloned()
+            .ok_or(SaveError::ReadOnlySource)?;
+        let original_source = self
+            .documents
+            .get(&persistence.document_path)
+            .expect("filesystem environment must retain its source document")
+            .original_source
+            .clone();
+        Ok(PreparedEnvironmentReplace {
+            persistence,
+            original_source,
+            original_name: original_name.to_owned(),
+            replacement,
+        })
+    }
+
+    /// Applies a successfully persisted environment replacement to the in-memory workspace.
+    pub fn complete_environment_replace(&mut self, saved: CompletedEnvironmentReplace) {
+        self.workspace
+            .replace_environment(&saved.original_name, saved.replacement.clone())
+            .expect("prepared environment replacement must remain valid");
+        let mut persistence = self
+            .environment_persistence
+            .remove(&saved.original_name)
+            .expect("replaced environment must retain persistence metadata");
+        if persistence.document_path != saved.document_path {
+            self.documents.remove(&persistence.document_path);
+            persistence.document_path = saved.document_path.clone();
+        }
+        self.environment_persistence
+            .insert(saved.replacement.name, persistence);
+        self.documents.insert(
+            saved.document_path,
+            SourceDocument {
+                original_source: saved.serialized_source,
+            },
+        );
+    }
+
+    /// Captures deletion of an environment that has no children.
+    pub fn prepare_environment_delete(
+        &self,
+        name: &str,
+    ) -> Result<PreparedEnvironmentDelete, SaveError> {
+        let mut candidate = self.workspace.clone();
+        candidate
+            .delete_environment(name)
+            .map_err(SaveError::Environment)?;
+        let persistence = self
+            .environment_persistence
+            .get(name)
+            .cloned()
+            .ok_or(SaveError::ReadOnlySource)?;
+        let original_source = self
+            .documents
+            .get(&persistence.document_path)
+            .expect("filesystem environment must retain its source document")
+            .original_source
+            .clone();
+        Ok(PreparedEnvironmentDelete {
+            name: name.to_owned(),
+            persistence,
+            original_source,
+        })
+    }
+
+    /// Applies a successfully persisted environment deletion in memory.
+    pub fn complete_environment_delete(&mut self, saved: CompletedEnvironmentDelete) {
+        self.workspace
+            .delete_environment(&saved.name)
+            .expect("prepared environment deletion must remain valid");
+        self.environment_persistence.remove(&saved.name);
+        if let Some(serialized_source) = saved.serialized_source {
+            self.documents.insert(
+                saved.document_path.clone(),
+                SourceDocument {
+                    original_source: serialized_source,
+                },
+            );
+            if let Some(removed_index) = saved.bundled_index {
+                for persistence in self.environment_persistence.values_mut() {
+                    if persistence.document_path == saved.document_path
+                        && persistence
+                            .bundled_index
+                            .is_some_and(|index| index > removed_index)
+                    {
+                        persistence.bundled_index =
+                            persistence.bundled_index.map(|index| index - 1);
+                    }
+                }
+            }
+        } else {
+            self.documents.remove(&saved.document_path);
+        }
+    }
+
     fn persist_environment_mutation(
         &mut self,
         environment_name: &str,
@@ -586,6 +722,103 @@ pub struct CompletedEnvironmentSave {
     serialized_source: Vec<u8>,
 }
 
+/// A validated environment replacement captured for background persistence.
+#[derive(Debug)]
+pub struct PreparedEnvironmentReplace {
+    persistence: EnvironmentPersistence,
+    original_source: Vec<u8>,
+    original_name: String,
+    replacement: Environment,
+}
+
+impl PreparedEnvironmentReplace {
+    /// Performs the exact-source check and atomic write.
+    pub fn execute(self) -> Result<CompletedEnvironmentReplace, SaveError> {
+        let destination = unbundled_rename_destination(
+            &self.persistence,
+            &self.original_name,
+            &self.replacement.name,
+        );
+        let (serialized, document_path) = match destination {
+            Some(new_path) => persist_unbundled_environment_rename(
+                &self.persistence.document_path,
+                &new_path,
+                &self.original_source,
+                &self.replacement,
+            )?,
+            None => {
+                let serialized = persist_environment_yaml(
+                    &self.persistence,
+                    &self.original_source,
+                    &EnvironmentYamlMutation::Replace {
+                        environment: self.replacement.clone(),
+                    },
+                )?;
+                (serialized, self.persistence.document_path)
+            }
+        };
+        Ok(CompletedEnvironmentReplace {
+            original_name: self.original_name,
+            replacement: self.replacement,
+            document_path,
+            serialized_source: serialized,
+        })
+    }
+}
+
+/// The refreshed repository baseline produced by an environment replacement.
+#[derive(Debug)]
+pub struct CompletedEnvironmentReplace {
+    original_name: String,
+    replacement: Environment,
+    document_path: PathBuf,
+    serialized_source: Vec<u8>,
+}
+
+/// A validated environment deletion captured for background persistence.
+#[derive(Debug)]
+pub struct PreparedEnvironmentDelete {
+    name: String,
+    persistence: EnvironmentPersistence,
+    original_source: Vec<u8>,
+}
+
+impl PreparedEnvironmentDelete {
+    /// Performs the exact-source check and removes the environment.
+    pub fn execute(self) -> Result<CompletedEnvironmentDelete, SaveError> {
+        let document_path = self.persistence.document_path.clone();
+        let (serialized_source, bundled_index) = match self.persistence.bundled_index {
+            Some(index) => (
+                Some(persist_bundled_environment_delete(
+                    &document_path,
+                    &self.original_source,
+                    index,
+                )?),
+                Some(index),
+            ),
+            None => {
+                persist_unbundled_environment_delete(&document_path, &self.original_source)?;
+                (None, None)
+            }
+        };
+        Ok(CompletedEnvironmentDelete {
+            name: self.name,
+            document_path,
+            serialized_source,
+            bundled_index,
+        })
+    }
+}
+
+/// The refreshed repository baseline produced by an environment deletion.
+#[derive(Debug)]
+pub struct CompletedEnvironmentDelete {
+    name: String,
+    document_path: PathBuf,
+    serialized_source: Option<Vec<u8>>,
+    bundled_index: Option<usize>,
+}
+
 /// A filesystem environment-create save captured for background execution.
 #[derive(Debug)]
 pub struct PreparedEnvironmentCreate {
@@ -660,6 +893,7 @@ struct EnvironmentPersistence {
 enum EnvironmentYamlMutation {
     Set { variable: Variable },
     Unset { name: String },
+    Replace { environment: Environment },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1270,6 +1504,142 @@ fn persist_unbundled_environment_create(
     Ok((document_path, serialized))
 }
 
+fn persist_bundled_environment_delete(
+    document_path: &Path,
+    original_source: &[u8],
+    index: usize,
+) -> Result<Vec<u8>, SaveError> {
+    let _save_lock = SaveLock::acquire(document_path)?;
+    let current = fs::read(document_path).map_err(|source| SaveError::Io {
+        path: document_path.to_owned(),
+        source,
+    })?;
+    if current != original_source {
+        return Err(SaveError::ConcurrentModification(document_path.to_owned()));
+    }
+    let mut document: Value = serde_yaml_ng::from_slice(original_source).map_err(|error| {
+        SaveError::InvalidDocument(format!("retained source cannot be parsed: {error}"))
+    })?;
+    let mapping = document.as_mapping_mut().ok_or_else(|| {
+        SaveError::InvalidDocument("the collection document is not a mapping".to_owned())
+    })?;
+    let config = mapping_child(mapping, "config")?;
+    let environments = config
+        .get_mut(string_key("environments"))
+        .and_then(Value::as_sequence_mut)
+        .ok_or_else(|| {
+            SaveError::InvalidDocument("collection config has no environments sequence".to_owned())
+        })?;
+    if index >= environments.len() {
+        return Err(SaveError::InvalidDocument(format!(
+            "environment index {index} is out of bounds"
+        )));
+    }
+    environments.remove(index);
+    let serialized = serde_yaml_ng::to_string(&document)
+        .map_err(SaveError::Serialize)?
+        .into_bytes();
+    atomic_write(document_path, &serialized, original_source)?;
+    Ok(serialized)
+}
+
+fn unbundled_rename_destination(
+    persistence: &EnvironmentPersistence,
+    original_name: &str,
+    new_name: &str,
+) -> Option<PathBuf> {
+    if persistence.bundled_index.is_some() || original_name == new_name {
+        return None;
+    }
+    let extension = persistence
+        .document_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("yml");
+    let destination = persistence
+        .document_path
+        .with_file_name(format!("{new_name}.{extension}"));
+    (destination != persistence.document_path).then_some(destination)
+}
+
+fn persist_unbundled_environment_rename(
+    old_path: &Path,
+    new_path: &Path,
+    original_source: &[u8],
+    replacement: &Environment,
+) -> Result<(Vec<u8>, PathBuf), SaveError> {
+    let _old_lock = SaveLock::acquire(old_path)?;
+    let _new_lock = SaveLock::acquire(new_path)?;
+    if new_path.exists() {
+        return Err(SaveError::ConcurrentModification(new_path.to_owned()));
+    }
+    let current = fs::read(old_path).map_err(|source| SaveError::Io {
+        path: old_path.to_owned(),
+        source,
+    })?;
+    if current != original_source {
+        return Err(SaveError::ConcurrentModification(old_path.to_owned()));
+    }
+    let mut document: Value = serde_yaml_ng::from_slice(original_source).map_err(|error| {
+        SaveError::InvalidDocument(format!("retained source cannot be parsed: {error}"))
+    })?;
+    apply_environment_replace(&mut document, replacement)?;
+    let serialized = serde_yaml_ng::to_string(&document)
+        .map_err(SaveError::Serialize)?
+        .into_bytes();
+    write_new_environment_file(new_path, &serialized)?;
+    if let Err(error) = remove_unbundled_environment_file(old_path) {
+        let _ = fs::remove_file(new_path);
+        return Err(error);
+    }
+    Ok((serialized, new_path.to_owned()))
+}
+
+fn persist_unbundled_environment_delete(
+    document_path: &Path,
+    original_source: &[u8],
+) -> Result<(), SaveError> {
+    let _save_lock = SaveLock::acquire(document_path)?;
+    let current = fs::read(document_path).map_err(|source| SaveError::Io {
+        path: document_path.to_owned(),
+        source,
+    })?;
+    if current != original_source {
+        return Err(SaveError::ConcurrentModification(document_path.to_owned()));
+    }
+    remove_unbundled_environment_file(document_path)
+}
+
+fn remove_unbundled_environment_file(document_path: &Path) -> Result<(), SaveError> {
+    static NEXT_DELETE_ID: AtomicU64 = AtomicU64::new(0);
+    let filename = document_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("environment.yml");
+    let tombstone = loop {
+        let id = NEXT_DELETE_ID.fetch_add(1, Ordering::Relaxed);
+        let candidate = document_path.with_file_name(format!(
+            ".{filename}.probe-delete-{}-{id}",
+            std::process::id()
+        ));
+        if !candidate.exists() {
+            break candidate;
+        }
+    };
+    fs::rename(document_path, &tombstone).map_err(|source| SaveError::Io {
+        path: document_path.to_owned(),
+        source,
+    })?;
+    if let Err(source) = fs::remove_file(&tombstone) {
+        let _ = fs::rename(&tombstone, document_path);
+        return Err(SaveError::Io {
+            path: tombstone,
+            source,
+        });
+    }
+    Ok(())
+}
+
 fn write_new_environment_file(path: &Path, contents: &[u8]) -> Result<(), SaveError> {
     let map_io = |source| SaveError::Io {
         path: path.to_owned(),
@@ -1353,7 +1723,147 @@ fn apply_environment_mutation(
         EnvironmentYamlMutation::Unset { name } => {
             apply_environment_variable_unset(environment, name)
         }
+        EnvironmentYamlMutation::Replace {
+            environment: replacement,
+        } => apply_environment_replace(environment, replacement),
     }
+}
+
+fn environment_replacement_with_retained_secrets(
+    original: &Environment,
+    mut replacement: Environment,
+) -> Result<Environment, SaveError> {
+    validate_unique_variable_names(&replacement).map_err(SaveError::Environment)?;
+    let mut merged = Vec::new();
+    let mut seen = BTreeSet::new();
+    for variable in &original.variables {
+        match variable {
+            EnvironmentVariable::Secret(secret) => {
+                if let Some(name) = secret.name.as_deref().filter(|name| !name.is_empty()) {
+                    if replacement.variables.iter().any(|variable| {
+                        matches!(
+                            variable,
+                            EnvironmentVariable::Plain(variable)
+                                if variable.name.as_deref() == Some(name)
+                        )
+                    }) {
+                        return Err(SaveError::Environment(
+                            EnvironmentResolutionError::DuplicateVariable {
+                                environment: replacement.name.clone(),
+                                variable: name.to_owned(),
+                            },
+                        ));
+                    }
+                    seen.insert(name.to_owned());
+                }
+                merged.push(variable.clone());
+            }
+            EnvironmentVariable::Plain(plain) => {
+                let Some(name) = plain.name.as_deref().filter(|name| !name.is_empty()) else {
+                    merged.push(variable.clone());
+                    continue;
+                };
+                let Some(updated) =
+                    replacement
+                        .variables
+                        .iter()
+                        .find_map(|variable| match variable {
+                            EnvironmentVariable::Plain(variable)
+                                if variable.name.as_deref() == Some(name) =>
+                            {
+                                Some(variable.clone())
+                            }
+                            _ => None,
+                        })
+                else {
+                    continue;
+                };
+                seen.insert(name.to_owned());
+                merged.push(EnvironmentVariable::Plain(updated));
+            }
+        }
+    }
+    for variable in replacement.variables {
+        let EnvironmentVariable::Plain(plain) = &variable else {
+            continue;
+        };
+        let Some(name) = plain.name.as_deref().filter(|name| !name.is_empty()) else {
+            merged.push(variable);
+            continue;
+        };
+        if seen.contains(name) {
+            continue;
+        }
+        seen.insert(name.to_owned());
+        merged.push(variable);
+    }
+    replacement.variables = merged;
+    Ok(replacement)
+}
+
+fn apply_environment_replace(
+    environment: &mut Value,
+    replacement: &Environment,
+) -> Result<(), SaveError> {
+    let mapping = environment.as_mapping_mut().ok_or_else(|| {
+        SaveError::InvalidDocument("the environment document is not a mapping".to_owned())
+    })?;
+    mapping.insert(string_key("name"), Value::String(replacement.name.clone()));
+    match &replacement.extends {
+        Some(parent) => {
+            mapping.insert(string_key("extends"), Value::String(parent.clone()));
+        }
+        None => {
+            mapping.remove(string_key("extends"));
+        }
+    }
+
+    let variables = sequence_child(mapping, "variables")?;
+    let plain = replacement
+        .variables
+        .iter()
+        .filter_map(|variable| match variable {
+            EnvironmentVariable::Plain(variable) => Some(variable),
+            EnvironmentVariable::Secret(_) => None,
+        })
+        .collect::<Vec<_>>();
+    let mut retained = Vec::new();
+    for mut entry in std::mem::take(variables) {
+        let Some(existing) = entry.as_mapping_mut() else {
+            retained.push(entry);
+            continue;
+        };
+        if yaml_bool_field(existing, "secret") == Some(true) {
+            retained.push(entry);
+            continue;
+        }
+        let Some(name) = yaml_string_field(existing, "name").map(str::to_owned) else {
+            retained.push(entry);
+            continue;
+        };
+        let Some(variable) = plain
+            .iter()
+            .find(|variable| variable.name.as_deref() == Some(name.as_str()))
+        else {
+            continue;
+        };
+        existing.insert(string_key("disabled"), Value::Bool(variable.disabled));
+        merge_environment_variable_value(existing, variable);
+        retained.push(entry);
+    }
+    for variable in plain {
+        let name = variable.name.as_deref();
+        let already_retained = retained.iter().any(|entry| {
+            entry
+                .as_mapping()
+                .is_some_and(|entry| yaml_string_field(entry, "name") == name)
+        });
+        if !already_retained {
+            retained.push(new_environment_variable_value(variable));
+        }
+    }
+    *variables = retained;
+    Ok(())
 }
 
 fn apply_environment_variable_set(

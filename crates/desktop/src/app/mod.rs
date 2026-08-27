@@ -24,15 +24,16 @@ use gpui_base::{
     AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Scrollbar, ScrollbarMode, Tab, Tabs,
 };
 use probe_core::{
-    AuthenticationKind, AuthenticationValue, Body, FileReference, FormField, Header, HttpRequest,
-    MultipartPart, MultipartPartKind, MultipartValue, QueryParameter, RawBodyKind, RequestBody,
-    RequestKey, WorkspaceItemRef, add_path_parameter, ensure_path_parameters_from_url,
+    AuthenticationKind, AuthenticationValue, Body, Environment, EnvironmentVariable, FileReference,
+    FormField, Header, HttpRequest, MultipartPart, MultipartPartKind, MultipartValue,
+    QueryParameter, RawBodyKind, RequestBody, RequestKey, Variable, VariableValue,
+    VariableValueSet, WorkspaceItemRef, add_path_parameter, ensure_path_parameters_from_url,
     remove_path_parameter_at, rename_path_parameter_at, resolve_environment, resolve_request,
 };
 use probe_http::{ExecutionOptions, HttpError, HttpResponse};
 use probe_opencollection::{
-    ItemKind, LoadedWorkspace, StructureOperation, StructureResult, create_bundled_workspace,
-    create_bundled_workspace_from_collection, load_workspace,
+    CompletedEnvironmentDelete, ItemKind, LoadedWorkspace, StructureOperation, StructureResult,
+    create_bundled_workspace, create_bundled_workspace_from_collection, load_workspace,
 };
 use probe_postman::{
     ImportedPostmanCollection, PostmanImportError, PostmanImportPreview, inspect_postman_source,
@@ -49,9 +50,9 @@ mod tree;
 pub(crate) use dialogs::IMPORT_DIAGNOSTIC_GROUP_LIMIT;
 use dialogs::{
     ApplicationDialog, ApplicationDialogAction, CANCEL_DIALOG_ACTION, DesktopMenu,
-    DesktopMenuDefinition, DesktopMenuItem, DesktopSubmenu, DialogActionSpec, ImportSource,
-    PendingClose, PostmanConversionResult, YaakConversionResult, format_import_diagnostics,
-    suggested_collection_filename,
+    DesktopMenuDefinition, DesktopMenuItem, DesktopSubmenu, DialogActionSpec,
+    EnvironmentManagerDialog, ImportSource, PendingClose, PostmanConversionResult,
+    YaakConversionResult, format_import_diagnostics, suggested_collection_filename,
 };
 use presentation::{
     InspectListRow, PrettyRevealState, ShellSelectors, inspect_list_rows, inspect_row_index,
@@ -154,10 +155,13 @@ gpui::actions!(
         CloseImportSubmenu,
         SubmitStructureDialog,
         SubmitCreateEnvironmentDialog,
+        SubmitEnvironmentManagerDialog,
         SubmitApplicationDialog,
         SubmitApplicationDialogDestructive,
         CancelStructureDialog,
         CancelCreateEnvironmentDialog,
+        CancelEnvironmentManagerDialog,
+        DeleteSelectedEnvironment,
         CancelApplicationDialog
     ]
 );
@@ -191,6 +195,7 @@ pub(crate) struct ProbeApp {
     tree_focus_handle: FocusHandle,
     structure_dialog_focus: FocusHandle,
     create_environment_dialog_focus: FocusHandle,
+    environment_manager_dialog_focus: FocusHandle,
     application_dialog_focus: FocusHandle,
     loaded_workspace: Option<LoadedWorkspace>,
     workspace_path: Option<PathBuf>,
@@ -203,6 +208,7 @@ pub(crate) struct ProbeApp {
     request_save_task: Option<Task<()>>,
     environment_save_task: Option<Task<()>>,
     environment_save_workspace_path: Option<PathBuf>,
+    environment_manager_close_after_save: bool,
     pending_environment_saves: BTreeSet<(String, String)>,
     structure_task: Option<Task<()>>,
     filesystem_watcher: Option<notify::RecommendedWatcher>,
@@ -223,6 +229,8 @@ pub(crate) struct ProbeApp {
     tree_context_menu_position: Option<Point<Pixels>>,
     tab_context_menu: Option<RequestKey>,
     tab_context_menu_position: Option<Point<Pixels>>,
+    environment_manager_context_menu: Option<String>,
+    environment_manager_context_menu_position: Option<Point<Pixels>>,
     request_tab_tooltip: Option<RequestTabTooltip>,
     request_tab_tooltip_epoch: usize,
     request_tab_tooltip_task: Option<Task<()>>,
@@ -236,6 +244,7 @@ pub(crate) struct ProbeApp {
     tree_auto_scroll: AutoScroll,
     structure_dialog: Option<StructureDialog>,
     create_environment_dialog: Option<String>,
+    environment_manager_dialog: Option<EnvironmentManagerDialog>,
     application_dialog: Option<ApplicationDialog>,
     pending_application_dialogs: VecDeque<ApplicationDialog>,
     request_editor: RequestEditorState,
@@ -294,6 +303,7 @@ impl ProbeApp {
         let tree_focus_handle = cx.focus_handle();
         let structure_dialog_focus = cx.focus_handle();
         let create_environment_dialog_focus = cx.focus_handle();
+        let environment_manager_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
         let workspace_import_trigger_focus = cx.focus_handle();
         let workspace_import_popup_focus = cx.focus_handle();
@@ -311,6 +321,7 @@ impl ProbeApp {
             tree_focus_handle,
             structure_dialog_focus,
             create_environment_dialog_focus,
+            environment_manager_dialog_focus,
             application_dialog_focus,
             loaded_workspace: None,
             workspace_path: None,
@@ -323,6 +334,7 @@ impl ProbeApp {
             request_save_task: None,
             environment_save_task: None,
             environment_save_workspace_path: None,
+            environment_manager_close_after_save: false,
             pending_environment_saves: BTreeSet::new(),
             structure_task: None,
             filesystem_watcher: None,
@@ -343,6 +355,8 @@ impl ProbeApp {
             tree_context_menu_position: None,
             tab_context_menu: None,
             tab_context_menu_position: None,
+            environment_manager_context_menu: None,
+            environment_manager_context_menu_position: None,
             request_tab_tooltip: None,
             request_tab_tooltip_epoch: 0,
             request_tab_tooltip_task: None,
@@ -356,6 +370,7 @@ impl ProbeApp {
             tree_auto_scroll: AutoScroll::default(),
             structure_dialog: None,
             create_environment_dialog: None,
+            environment_manager_dialog: None,
             application_dialog: None,
             pending_application_dialogs: VecDeque::new(),
             request_editor: RequestEditorState::default(),
@@ -1434,6 +1449,8 @@ impl ProbeApp {
         self.tree_context_menu_position = None;
         self.tab_context_menu = None;
         self.tab_context_menu_position = None;
+        self.environment_manager_context_menu = None;
+        self.environment_manager_context_menu_position = None;
     }
 
     fn open_desktop_menu(&mut self, menu: DesktopMenu, cx: &mut Context<Self>) {
@@ -1467,6 +1484,17 @@ impl ProbeApp {
                 self.discard_dirty_requests(&keys);
                 self.finish_pending_close(pending, window, cx);
             }
+            (ApplicationDialog::UnsavedEnvironment, ApplicationDialogAction::Save) => {
+                self.environment_manager_close_after_save = true;
+                self.save_environment_manager_dialog(window, cx);
+                if self.environment_save_task.is_none() {
+                    self.environment_manager_close_after_save = false;
+                    self.restore_environment_dialog_focus(window, cx);
+                }
+            }
+            (ApplicationDialog::UnsavedEnvironment, ApplicationDialogAction::Discard) => {
+                self.close_environment_manager_dialog(window, cx);
+            }
             (ApplicationDialog::Delete { kind, selector, .. }, ApplicationDialogAction::Delete) => {
                 let operation = match kind {
                     ItemKind::Request => StructureOperation::DeleteRequest { selector },
@@ -1474,6 +1502,10 @@ impl ProbeApp {
                 };
                 self.apply_structure(operation, window, cx);
             }
+            (
+                ApplicationDialog::DeleteEnvironment { name, .. },
+                ApplicationDialogAction::Delete,
+            ) => self.delete_environment(name, window, cx),
             (
                 ApplicationDialog::FilesystemConflict { path, .. },
                 ApplicationDialogAction::UseDisk,
@@ -1522,7 +1554,7 @@ impl ProbeApp {
                 cx.notify();
             }
             (_, ApplicationDialogAction::Cancel) => {
-                self.focus_handle.focus(window, cx);
+                self.restore_environment_dialog_focus(window, cx);
                 cx.notify();
             }
             (dialog, _) => {
@@ -1613,6 +1645,7 @@ impl ProbeApp {
         self.selected_tree_item = None;
         self.structure_dialog = None;
         self.create_environment_dialog = None;
+        self.discard_environment_manager_dialog();
         self.application_dialog = None;
         self.pending_application_dialogs.clear();
         self.dismiss_transient_surfaces();
@@ -1771,10 +1804,13 @@ impl ProbeApp {
                     .map(|request| (located.key(), request))
             })
             .collect::<Vec<_>>();
+        let environment_manager_reload = self.environment_manager_reload_snapshot(old);
         self.install_reloaded_workspace(reconciled.workspace, baselines, &key_remaps);
         self.restore_shell_selectors(&reconciled.selector_remaps, selectors);
         self.remap_structure_dialog(&reconciled.selector_remaps);
         self.create_environment_dialog = None;
+        self.message = None;
+        self.sync_environment_manager_after_reload(environment_manager_reload);
         if self.shell.selected_environment().is_some_and(|name| {
             !self
                 .loaded_workspace
@@ -1788,7 +1824,6 @@ impl ProbeApp {
             self.shell.select_environment(None);
         }
         self.rebuild_visible_tree_rows();
-        self.message = None;
         self.persist_session(cx);
         cx.notify();
     }
@@ -1948,12 +1983,428 @@ impl ProbeApp {
         cx.notify();
     }
 
+    fn open_environment_manager_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(loaded) = &self.loaded_workspace else {
+            return;
+        };
+        let selected = self
+            .shell
+            .selected_environment()
+            .and_then(|name| {
+                loaded
+                    .workspace()
+                    .environments()
+                    .iter()
+                    .find(|environment| environment.name == name)
+            })
+            .or_else(|| loaded.workspace().environments().first());
+        let Some(selected) = selected else {
+            self.open_create_environment_dialog(window, cx);
+            return;
+        };
+        self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(selected));
+        self.environment_manager_dialog_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    fn request_close_environment_manager_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
+        if self.environment_manager_is_dirty() {
+            self.show_application_dialog(ApplicationDialog::UnsavedEnvironment, window, cx);
+            return;
+        }
+        self.close_environment_manager_dialog(window, cx);
+    }
+
+    fn close_environment_manager_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
+        self.discard_environment_manager_dialog();
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
+    fn discard_environment_manager_dialog(&mut self) {
+        self.environment_manager_context_menu = None;
+        self.environment_manager_context_menu_position = None;
+        self.environment_manager_close_after_save = false;
+        self.environment_manager_dialog = None;
+    }
+
+    fn environment_manager_reload_snapshot(
+        &self,
+        old: &LoadedWorkspace,
+    ) -> Option<(EnvironmentManagerDialog, Option<Environment>)> {
+        let dialog = self.environment_manager_dialog.as_ref()?;
+        let original = old
+            .workspace()
+            .environments()
+            .iter()
+            .find(|environment| environment.name == dialog.original_name)
+            .cloned();
+        Some((dialog.clone(), original))
+    }
+
+    fn sync_environment_manager_after_reload(
+        &mut self,
+        previous: Option<(EnvironmentManagerDialog, Option<Environment>)>,
+    ) {
+        let Some((dialog, previous_original)) = previous else {
+            return;
+        };
+        self.environment_manager_context_menu = None;
+        self.environment_manager_context_menu_position = None;
+        let Some(disk) = self.loaded_workspace.as_ref().and_then(|loaded| {
+            loaded
+                .workspace()
+                .environments()
+                .iter()
+                .find(|environment| environment.name == dialog.original_name)
+                .cloned()
+        }) else {
+            self.discard_environment_manager_dialog();
+            return;
+        };
+        let dirty = previous_original
+            .as_ref()
+            .is_none_or(|original| original != &dialog.draft);
+        let environment_changed_on_disk = previous_original
+            .as_ref()
+            .is_none_or(|original| original != &disk);
+        if !dirty {
+            self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(&disk));
+            return;
+        }
+        if environment_changed_on_disk {
+            self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(&disk));
+            self.message = Some(
+                "This environment changed on disk. Unsaved environment edits were discarded."
+                    .to_owned(),
+            );
+            return;
+        }
+        self.environment_manager_dialog = Some(dialog);
+    }
+
+    fn apply_environment_manager_draft(
+        &mut self,
+        cx: &mut Context<Self>,
+        update: impl FnOnce(&mut EnvironmentManagerDialog),
+    ) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
+        if let Some(dialog) = self.environment_manager_dialog.as_mut() {
+            update(dialog);
+            cx.notify();
+        }
+    }
+
+    fn select_environment_manager_environment(&mut self, name: &str, cx: &mut Context<Self>) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
+        let Some(dialog) = self.environment_manager_dialog.as_ref() else {
+            return;
+        };
+        let Some(loaded) = &self.loaded_workspace else {
+            return;
+        };
+        let Some(original) = loaded
+            .workspace()
+            .environments()
+            .iter()
+            .find(|environment| environment.name == dialog.original_name)
+        else {
+            return;
+        };
+        if &dialog.draft != original {
+            self.message = Some("Save or cancel the current environment changes first.".to_owned());
+            cx.notify();
+            return;
+        }
+        if let Some(environment) = loaded
+            .workspace()
+            .environments()
+            .iter()
+            .find(|environment| environment.name == name)
+        {
+            self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(environment));
+            self.message = None;
+            cx.notify();
+        }
+    }
+
+    fn save_environment_manager_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment_save_task.is_some()
+            || self.request_save_task.is_some()
+            || self.structure_task.is_some()
+            || !self.pending_environment_saves.is_empty()
+        {
+            self.message = Some("Wait for the current save to finish.".to_owned());
+            cx.notify();
+            return;
+        }
+        let Some(dialog) = self.environment_manager_dialog.as_ref() else {
+            return;
+        };
+        let mut replacement = dialog.draft.clone();
+        replacement.name = replacement.name.trim().to_owned();
+        for variable in &mut replacement.variables {
+            if let EnvironmentVariable::Plain(variable) = variable
+                && let Some(name) = variable.name.as_mut()
+            {
+                *name = name.trim().to_owned();
+            }
+        }
+        let invalid_variable = replacement.variables.iter().any(|variable| {
+            matches!(
+                variable,
+                EnvironmentVariable::Plain(variable)
+                    if variable.name.as_deref().is_none_or(str::is_empty)
+            )
+        });
+        if replacement.name.is_empty() || invalid_variable {
+            self.message = Some("Environment and variable names are required.".to_owned());
+            cx.notify();
+            return;
+        }
+        let original_name = dialog.original_name.clone();
+        let saved_name = replacement.name.clone();
+        let Some(loaded) = &self.loaded_workspace else {
+            return;
+        };
+        let prepared = match loaded.prepare_environment_replace(&original_name, replacement) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.message = Some(format!("Could not save environment: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.environment_save_workspace_path = self.workspace_path.clone();
+        self.environment_save_task = Some(cx.spawn_in(window, async move |view, window| {
+            let result = window
+                .background_spawn(async move { prepared.execute() })
+                .await;
+            let _ = view.update_in(window, |view, window, cx| {
+                view.environment_save_task = None;
+                match result {
+                    Ok(saved) => {
+                        if view.environment_save_workspace_path == view.workspace_path
+                            && let Some(loaded) = view.loaded_workspace.as_mut()
+                        {
+                            loaded.complete_environment_replace(saved);
+                            let environment = loaded
+                                .workspace()
+                                .environments()
+                                .iter()
+                                .find(|environment| environment.name == saved_name)
+                                .cloned();
+                            if let Some(environment) = environment {
+                                if view.shell.selected_environment() == Some(original_name.as_str())
+                                {
+                                    view.select_environment(Some(environment.name.clone()), cx);
+                                }
+                                if view.environment_manager_close_after_save {
+                                    view.close_environment_manager_dialog(window, cx);
+                                } else {
+                                    view.environment_manager_dialog =
+                                        Some(EnvironmentManagerDialog::new(&environment));
+                                }
+                            }
+                        }
+                        view.environment_manager_close_after_save = false;
+                        view.message = None;
+                    }
+                    Err(error) => {
+                        view.environment_manager_close_after_save = false;
+                        view.message = Some(format!("Could not save environment: {error}"));
+                    }
+                }
+                view.environment_save_workspace_path = None;
+                view.start_next_request_save(window, cx);
+                view.start_next_environment_save(window, cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn confirm_delete_environment(
+        &mut self,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_application_dialog(
+            ApplicationDialog::DeleteEnvironment {
+                name,
+                detail: "The environment and its variables will be removed. This cannot be undone."
+                    .to_owned(),
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn delete_selected_environment_from_manager(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
+        let Some(name) = self
+            .environment_manager_dialog
+            .as_ref()
+            .map(|dialog| dialog.original_name.clone())
+        else {
+            return;
+        };
+        self.confirm_delete_environment(name, window, cx);
+    }
+
+    fn delete_environment(&mut self, name: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment_save_task.is_some()
+            || self.request_save_task.is_some()
+            || self.structure_task.is_some()
+        {
+            self.message = Some("Wait for the current save to finish.".to_owned());
+            cx.notify();
+            return;
+        }
+        let Some(loaded) = &self.loaded_workspace else {
+            return;
+        };
+        let prepared = match loaded.prepare_environment_delete(&name) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.message = Some(format!("Could not delete environment: {error}"));
+                cx.notify();
+                return;
+            }
+        };
+        self.environment_save_workspace_path = self.workspace_path.clone();
+        self.environment_save_task = Some(cx.spawn_in(window, async move |view, window| {
+            let result = window
+                .background_spawn(async move { prepared.execute() })
+                .await;
+            let _ = view.update_in(window, |view, window, cx| {
+                view.environment_save_task = None;
+                match result {
+                    Ok(saved) => {
+                        let close_manager = view.complete_deleted_environment(saved, &name, cx);
+                        view.message = None;
+                        if close_manager {
+                            view.close_environment_manager_dialog(window, cx);
+                        }
+                    }
+                    Err(error) => {
+                        view.message = Some(format!("Could not delete environment: {error}"));
+                    }
+                }
+                view.environment_save_workspace_path = None;
+                view.start_next_request_save(window, cx);
+                view.start_next_environment_save(window, cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn complete_deleted_environment(
+        &mut self,
+        saved: CompletedEnvironmentDelete,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.environment_save_workspace_path != self.workspace_path
+            || self.loaded_workspace.is_none()
+        {
+            return false;
+        }
+        let deleted_current = self
+            .environment_manager_dialog
+            .as_ref()
+            .is_some_and(|dialog| dialog.original_name == name);
+        let deleted_index = self.loaded_workspace.as_ref().and_then(|loaded| {
+            loaded
+                .workspace()
+                .environments()
+                .iter()
+                .position(|environment| environment.name == name)
+        });
+        self.loaded_workspace
+            .as_mut()
+            .expect("workspace was present")
+            .complete_environment_delete(saved);
+        if self.shell.selected_environment() == Some(name) {
+            self.select_environment(None, cx);
+        }
+        if !deleted_current {
+            return false;
+        }
+        let next = self.loaded_workspace.as_ref().and_then(|loaded| {
+            let environments = loaded.workspace().environments();
+            deleted_index.and_then(|index| {
+                environments
+                    .get(index)
+                    .or_else(|| environments.get(index.saturating_sub(1)))
+                    .cloned()
+            })
+        });
+        match next {
+            Some(environment) => {
+                self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(&environment));
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn environment_manager_is_dirty(&self) -> bool {
+        let Some(dialog) = self.environment_manager_dialog.as_ref() else {
+            return false;
+        };
+        let Some(loaded) = self.loaded_workspace.as_ref() else {
+            return false;
+        };
+        loaded
+            .workspace()
+            .environments()
+            .iter()
+            .find(|environment| environment.name == dialog.original_name)
+            .is_none_or(|environment| environment != &dialog.draft)
+    }
+
+    fn restore_environment_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment_manager_dialog.is_some() {
+            self.environment_manager_dialog_focus.focus(window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
     fn open_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loaded_workspace.is_none()
             || self.structure_task.is_some()
             || self.environment_save_task.is_some()
             || self.request_save_task.is_some()
         {
+            return;
+        }
+        if self.environment_manager_is_dirty() {
+            self.message = Some("Save or discard unsaved environment changes first.".to_owned());
+            cx.notify();
             return;
         }
         self.structure_dialog = None;
@@ -1964,7 +2415,7 @@ impl ProbeApp {
 
     fn close_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.create_environment_dialog = None;
-        self.focus_handle.focus(window, cx);
+        self.restore_environment_dialog_focus(window, cx);
         cx.notify();
     }
 
@@ -1979,7 +2430,7 @@ impl ProbeApp {
             return;
         }
         self.create_environment_dialog = None;
-        self.focus_handle.focus(window, cx);
+        self.restore_environment_dialog_focus(window, cx);
         self.create_named_environment(name, window, cx);
     }
 
@@ -1995,6 +2446,11 @@ impl ProbeApp {
         {
             self.message =
                 Some("Wait for the current save before creating an environment.".to_owned());
+            cx.notify();
+            return;
+        }
+        if self.environment_manager_is_dirty() {
+            self.message = Some("Save or discard unsaved environment changes first.".to_owned());
             cx.notify();
             return;
         }
@@ -2023,6 +2479,12 @@ impl ProbeApp {
                             && let Some(loaded) = view.loaded_workspace.as_mut()
                         {
                             loaded.complete_environment_create(saved);
+                            view.environment_manager_dialog = loaded
+                                .workspace()
+                                .environments()
+                                .iter()
+                                .find(|environment| environment.name == name)
+                                .map(EnvironmentManagerDialog::new);
                             view.select_environment(Some(name), cx);
                         }
                         view.environment_save_workspace_path = None;
@@ -3430,6 +3892,29 @@ impl ProbeApp {
         cx.notify();
     }
 
+    fn open_environment_manager_context_menu(
+        &mut self,
+        name: String,
+        position: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.environment_manager_dialog.is_none() || self.environment_save_task.is_some() {
+            return;
+        }
+        self.environment_manager_context_menu = Some(name);
+        self.environment_manager_context_menu_position = Some(position);
+        cx.notify();
+    }
+
+    fn close_environment_manager_context_menu(&mut self, cx: &mut Context<Self>) {
+        if self.environment_manager_context_menu.is_none() {
+            return;
+        }
+        self.environment_manager_context_menu = None;
+        self.environment_manager_context_menu_position = None;
+        cx.notify();
+    }
+
     fn open_request_tab_tooltip(
         &mut self,
         key: RequestKey,
@@ -3793,12 +4278,22 @@ fn bind_platform_hotkeys(cx: &mut App) {
             SubmitCreateEnvironmentDialog,
             Some("CreateEnvironmentDialog"),
         ),
+        KeyBinding::new(
+            "enter",
+            SubmitEnvironmentManagerDialog,
+            Some("EnvironmentManagerDialog"),
+        ),
         KeyBinding::new("enter", SubmitApplicationDialog, Some("ApplicationDialog")),
         KeyBinding::new("escape", CancelStructureDialog, Some("StructureDialog")),
         KeyBinding::new(
             "escape",
             CancelCreateEnvironmentDialog,
             Some("CreateEnvironmentDialog"),
+        ),
+        KeyBinding::new(
+            "escape",
+            CancelEnvironmentManagerDialog,
+            Some("EnvironmentManagerDialog"),
         ),
         KeyBinding::new("escape", CancelApplicationDialog, Some("ApplicationDialog")),
     ]);
@@ -3824,6 +4319,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("cmd-e", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("backspace", DeleteTreeItem, Some("RequestTree")),
         KeyBinding::new(
+            "backspace",
+            DeleteSelectedEnvironment,
+            Some("EnvironmentManagerDialog"),
+        ),
+        KeyBinding::new(
             "cmd-backspace",
             SubmitApplicationDialogDestructive,
             Some("ApplicationDialog"),
@@ -3847,6 +4347,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-d", DuplicateRequest, Some("RequestTree")),
         KeyBinding::new("f2", RenameTreeItem, Some("RequestTree")),
         KeyBinding::new("delete", DeleteTreeItem, Some("RequestTree")),
+        KeyBinding::new(
+            "delete",
+            DeleteSelectedEnvironment,
+            Some("EnvironmentManagerDialog"),
+        ),
         KeyBinding::new(
             "ctrl-delete",
             SubmitApplicationDialogDestructive,
