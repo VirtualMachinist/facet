@@ -556,6 +556,7 @@ fn variable_tooltip_presentation_creates_missing_writable_variables() {
         secrets: ["token".to_owned()].into_iter().collect(),
         unavailable_message: "unavailable".to_owned(),
         on_change: Some(std::rc::Rc::new(|_, _, _, _| {})),
+        on_manage_environments: None,
     };
     let existing = variable_tooltip_presentation("host", &variables);
     assert_eq!(existing.value, "api.example");

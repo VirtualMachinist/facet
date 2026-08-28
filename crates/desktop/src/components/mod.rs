@@ -39,7 +39,7 @@ mod menus;
 mod toasts;
 pub(crate) use buttons::{
     DialogActionStyle, dialog_action_button, dialog_choice_button, primary_button,
-    secondary_button, secondary_menu_trigger,
+    secondary_button, secondary_menu_trigger, text_button,
 };
 use icons::{CHECK_SVG, CHEVRON_RIGHT_SVG, SEARCH_SVG, folder_open_icon, library_icon};
 pub(crate) use icons::{
@@ -400,6 +400,7 @@ pub(crate) fn dialog_layer(
 }
 
 type VariableChangeHandler = Rc<dyn Fn(&str, String, &mut Window, &mut App)>;
+type ManageEnvironmentsHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 #[derive(Clone, Default)]
 pub(crate) struct VariableContext {
@@ -407,6 +408,7 @@ pub(crate) struct VariableContext {
     pub(crate) secrets: BTreeSet<String>,
     pub(crate) unavailable_message: String,
     pub(crate) on_change: Option<VariableChangeHandler>,
+    pub(crate) on_manage_environments: Option<ManageEnvironmentsHandler>,
 }
 
 impl std::fmt::Debug for VariableContext {
@@ -577,6 +579,16 @@ impl VariableHoverState {
         }));
     }
 
+    fn dismiss(&mut self, cx: &mut Context<Self>) {
+        self.cancel_tasks();
+        self.open = false;
+        self.active = None;
+        self.hovering_trigger = false;
+        self.hovering_content = false;
+        self.input_focused = false;
+        cx.notify();
+    }
+
     fn cancel_tasks(&mut self) {
         self.epoch += 1;
         self.open_task = None;
@@ -601,8 +613,9 @@ fn variable_tooltip_popup(
     presentation: VariableTooltipPresentation,
     hover: Entity<VariableHoverState>,
     value_input: Entity<InputState>,
+    on_manage_environments: Option<ManageEnvironmentsHandler>,
 ) -> impl IntoElement {
-    let hover_for_content = hover;
+    let hover_for_content = hover.clone();
     div()
         .id("variable-input-tooltip-popup")
         .debug_selector(|| "variable-input-tooltip-popup".into())
@@ -653,6 +666,23 @@ fn variable_tooltip_popup(
             presentation.placeholder,
             presentation.editable,
         ))
+        .when_some(on_manage_environments, |popup, on_manage| {
+            let hover = hover.clone();
+            popup.child(
+                text_button(
+                    theme,
+                    "variable-tooltip-manage-environments",
+                    "Manage environments…",
+                    move |_, window, cx| {
+                        hover.update(cx, |state, cx| state.dismiss(cx));
+                        on_manage(window, cx);
+                    },
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                    cx.stop_propagation();
+                }),
+            )
+        })
 }
 
 fn variable_value_input(
@@ -3250,6 +3280,7 @@ fn with_variable_tooltip(
                         presentation,
                         hover,
                         value_input,
+                        variables.on_manage_environments,
                     )),
             )
             .with_priority(POPUP_PRIORITY + 1),

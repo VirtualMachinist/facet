@@ -4095,6 +4095,38 @@ fn request_variables_render_inline_and_show_resolved_tooltips(cx: &mut TestAppCo
             .variable("baseUrl"),
         Some("https://changed.example")
     );
+    let button_point = {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("variable-tooltip-manage-environments")
+            .expect("tooltip should include Manage environments")
+            .center()
+    };
+    hover_and_wait(cx, window, button_point);
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_click(button_point, Modifiers::default());
+        visual.run_until_parked();
+    }
+    cx.run_until_parked();
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("environment-manager-dialog")
+            .expect("clicking Manage environments should open the environment manager");
+        assert!(
+            visual
+                .debug_bounds("variable-input-tooltip-popup")
+                .is_none(),
+            "opening the environment manager should dismiss the variable tooltip"
+        );
+    }
+    window
+        .update(cx, |view, window, cx| {
+            view.request_close_environment_manager_dialog(window, cx);
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
     {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         visual.simulate_click(input_point, Modifiers::default());

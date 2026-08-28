@@ -41,6 +41,36 @@ pub(crate) fn secondary_button(
     )
 }
 
+pub(crate) fn text_button(
+    theme: Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<String>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    let id = id.into();
+    let debug_id = id.to_string();
+    Button::new(id)
+        .debug_selector(move || debug_id.clone())
+        .flex_none()
+        .h(px(theme.typography.caption_size + theme.metrics.spacing_2))
+        .px(px(0.0))
+        .flex()
+        .items_center()
+        .justify_start()
+        .rounded(px(theme.metrics.radius_small))
+        .bg(transparent_black())
+        .border_1()
+        .border_color(transparent_black())
+        .cursor_pointer()
+        .font_family(theme.typography.interface_family)
+        .text_size(px(theme.typography.caption_size))
+        .text_color(theme.colors.text.secondary)
+        .hover(move |button| button.text_color(theme.colors.actions.accent))
+        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .on_click(on_click)
+        .child(label.into())
+}
+
 pub(crate) fn secondary_menu_trigger(
     theme: Theme,
     id: &'static str,

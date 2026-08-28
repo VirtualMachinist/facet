@@ -3366,11 +3366,21 @@ impl ProbeApp {
     }
 
     fn variable_context(&self, cx: &mut Context<Self>) -> components::VariableContext {
+        let on_manage_environments = self.loaded_workspace.is_some().then(|| {
+            let view = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut gpui::App| {
+                let view = view.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.open_environment_manager_dialog(window, cx);
+                    });
+                });
+            }) as Rc<dyn Fn(&mut Window, &mut gpui::App)>
+        });
         let Some(selected) = self.shell.selected_environment() else {
             return components::VariableContext {
-                values: Default::default(),
                 unavailable_message: "Select an environment to resolve this variable".to_owned(),
-                on_change: None,
+                on_manage_environments,
                 ..components::VariableContext::default()
             };
         };
@@ -3393,12 +3403,12 @@ impl ProbeApp {
                             });
                         });
                     })),
+                    on_manage_environments,
                 }
             }
             Err(error) => components::VariableContext {
-                values: Default::default(),
                 unavailable_message: error.to_string(),
-                on_change: None,
+                on_manage_environments,
                 ..components::VariableContext::default()
             },
         }
