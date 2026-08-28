@@ -21,8 +21,8 @@ use tokio::sync::oneshot;
 use super::{
     ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
     IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
-    PrettyRevealState, ProbeApp, bind_platform_hotkeys, format_import_diagnostics,
-    request_key_remaps,
+    PrettyRevealState, ProbeApp, SubmitEnvironmentManagerDialog, bind_platform_hotkeys,
+    format_import_diagnostics, request_key_remaps,
 };
 use crate::{
     request_editor::{BodyEditorKind, EditorSection},
@@ -3045,6 +3045,157 @@ fn environment_manager_saves_plain_variables_and_parent(cx: &mut TestAppContext)
         variable,
         EnvironmentVariable::Plain(variable) if variable.name.as_deref() == Some("region")
     )));
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn platform_save_hotkey_saves_dirty_environment_manager(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    cx.update(bind_platform_hotkeys);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-save-hotkey")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.apply_environment_manager_draft(cx, |dialog| {
+                dialog.draft.extends = None;
+            });
+            assert!(!view.environment_manager_save_disabled());
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes(window.into(), save_shortcut());
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(
+                has_active_toast(view, ToastIntent::Success, "Environment saved."),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(view.environment_manager_save_disabled());
+        })
+        .expect("test window should remain open");
+    let reloaded = probe_opencollection::load_workspace(&fixture).expect("saved env should load");
+    let development = reloaded
+        .workspace()
+        .environments()
+        .iter()
+        .find(|environment| environment.name == "development")
+        .unwrap();
+    assert_eq!(development.extends, None);
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn platform_save_hotkey_is_disabled_when_environment_manager_has_nothing_to_save(
+    cx: &mut TestAppContext,
+) {
+    cx.update(Theme::init);
+    cx.update(bind_platform_hotkeys);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-save-hotkey-clean")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    let request_key = workspace.requests()[0].key();
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_request(request_key, cx);
+            view.edit_request(
+                request_key,
+                |request| request.url = Some("https://dirty.example".to_owned()),
+                cx,
+            );
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            assert!(view.environment_manager_save_disabled());
+            assert!(view.request_is_dirty(request_key));
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes(window.into(), save_shortcut());
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_manager_dialog.is_some());
+            assert!(view.environment_manager_save_disabled());
+            assert!(view.request_is_dirty(request_key));
+            assert!(
+                !has_active_toast(view, ToastIntent::Success, "Environment saved."),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(
+                !has_active_toast(view, ToastIntent::Success, "Request saved."),
+                "{:?}",
+                toast_debug(view)
+            );
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
+fn platform_save_hotkey_is_disabled_while_environment_manager_save_is_busy(
+    cx: &mut TestAppContext,
+) {
+    cx.update(Theme::init);
+    cx.update(bind_platform_hotkeys);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("manager-save-hotkey-busy")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.apply_environment_manager_draft(cx, |dialog| {
+                dialog.draft.extends = None;
+            });
+            view.save_environment_manager_dialog(window, cx);
+            assert!(view.environment_save_task.is_some());
+            assert!(view.environment_manager_save_disabled());
+            window.dispatch_action(Box::new(SubmitEnvironmentManagerDialog), cx);
+            assert!(
+                !has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "Wait for the current save to finish."
+                ),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(view.environment_save_task.is_some());
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
     fs::remove_file(fixture).unwrap();
 }
 

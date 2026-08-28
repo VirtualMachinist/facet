@@ -2643,6 +2643,10 @@ impl ProbeApp {
             .is_none_or(|environment| environment != &dialog.draft)
     }
 
+    fn environment_manager_save_disabled(&self) -> bool {
+        self.environment_save_task.is_some() || !self.environment_manager_is_dirty()
+    }
+
     fn restore_environment_dialog_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.environment_manager_dialog.is_some() {
             self.environment_manager_dialog_focus.focus(window, cx);
@@ -4577,11 +4581,6 @@ fn bind_platform_hotkeys(cx: &mut App) {
             SubmitCreateEnvironmentDialog,
             Some("CreateEnvironmentDialog"),
         ),
-        KeyBinding::new(
-            "enter",
-            SubmitEnvironmentManagerDialog,
-            Some("EnvironmentManagerDialog"),
-        ),
         KeyBinding::new("enter", SubmitApplicationDialog, Some("ApplicationDialog")),
         KeyBinding::new("escape", CancelStructureDialog, Some("StructureDialog")),
         KeyBinding::new(
@@ -4602,6 +4601,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("cmd-o", OpenWorkspace, None),
         KeyBinding::new("cmd-n", NewCollection, None),
         KeyBinding::new("cmd-s", SaveRequest, None),
+        KeyBinding::new(
+            "cmd-s",
+            SubmitEnvironmentManagerDialog,
+            Some("EnvironmentManagerDialog"),
+        ),
         KeyBinding::new("cmd-w", CloseActiveTab, None),
         KeyBinding::new("cmd-q", QuitApplication, None),
         KeyBinding::new("cmd-shift-w", CloseWindow, None),
@@ -4663,6 +4667,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-o", OpenWorkspace, None),
         KeyBinding::new("ctrl-n", NewCollection, None),
         KeyBinding::new("ctrl-s", SaveRequest, None),
+        KeyBinding::new(
+            "ctrl-s",
+            SubmitEnvironmentManagerDialog,
+            Some("EnvironmentManagerDialog"),
+        ),
         KeyBinding::new("ctrl-w", CloseActiveTab, None),
         KeyBinding::new("alt-f4", CloseWindow, None),
     ]);
@@ -4672,6 +4681,11 @@ fn bind_platform_hotkeys(cx: &mut App) {
         KeyBinding::new("ctrl-o", OpenWorkspace, None),
         KeyBinding::new("ctrl-n", NewCollection, None),
         KeyBinding::new("ctrl-s", SaveRequest, None),
+        KeyBinding::new(
+            "ctrl-s",
+            SubmitEnvironmentManagerDialog,
+            Some("EnvironmentManagerDialog"),
+        ),
         KeyBinding::new("ctrl-w", CloseActiveTab, None),
         KeyBinding::new("ctrl-q", QuitApplication, None),
     ]);

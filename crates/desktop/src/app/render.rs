@@ -3442,9 +3442,16 @@ impl Render for ProbeApp {
                 cx.listener(|view, _, _, cx| view.reset_caret_blink(cx)),
             )
             .on_action(cx.listener(|view, _: &SaveRequest, window, cx| {
-                if view.application_dialog.is_none() {
-                    view.save_active_request(window, cx);
+                if view.application_dialog.is_some() {
+                    return;
                 }
+                if view.environment_manager_dialog.is_some() {
+                    if !view.environment_manager_save_disabled() {
+                        view.save_environment_manager_dialog(window, cx);
+                    }
+                    return;
+                }
+                view.save_active_request(window, cx);
             }))
             .on_action(cx.listener(|view, _: &OpenFileMenu, _, cx| {
                 view.open_desktop_menu(DesktopMenu::File, cx);
@@ -3586,6 +3593,9 @@ impl Render for ProbeApp {
             )
             .on_action(
                 cx.listener(|view, _: &SubmitEnvironmentManagerDialog, window, cx| {
+                    if view.environment_manager_save_disabled() {
+                        return;
+                    }
                     view.save_environment_manager_dialog(window, cx);
                 }),
             )

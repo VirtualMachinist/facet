@@ -1473,7 +1473,7 @@ impl ProbeApp {
 
         let close_view = cx.weak_entity();
         let save_view = cx.weak_entity();
-        let save_disabled = busy || !dirty;
+        let save_disabled = self.environment_manager_save_disabled();
         let mut content = components::dialog_surface(theme, "environment-manager-dialog", 900.0)
             .debug_selector(|| "environment-manager-dialog".into())
             .h(px(600.0))
