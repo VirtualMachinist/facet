@@ -111,6 +111,46 @@ pub(crate) fn dialog_surface(
         .shadow(temporary_surface_shadow(theme, 6.0))
 }
 
+pub(crate) fn dialog_error_banner(
+    theme: Theme,
+    id: &'static str,
+    dismiss_id: &'static str,
+    message: impl Into<SharedString>,
+    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .mt(px(theme.metrics.spacing_3))
+        .px(px(theme.metrics.spacing_3))
+        .py(px(theme.metrics.spacing_2))
+        .flex()
+        .items_start()
+        .justify_between()
+        .gap(px(theme.metrics.spacing_2))
+        .rounded(px(theme.metrics.radius_small))
+        .bg(theme.colors.status.error)
+        .text_color(theme.colors.text.inverse)
+        .child(div().flex_1().min_w(px(0.0)).child(message.into()))
+        .child(
+            Button::new(dismiss_id)
+                .debug_selector(move || dismiss_id.to_owned())
+                .focusable(true)
+                .tab_stop(true)
+                .flex_none()
+                .w(px(theme.metrics.control_height - 4.0))
+                .h(px(theme.metrics.control_height - 4.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme.metrics.radius_small))
+                .text_color(theme.colors.text.inverse)
+                .hover(move |button| button.bg(hover_fill(theme.colors.status.error)))
+                .on_click(on_dismiss)
+                .child(close_icon(theme).text_color(theme.colors.text.inverse)),
+        )
+}
+
 pub(crate) fn context_menu_surface(
     theme: Theme,
     id: impl Into<ElementId>,

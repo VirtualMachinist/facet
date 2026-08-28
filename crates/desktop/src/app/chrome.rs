@@ -891,79 +891,101 @@ impl ProbeApp {
         let name_enter_view = cx.weak_entity();
         let cancel_view = cx.weak_entity();
         let submit_view = cx.weak_entity();
-        let content = components::dialog_surface(
+        let dismiss_error_view = cx.weak_entity();
+        let busy = self.environment_save_task.is_some();
+        let mut content = components::dialog_surface(
             theme,
             "create-environment-dialog",
             components::COMPACT_DIALOG_WIDTH,
         )
-        .child(components::dialog_title(theme, "New Environment"))
-        .child(
-            div()
-                .mt(px(theme.metrics.spacing_4))
-                .flex()
-                .flex_col()
-                .gap(px(theme.metrics.spacing_3))
-                .child(components::dialog_field(
-                    theme,
-                    "Name",
-                    components::dialog_text_input(
+        .child(components::dialog_title(theme, "New Environment"));
+        if let Some(error) = self
+            .environment_dialog_error
+            .as_ref()
+            .map(|error| error.message.clone())
+        {
+            content = content.child(components::dialog_error_banner(
+                theme,
+                "environment-dialog-error",
+                "environment-dialog-error-dismiss",
+                error,
+                move |_, _, cx| {
+                    let _ = dismiss_error_view.update(cx, |view, cx| {
+                        view.environment_dialog_error = None;
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+        content = content
+            .child(
+                div()
+                    .mt(px(theme.metrics.spacing_4))
+                    .flex()
+                    .flex_col()
+                    .gap(px(theme.metrics.spacing_3))
+                    .child(components::dialog_field(
                         theme,
-                        "create-environment-name",
-                        name.clone(),
-                        "",
-                        true,
-                        move |value, _, cx| {
-                            let _ = name_view.update(cx, |view, cx| {
-                                if let Some(name) = view.create_environment_dialog.as_mut() {
-                                    *name = value.to_string();
-                                }
-                                cx.notify();
+                        "Name",
+                        components::dialog_text_input(
+                            theme,
+                            "create-environment-name",
+                            name.clone(),
+                            "",
+                            true,
+                            move |value, _, cx| {
+                                let _ = name_view.update(cx, |view, cx| {
+                                    if let Some(name) = view.create_environment_dialog.as_mut() {
+                                        *name = value.to_string();
+                                    }
+                                    cx.notify();
+                                });
+                            },
+                            move |value, window, cx| {
+                                let _ = name_enter_view.update(cx, |view, cx| {
+                                    if let Some(name) = view.create_environment_dialog.as_mut() {
+                                        *name = value.to_string();
+                                    }
+                                    view.submit_create_environment_dialog(window, cx);
+                                });
+                            },
+                        )
+                        .disabled(busy),
+                    )),
+            )
+            .child(
+                components::dialog_actions(theme)
+                    .child(components::dialog_action_button(
+                        theme,
+                        "create-environment-cancel",
+                        "Cancel",
+                        components::DialogActionStyle::Secondary,
+                        None,
+                        busy,
+                        move |_, window, cx| {
+                            let _ = cancel_view.update(cx, |view, cx| {
+                                view.close_create_environment_dialog(window, cx);
                             });
                         },
-                        move |value, window, cx| {
-                            let _ = name_enter_view.update(cx, |view, cx| {
-                                if let Some(name) = view.create_environment_dialog.as_mut() {
-                                    *name = value.to_string();
-                                }
+                    ))
+                    .child(components::dialog_action_button(
+                        theme,
+                        "create-environment-submit",
+                        "Create",
+                        components::DialogActionStyle::Primary,
+                        components::shortcut_label_for_action_in_context(
+                            window,
+                            &SubmitCreateEnvironmentDialog,
+                            "CreateEnvironmentDialog",
+                        ),
+                        busy,
+                        move |_, window, cx| {
+                            let _ = submit_view.update(cx, |view, cx| {
                                 view.submit_create_environment_dialog(window, cx);
                             });
                         },
-                    ),
-                )),
-        )
-        .child(
-            components::dialog_actions(theme)
-                .child(components::dialog_action_button(
-                    theme,
-                    "create-environment-cancel",
-                    "Cancel",
-                    components::DialogActionStyle::Secondary,
-                    None,
-                    false,
-                    move |_, window, cx| {
-                        let _ = cancel_view.update(cx, |view, cx| {
-                            view.close_create_environment_dialog(window, cx);
-                        });
-                    },
-                ))
-                .child(components::dialog_action_button(
-                    theme,
-                    "create-environment-submit",
-                    "Create",
-                    components::DialogActionStyle::Primary,
-                    components::shortcut_label_for_action_in_context(
-                        window,
-                        &SubmitCreateEnvironmentDialog,
-                        "CreateEnvironmentDialog",
-                    ),
-                    false,
-                    move |_, window, cx| {
-                        let _ = submit_view.update(cx, |view, cx| {
-                            view.submit_create_environment_dialog(window, cx);
-                        });
-                    },
-                )),
-        );
+                    )),
+            );
 
         components::dialog_layer(
             theme,
@@ -1470,15 +1492,36 @@ impl ProbeApp {
 
         let close_view = cx.weak_entity();
         let save_view = cx.weak_entity();
+        let dismiss_error_view = cx.weak_entity();
         let save_disabled = busy || !dirty;
-        let content = components::dialog_surface(theme, "environment-manager-dialog", 900.0)
+        let mut content = components::dialog_surface(theme, "environment-manager-dialog", 900.0)
             .debug_selector(|| "environment-manager-dialog".into())
             .h(px(600.0))
             .max_h(relative(0.9))
             .child(components::dialog_title(
                 theme,
                 format!("Environments — {}", self.workspace_name()),
-            ))
+            ));
+        if self.create_environment_dialog.is_none()
+            && let Some(error) = self
+                .environment_dialog_error
+                .as_ref()
+                .map(|error| error.message.clone())
+        {
+            content = content.child(components::dialog_error_banner(
+                theme,
+                "environment-dialog-error",
+                "environment-dialog-error-dismiss",
+                error,
+                move |_, _, cx| {
+                    let _ = dismiss_error_view.update(cx, |view, cx| {
+                        view.environment_dialog_error = None;
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+        content = content
             .child(
                 div()
                     .mt(px(theme.metrics.spacing_4))

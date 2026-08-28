@@ -3368,6 +3368,7 @@ impl ProbeApp {
 
 impl Render for ProbeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.clear_resolved_environment_dialog_error();
         if !cx.has_active_drag()
             && (self.tree_drop_target.is_some() || self.tree_drag_source.is_some())
         {

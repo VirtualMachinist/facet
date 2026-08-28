@@ -190,6 +190,29 @@ struct RequestTabTooltip {
     open: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EnvironmentDialogErrorResolution {
+    ManagerDraftValid,
+    CreateNameValid,
+    ManagerClean,
+    SavesIdle,
+    Manual,
+}
+
+struct EnvironmentDialogError {
+    message: String,
+    resolution: EnvironmentDialogErrorResolution,
+}
+
+impl EnvironmentDialogError {
+    fn new(message: impl Into<String>, resolution: EnvironmentDialogErrorResolution) -> Self {
+        Self {
+            message: message.into(),
+            resolution,
+        }
+    }
+}
+
 pub(crate) struct ProbeApp {
     focus_handle: FocusHandle,
     tree_focus_handle: FocusHandle,
@@ -245,6 +268,7 @@ pub(crate) struct ProbeApp {
     structure_dialog: Option<StructureDialog>,
     create_environment_dialog: Option<String>,
     environment_manager_dialog: Option<EnvironmentManagerDialog>,
+    environment_dialog_error: Option<EnvironmentDialogError>,
     application_dialog: Option<ApplicationDialog>,
     pending_application_dialogs: VecDeque<ApplicationDialog>,
     request_editor: RequestEditorState,
@@ -371,6 +395,7 @@ impl ProbeApp {
             structure_dialog: None,
             create_environment_dialog: None,
             environment_manager_dialog: None,
+            environment_dialog_error: None,
             application_dialog: None,
             pending_application_dialogs: VecDeque::new(),
             request_editor: RequestEditorState::default(),
@@ -1983,6 +2008,59 @@ impl ProbeApp {
         cx.notify();
     }
 
+    fn show_environment_dialog_error(
+        &mut self,
+        message: impl Into<String>,
+        resolution: EnvironmentDialogErrorResolution,
+    ) {
+        self.environment_dialog_error = Some(EnvironmentDialogError::new(message, resolution));
+    }
+
+    fn environment_manager_draft_has_required_names(&self) -> bool {
+        self.environment_manager_dialog
+            .as_ref()
+            .is_some_and(|dialog| {
+                !dialog.draft.name.trim().is_empty()
+                    && dialog.draft.variables.iter().all(|variable| {
+                        !matches!(
+                            variable,
+                            EnvironmentVariable::Plain(variable)
+                                if variable.name.as_deref().is_none_or(|name| name.trim().is_empty())
+                        )
+                    })
+            })
+    }
+
+    fn clear_resolved_environment_dialog_error(&mut self) {
+        let Some(resolution) = self
+            .environment_dialog_error
+            .as_ref()
+            .map(|error| error.resolution)
+        else {
+            return;
+        };
+        let resolved = match resolution {
+            EnvironmentDialogErrorResolution::ManagerDraftValid => {
+                self.environment_manager_draft_has_required_names()
+            }
+            EnvironmentDialogErrorResolution::CreateNameValid => self
+                .create_environment_dialog
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty()),
+            EnvironmentDialogErrorResolution::ManagerClean => !self.environment_manager_is_dirty(),
+            EnvironmentDialogErrorResolution::SavesIdle => {
+                self.environment_save_task.is_none()
+                    && self.request_save_task.is_none()
+                    && self.structure_task.is_none()
+                    && self.pending_environment_saves.is_empty()
+            }
+            EnvironmentDialogErrorResolution::Manual => false,
+        };
+        if resolved {
+            self.environment_dialog_error = None;
+        }
+    }
+
     fn open_environment_manager_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(loaded) = &self.loaded_workspace else {
             return;
@@ -2003,6 +2081,7 @@ impl ProbeApp {
             return;
         };
         self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(selected));
+        self.environment_dialog_error = None;
         self.environment_manager_dialog_focus.focus(window, cx);
         cx.notify();
     }
@@ -2036,6 +2115,7 @@ impl ProbeApp {
         self.environment_manager_context_menu_position = None;
         self.environment_manager_close_after_save = false;
         self.environment_manager_dialog = None;
+        self.environment_dialog_error = None;
     }
 
     fn environment_manager_reload_snapshot(
@@ -2084,9 +2164,10 @@ impl ProbeApp {
         }
         if environment_changed_on_disk {
             self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(&disk));
-            self.message = Some(
+            self.show_environment_dialog_error(
                 "This environment changed on disk. Unsaved environment edits were discarded."
                     .to_owned(),
+                EnvironmentDialogErrorResolution::Manual,
             );
             return;
         }
@@ -2126,7 +2207,10 @@ impl ProbeApp {
             return;
         };
         if &dialog.draft != original {
-            self.message = Some("Save or cancel the current environment changes first.".to_owned());
+            self.show_environment_dialog_error(
+                "Save or cancel the current environment changes first.",
+                EnvironmentDialogErrorResolution::ManagerClean,
+            );
             cx.notify();
             return;
         }
@@ -2137,7 +2221,7 @@ impl ProbeApp {
             .find(|environment| environment.name == name)
         {
             self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(environment));
-            self.message = None;
+            self.environment_dialog_error = None;
             cx.notify();
         }
     }
@@ -2148,7 +2232,10 @@ impl ProbeApp {
             || self.structure_task.is_some()
             || !self.pending_environment_saves.is_empty()
         {
-            self.message = Some("Wait for the current save to finish.".to_owned());
+            self.show_environment_dialog_error(
+                "Wait for the current save to finish.",
+                EnvironmentDialogErrorResolution::SavesIdle,
+            );
             cx.notify();
             return;
         }
@@ -2172,7 +2259,10 @@ impl ProbeApp {
             )
         });
         if replacement.name.is_empty() || invalid_variable {
-            self.message = Some("Environment and variable names are required.".to_owned());
+            self.show_environment_dialog_error(
+                "Environment and variable names are required.",
+                EnvironmentDialogErrorResolution::ManagerDraftValid,
+            );
             cx.notify();
             return;
         }
@@ -2184,7 +2274,10 @@ impl ProbeApp {
         let prepared = match loaded.prepare_environment_replace(&original_name, replacement) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.message = Some(format!("Could not save environment: {error}"));
+                self.show_environment_dialog_error(
+                    format!("Could not save environment: {error}"),
+                    EnvironmentDialogErrorResolution::Manual,
+                );
                 cx.notify();
                 return;
             }
@@ -2222,11 +2315,14 @@ impl ProbeApp {
                             }
                         }
                         view.environment_manager_close_after_save = false;
-                        view.message = None;
+                        view.environment_dialog_error = None;
                     }
                     Err(error) => {
                         view.environment_manager_close_after_save = false;
-                        view.message = Some(format!("Could not save environment: {error}"));
+                        view.show_environment_dialog_error(
+                            format!("Could not save environment: {error}"),
+                            EnvironmentDialogErrorResolution::Manual,
+                        );
                     }
                 }
                 view.environment_save_workspace_path = None;
@@ -2278,7 +2374,10 @@ impl ProbeApp {
             || self.request_save_task.is_some()
             || self.structure_task.is_some()
         {
-            self.message = Some("Wait for the current save to finish.".to_owned());
+            self.show_environment_dialog_error(
+                "Wait for the current save to finish.",
+                EnvironmentDialogErrorResolution::SavesIdle,
+            );
             cx.notify();
             return;
         }
@@ -2288,7 +2387,10 @@ impl ProbeApp {
         let prepared = match loaded.prepare_environment_delete(&name) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.message = Some(format!("Could not delete environment: {error}"));
+                self.show_environment_dialog_error(
+                    format!("Could not delete environment: {error}"),
+                    EnvironmentDialogErrorResolution::Manual,
+                );
                 cx.notify();
                 return;
             }
@@ -2303,13 +2405,16 @@ impl ProbeApp {
                 match result {
                     Ok(saved) => {
                         let close_manager = view.complete_deleted_environment(saved, &name, cx);
-                        view.message = None;
+                        view.environment_dialog_error = None;
                         if close_manager {
                             view.close_environment_manager_dialog(window, cx);
                         }
                     }
                     Err(error) => {
-                        view.message = Some(format!("Could not delete environment: {error}"));
+                        view.show_environment_dialog_error(
+                            format!("Could not delete environment: {error}"),
+                            EnvironmentDialogErrorResolution::Manual,
+                        );
                     }
                 }
                 view.environment_save_workspace_path = None;
@@ -2403,18 +2508,26 @@ impl ProbeApp {
             return;
         }
         if self.environment_manager_is_dirty() {
-            self.message = Some("Save or discard unsaved environment changes first.".to_owned());
+            self.show_environment_dialog_error(
+                "Save or discard unsaved environment changes first.",
+                EnvironmentDialogErrorResolution::ManagerClean,
+            );
             cx.notify();
             return;
         }
         self.structure_dialog = None;
+        self.environment_dialog_error = None;
         self.create_environment_dialog = Some(String::new());
         self.create_environment_dialog_focus.focus(window, cx);
         cx.notify();
     }
 
     fn close_create_environment_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.environment_save_task.is_some() {
+            return;
+        }
         self.create_environment_dialog = None;
+        self.environment_dialog_error = None;
         self.restore_environment_dialog_focus(window, cx);
         cx.notify();
     }
@@ -2425,12 +2538,13 @@ impl ProbeApp {
         };
         let name = name.trim().to_owned();
         if name.is_empty() {
-            self.message = Some("Environment name is required.".to_owned());
+            self.show_environment_dialog_error(
+                "Environment name is required.",
+                EnvironmentDialogErrorResolution::CreateNameValid,
+            );
             cx.notify();
             return;
         }
-        self.create_environment_dialog = None;
-        self.restore_environment_dialog_focus(window, cx);
         self.create_named_environment(name, window, cx);
     }
 
@@ -2444,13 +2558,18 @@ impl ProbeApp {
             || self.request_save_task.is_some()
             || self.structure_task.is_some()
         {
-            self.message =
-                Some("Wait for the current save before creating an environment.".to_owned());
+            self.show_environment_dialog_error(
+                "Wait for the current save before creating an environment.",
+                EnvironmentDialogErrorResolution::SavesIdle,
+            );
             cx.notify();
             return;
         }
         if self.environment_manager_is_dirty() {
-            self.message = Some("Save or discard unsaved environment changes first.".to_owned());
+            self.show_environment_dialog_error(
+                "Save or discard unsaved environment changes first.",
+                EnvironmentDialogErrorResolution::ManagerClean,
+            );
             cx.notify();
             return;
         }
@@ -2460,13 +2579,16 @@ impl ProbeApp {
         let prepared = match loaded.prepare_environment_create(name.clone(), None) {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.message = Some(format!("Could not create environment: {error}"));
+                self.show_environment_dialog_error(
+                    format!("Could not create environment: {error}"),
+                    EnvironmentDialogErrorResolution::Manual,
+                );
                 cx.notify();
                 return;
             }
         };
         self.environment_save_workspace_path = self.workspace_path.clone();
-        self.message = None;
+        self.environment_dialog_error = None;
         self.environment_save_task = Some(cx.spawn_in(window, async move |view, window| {
             let result = window
                 .background_spawn(async move { prepared.execute() })
@@ -2488,7 +2610,9 @@ impl ProbeApp {
                             view.select_environment(Some(name), cx);
                         }
                         view.environment_save_workspace_path = None;
-                        view.message = None;
+                        view.create_environment_dialog = None;
+                        view.environment_dialog_error = None;
+                        view.restore_environment_dialog_focus(window, cx);
                         view.start_next_request_save(window, cx);
                         view.start_next_environment_save(window, cx);
                     }
@@ -2503,7 +2627,10 @@ impl ProbeApp {
                         }
                         view.environment_save_workspace_path = None;
                         view.pending_close = None;
-                        view.message = Some(format!("Could not create environment: {error}"));
+                        view.show_environment_dialog_error(
+                            format!("Could not create environment: {error}"),
+                            EnvironmentDialogErrorResolution::Manual,
+                        );
                     }
                 }
                 cx.notify();

@@ -2666,9 +2666,12 @@ fn environment_manager_protects_dirty_draft_and_restores_create_focus(cx: &mut T
             view.open_create_environment_dialog(window, cx);
             assert!(view.create_environment_dialog.is_none());
             assert_eq!(
-                view.message.as_deref(),
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str()),
                 Some("Save or discard unsaved environment changes first.")
             );
+            assert!(view.message.is_none());
             view.create_named_environment("staging".to_owned(), window, cx);
             assert_eq!(
                 view.environment_manager_dialog
@@ -2676,6 +2679,216 @@ fn environment_manager_protects_dirty_draft_and_restores_create_focus(cx: &mut T
                     .map(|dialog| dialog.draft.name.as_str()),
                 Some("renamed-development")
             );
+        })
+        .expect("test window should remain open");
+}
+
+#[gpui::test]
+fn environment_manager_validation_errors_are_scoped_and_dismissible(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.message = Some("App-level error".to_owned());
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should open")
+                .draft
+                .name = "  ".to_owned();
+            view.save_environment_manager_dialog(window, cx);
+            assert_eq!(
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str()),
+                Some("Environment and variable names are required.")
+            );
+            assert_eq!(view.message.as_deref(), Some("App-level error"));
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    {
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual
+            .debug_bounds("environment-dialog-error")
+            .expect("dialog-scoped error should render above the manager overlay");
+        let dismiss = visual
+            .debug_bounds("environment-dialog-error-dismiss")
+            .expect("dialog-scoped error should provide a keyboard-focusable dismiss action");
+        visual.simulate_click(dismiss.center(), Modifiers::default());
+        visual.run_until_parked();
+    }
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_dialog_error.is_none());
+            assert_eq!(view.message.as_deref(), Some("App-level error"));
+            assert!(view.environment_manager_dialog.is_some());
+        })
+        .expect("test window should remain open");
+}
+
+#[gpui::test]
+fn environment_manager_routes_blocked_save_and_create_failures_to_its_error(
+    cx: &mut TestAppContext,
+) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+
+            view.pending_environment_saves
+                .insert(("development".to_owned(), "host".to_owned()));
+            view.save_environment_manager_dialog(window, cx);
+            assert_eq!(
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str()),
+                Some("Wait for the current save to finish.")
+            );
+            view.pending_environment_saves.clear();
+
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open")
+                .draft
+                .name = "base".to_owned();
+            view.save_environment_manager_dialog(window, cx);
+            assert!(
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str())
+                    .is_some_and(|error| error.starts_with("Could not save environment:"))
+            );
+
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open")
+                .draft
+                .name = "development".to_owned();
+            view.open_create_environment_dialog(window, cx);
+            *view
+                .create_environment_dialog
+                .as_mut()
+                .expect("create dialog should open") = "base".to_owned();
+            view.submit_create_environment_dialog(window, cx);
+            assert!(view.create_environment_dialog.is_some());
+            assert!(
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str())
+                    .is_some_and(|error| error.starts_with("Could not create environment:"))
+            );
+            assert!(view.message.is_none());
+        })
+        .expect("test window should be open");
+}
+
+#[gpui::test]
+fn environment_dialog_auto_dismisses_errors_when_their_condition_resolves(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = environment_fixture()
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture, workspace);
+            view.select_environment(Some("development".to_owned()), cx);
+            view.open_environment_manager_dialog(window, cx);
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should open")
+                .draft
+                .name = "  ".to_owned();
+            view.save_environment_manager_dialog(window, cx);
+            view.apply_environment_manager_draft(cx, |dialog| {
+                dialog.draft.name = "development".to_owned();
+            });
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_dialog_error.is_none());
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, window, cx| {
+            view.pending_environment_saves
+                .insert(("development".to_owned(), "host".to_owned()));
+            view.save_environment_manager_dialog(window, cx);
+            view.pending_environment_saves.clear();
+            cx.notify();
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_dialog_error.is_none());
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, window, cx| {
+            view.environment_manager_dialog
+                .as_mut()
+                .expect("manager should remain open")
+                .draft
+                .name = "base".to_owned();
+            view.save_environment_manager_dialog(window, cx);
+            view.apply_environment_manager_draft(cx, |dialog| {
+                dialog.draft.name = "development".to_owned();
+            });
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, window, cx| {
+            assert!(
+                view.environment_dialog_error
+                    .as_ref()
+                    .is_some_and(|error| error.message.starts_with("Could not save environment:"))
+            );
+            view.open_create_environment_dialog(window, cx);
+            view.submit_create_environment_dialog(window, cx);
+            *view
+                .create_environment_dialog
+                .as_mut()
+                .expect("create dialog should remain open") = "staging".to_owned();
+            cx.notify();
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_dialog_error.is_none());
+            assert_eq!(view.create_environment_dialog.as_deref(), Some("staging"));
         })
         .expect("test window should remain open");
 }
@@ -3087,9 +3300,12 @@ fn environment_manager_rebinds_after_workspace_reload(cx: &mut TestAppContext) {
             assert_eq!(dialog.draft.name, "development");
             assert_eq!(dialog.draft.extends, None);
             assert_eq!(
-                view.message.as_deref(),
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str()),
                 Some("This environment changed on disk. Unsaved environment edits were discarded.")
             );
+            assert!(view.message.is_none());
         })
         .expect("test window should remain open");
 
@@ -3222,6 +3438,48 @@ fn environment_manager_context_menu_deletes_an_environment(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn create_environment_dialog_cannot_close_while_persistence_is_running(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_environment_fixture("create-env-cancel-busy")
+        .canonicalize()
+        .expect("fixture should exist");
+    let workspace = probe_opencollection::load_workspace(&fixture).expect("fixture should load");
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.open_create_environment_dialog(window, cx);
+            *view
+                .create_environment_dialog
+                .as_mut()
+                .expect("create dialog should open") = "staging".to_owned();
+            view.submit_create_environment_dialog(window, cx);
+            assert!(view.environment_save_task.is_some());
+
+            view.close_create_environment_dialog(window, cx);
+            assert!(view.create_environment_dialog.is_some());
+            assert_eq!(
+                window.focused(cx),
+                Some(view.create_environment_dialog_focus.clone())
+            );
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.environment_save_task.is_none());
+            assert!(view.create_environment_dialog.is_none());
+            assert_eq!(view.shell.selected_environment(), Some("staging"));
+        })
+        .expect("test window should remain open");
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
 fn creating_an_environment_from_the_switcher_persists_and_selects_it(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(1180.0), px(780.0)), |window, cx| {
@@ -3309,12 +3567,21 @@ fn create_environment_dialog_rejects_an_empty_name(cx: &mut TestAppContext) {
             view.open_create_environment_dialog(window, cx);
             view.submit_create_environment_dialog(window, cx);
             assert_eq!(
-                view.message.as_deref(),
+                view.environment_dialog_error
+                    .as_ref()
+                    .map(|error| error.message.as_str()),
                 Some("Environment name is required.")
             );
+            assert!(view.message.is_none());
             assert!(view.create_environment_dialog.is_some());
         })
         .expect("test window should be open");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual
+        .debug_bounds("environment-dialog-error")
+        .expect("validation error should render inside the create-environment dialog");
     fs::remove_file(fixture).unwrap();
 }
 
