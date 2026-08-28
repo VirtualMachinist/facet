@@ -13,13 +13,13 @@ use crate::response_viewer::{SearchMatch, join_header_lines};
 use crate::shell::PaneLayout;
 use crate::theme::Theme;
 use gpui::{
-    Anchor, App, AppContext as _, Bounds, BoxShadow, ClickEvent, ContentMask, Context, Edges,
-    Element, ElementId, Entity, EntityId, FocusHandle, Focusable, FontWeight, GlobalElementId,
-    HighlightStyle, Hsla, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId,
-    MouseButton, ParentElement as _, Pixels, Point, Render, RenderOnce, Role, ShapedLine,
-    SharedString, StatefulInteractiveElement as _, Style, Styled as _, Subscription, Task,
-    TextAlign, TextRun, TransformationMatrix, Window, canvas, deferred, div, fill, font, point,
-    prelude::FluentBuilder as _, px, relative, size, transparent_black,
+    Anchor, Animation, AnimationExt as _, App, AppContext as _, Bounds, BoxShadow, ClickEvent,
+    ContentMask, Context, Edges, Element, ElementId, Entity, EntityId, FocusHandle, Focusable,
+    FontWeight, GlobalElementId, HighlightStyle, Hsla, InspectorElementId, InteractiveElement as _,
+    IntoElement, LayoutId, MouseButton, ParentElement as _, Pixels, Point, Render, RenderOnce,
+    Role, ShapedLine, SharedString, StatefulInteractiveElement as _, Style, Styled as _,
+    Subscription, Task, TextAlign, TextRun, TransformationMatrix, Window, canvas, deferred, div,
+    fill, font, point, prelude::FluentBuilder as _, px, relative, size, transparent_black,
 };
 use gpui_base::{
     Align, Button, Editor, ElementExt as _, FocusTrapElement as _, Input, InputBase,
@@ -36,6 +36,7 @@ use probe_core::path_variable_ranges;
 mod buttons;
 mod icons;
 mod menus;
+mod toasts;
 pub(crate) use buttons::{
     DialogActionStyle, dialog_action_button, dialog_choice_button, primary_button,
     secondary_button, secondary_menu_trigger,
@@ -52,6 +53,7 @@ pub(crate) use menus::{
     positioned_cascading_menu, shortcut_label_for_action, shortcut_label_for_action_in_context,
     switch,
 };
+pub(crate) use toasts::{TOAST_STACK_WIDTH, toast};
 
 /// Fixed width for compact primary actions such as Send.
 pub(crate) const COMPACT_ACTION_BUTTON_WIDTH: f32 = 72.0;
@@ -109,46 +111,6 @@ pub(crate) fn dialog_surface(
         .border_1()
         .border_color(theme.colors.borders.standard)
         .shadow(temporary_surface_shadow(theme, 6.0))
-}
-
-pub(crate) fn dialog_error_banner(
-    theme: Theme,
-    id: &'static str,
-    dismiss_id: &'static str,
-    message: impl Into<SharedString>,
-    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
-        .mt(px(theme.metrics.spacing_3))
-        .px(px(theme.metrics.spacing_3))
-        .py(px(theme.metrics.spacing_2))
-        .flex()
-        .items_start()
-        .justify_between()
-        .gap(px(theme.metrics.spacing_2))
-        .rounded(px(theme.metrics.radius_small))
-        .bg(theme.colors.status.error)
-        .text_color(theme.colors.text.inverse)
-        .child(div().flex_1().min_w(px(0.0)).child(message.into()))
-        .child(
-            Button::new(dismiss_id)
-                .debug_selector(move || dismiss_id.to_owned())
-                .focusable(true)
-                .tab_stop(true)
-                .flex_none()
-                .w(px(theme.metrics.control_height - 4.0))
-                .h(px(theme.metrics.control_height - 4.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(theme.metrics.radius_small))
-                .text_color(theme.colors.text.inverse)
-                .hover(move |button| button.bg(hover_fill(theme.colors.status.error)))
-                .on_click(on_dismiss)
-                .child(close_icon(theme).text_color(theme.colors.text.inverse)),
-        )
 }
 
 pub(crate) fn context_menu_surface(

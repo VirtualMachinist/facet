@@ -32,7 +32,82 @@ use crate::{
     structure_editor::StructureDialogMode,
     synchronization::ReconciledWorkspace,
     theme::Theme,
+    toast::ToastIntent,
 };
+
+fn toast_debug(view: &ProbeApp) -> Vec<String> {
+    view.toasts
+        .iter()
+        .map(|(_, toast, status)| format!("{:?}: {} ({status:?})", toast.intent, toast.message))
+        .collect()
+}
+
+fn has_active_toast(view: &ProbeApp, intent: ToastIntent, text: &str) -> bool {
+    view.toasts.iter().any(|(_, toast, status)| {
+        status != gpui_base::ToastTransitionStatus::Ending
+            && toast.intent == intent
+            && toast.message.contains(text)
+    })
+}
+
+#[gpui::test]
+fn toast_stack_renders_and_the_front_toast_can_be_dismissed(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    window
+        .update(cx, |view, _, cx| {
+            view.session_store = None;
+            view.show_toast(ToastIntent::Info, "Copied", cx);
+            view.show_toast(ToastIntent::Warning, "Needs attention", cx);
+            view.show_toast(ToastIntent::Error, "Save failed", cx);
+            assert_eq!(
+                view.toasts
+                    .iter()
+                    .map(|(_, toast, _)| toast.intent)
+                    .collect::<Vec<_>>(),
+                vec![ToastIntent::Info, ToastIntent::Warning, ToastIntent::Error,]
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    visual.run_until_parked();
+    let collapsed_close = visual
+        .debug_bounds("toast-close-2")
+        .expect("the front toast should expose a visible close action");
+    visual.simulate_mouse_move(collapsed_close.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let close = visual
+        .debug_bounds("toast-close-2")
+        .expect("the close action should remain visible when the stack expands");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    window
+        .update(cx, |view, _, cx| {
+            assert_eq!(
+                view.toasts
+                    .iter()
+                    .find(|(id, _, _)| *id == 2)
+                    .map(|(_, _, status)| status),
+                Some(gpui_base::ToastTransitionStatus::Ending),
+                "close bounds: {close:?}"
+            );
+            view.close_workspace_now(cx);
+            assert!(
+                view.toasts.is_empty(),
+                "closing a workspace should drop stale toasts: {:?}",
+                toast_debug(view)
+            );
+        })
+        .unwrap();
+}
 
 fn bundled_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -208,10 +283,7 @@ fn assert_save_shortcut_after_clicking_remove_row_persists_removal(
                 .workspace()
                 .request(key)
                 .unwrap();
-            (
-                view.persistence.is_dirty(key, request),
-                view.message.clone(),
-            )
+            (view.persistence.is_dirty(key, request), toast_debug(view))
         })
         .unwrap();
     assert!(!dirty, "save failed: {message:?}");
@@ -751,7 +823,7 @@ fn structural_move_remaps_tabs_and_preserves_dirty_drafts(cx: &mut TestAppContex
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             let moved = loaded.request_key("items/0/items/1").unwrap();
             let request = loaded.workspace().request(moved).unwrap();
@@ -807,7 +879,7 @@ fn creating_root_request_without_selection_selects_opens_and_reveals_it(cx: &mut
 
     let created_selector = window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             let created = loaded
                 .requests()
@@ -868,7 +940,7 @@ fn creating_request_in_selected_folder_selects_child_and_expands_parent(cx: &mut
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             let created = loaded.request_key("items/0/items/1").unwrap();
             let folder = loaded.folder_key("items/0").unwrap();
@@ -935,7 +1007,7 @@ fn tree_drag_moves_a_request_into_a_folder(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             assert!(loaded.request_key("items/0/items/1").is_some());
             assert!(loaded.folder_key("items/0").is_some());
@@ -983,7 +1055,7 @@ fn tree_drag_reorders_a_folder_before_its_sibling(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             let root = loaded.workspace().root_items();
             assert!(matches!(root[0], probe_core::WorkspaceItemRef::Folder(_)));
@@ -1028,7 +1100,7 @@ fn tree_drag_moves_a_nested_request_to_root_end(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             let root = loaded.workspace().root_items();
             assert_eq!(root.len(), 3);
@@ -1078,11 +1150,11 @@ fn tree_drag_rejects_dropping_a_folder_into_itself(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             let loaded = view.loaded_workspace.as_ref().unwrap();
             assert!(loaded.request_key("items/0").is_some());
             assert!(loaded.folder_key("items/1").is_some());
-            assert!(view.message.is_none());
+            assert!(view.toasts.is_empty(), "{:?}", toast_debug(view));
         })
         .unwrap();
     fs::remove_file(fixture).unwrap();
@@ -1127,7 +1199,16 @@ fn failed_structure_edit_keeps_the_previous_workspace(cx: &mut TestAppContext) {
     window
         .update(cx, |view, _, _| {
             assert!(view.structure_task.is_none());
-            assert!(view.message.is_some());
+            assert!(
+                view.toasts.iter().any(|(_, toast, _)| {
+                    toast.intent == ToastIntent::Error
+                        && toast
+                            .message
+                            .contains("Could not edit collection structure")
+                }),
+                "{:?}",
+                toast_debug(view)
+            );
             let loaded = view.loaded_workspace.as_ref().unwrap();
             assert!(loaded.request_key("items/0").is_some());
             assert!(loaded.folder_key("items/1").is_some());
@@ -1204,10 +1285,7 @@ fn request_save_runs_in_background_and_clears_dirty_state(cx: &mut TestAppContex
                 .workspace()
                 .request(key)
                 .unwrap();
-            (
-                view.persistence.is_dirty(key, request),
-                view.message.clone(),
-            )
+            (view.persistence.is_dirty(key, request), toast_debug(view))
         })
         .unwrap();
     assert!(!dirty, "save failed: {message:?}");
@@ -1370,10 +1448,7 @@ fn saving_after_removing_empty_query_parameter_during_in_flight_save_clears_dirt
                 .workspace()
                 .request(key)
                 .unwrap();
-            (
-                view.persistence.is_dirty(key, request),
-                view.message.clone(),
-            )
+            (view.persistence.is_dirty(key, request), toast_debug(view))
         })
         .unwrap();
     assert!(!dirty, "save failed: {message:?}");
@@ -1676,11 +1751,9 @@ fn save_conflict_keeps_the_request_dirty_and_visible(cx: &mut TestAppContext) {
                 .request(key)
                 .unwrap();
             assert!(view.persistence.is_dirty(key, request));
-            assert!(
-                view.message
-                    .as_deref()
-                    .is_some_and(|message| message.contains("externally modified"))
-            );
+            assert!(view.toasts.iter().any(|(_, toast, _)| {
+                toast.intent == ToastIntent::Error && toast.message.contains("externally modified")
+            }));
             assert_eq!(request.url.as_deref(), Some("https://local.example"));
         })
         .unwrap();
@@ -1714,11 +1787,7 @@ fn recent_collection_in_sidebar_loads_the_workspace(cx: &mut TestAppContext) {
     let expected = fixture.canonicalize().expect("fixture should exist");
     let (actual, loading, message) = window
         .update(cx, |view, _, _| {
-            (
-                view.workspace_path.clone(),
-                view.loading,
-                view.message.clone(),
-            )
+            (view.workspace_path.clone(), view.loading, toast_debug(view))
         })
         .expect("test window should remain open");
     assert_eq!(
@@ -1780,7 +1849,7 @@ fn empty_sidebar_new_collection_creates_and_loads_a_workspace(cx: &mut TestAppCo
                 view.loaded_workspace
                     .as_ref()
                     .map(|loaded| loaded.workspace().request_count()),
-                view.message.clone(),
+                toast_debug(view),
             )
         })
         .expect("test window should remain open");
@@ -2665,13 +2734,15 @@ fn environment_manager_protects_dirty_draft_and_restores_create_focus(cx: &mut T
             );
             view.open_create_environment_dialog(window, cx);
             assert!(view.create_environment_dialog.is_none());
-            assert_eq!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str()),
-                Some("Save or discard unsaved environment changes first.")
+            assert!(
+                has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "Save or discard unsaved environment changes first."
+                ),
+                "{:?}",
+                toast_debug(view)
             );
-            assert!(view.message.is_none());
             view.create_named_environment("staging".to_owned(), window, cx);
             assert_eq!(
                 view.environment_manager_dialog
@@ -2699,40 +2770,59 @@ fn environment_manager_validation_errors_are_scoped_and_dismissible(cx: &mut Tes
             view.set_workspace(fixture, workspace);
             view.select_environment(Some("development".to_owned()), cx);
             view.open_environment_manager_dialog(window, cx);
-            view.message = Some("App-level error".to_owned());
+            view.show_toast(ToastIntent::Error, "App-level error", cx);
             view.environment_manager_dialog
                 .as_mut()
                 .expect("manager should open")
                 .draft
                 .name = "  ".to_owned();
             view.save_environment_manager_dialog(window, cx);
-            assert_eq!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str()),
-                Some("Environment and variable names are required.")
+            assert!(
+                has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "Environment and variable names are required."
+                ),
+                "{:?}",
+                toast_debug(view)
             );
-            assert_eq!(view.message.as_deref(), Some("App-level error"));
+            assert!(
+                has_active_toast(view, ToastIntent::Error, "App-level error"),
+                "{:?}",
+                toast_debug(view)
+            );
         })
         .expect("test window should be open");
     cx.run_until_parked();
 
-    {
-        let mut visual = VisualTestContext::from_window(window.into(), cx);
-        visual
-            .debug_bounds("environment-dialog-error")
-            .expect("dialog-scoped error should render above the manager overlay");
-        let dismiss = visual
-            .debug_bounds("environment-dialog-error-dismiss")
-            .expect("dialog-scoped error should provide a keyboard-focusable dismiss action");
-        visual.simulate_click(dismiss.center(), Modifiers::default());
-        visual.run_until_parked();
-    }
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
+    cx.executor().advance_clock(Duration::from_millis(150));
+    cx.run_until_parked();
+    visual.run_until_parked();
+    let close = visual
+        .debug_bounds("toast-close-1")
+        .expect("the validation toast should expose a close action");
+    visual.simulate_click(close.center(), Modifiers::default());
+    visual.run_until_parked();
 
     window
         .update(cx, |view, _, _| {
             assert!(view.environment_dialog_error.is_none());
-            assert_eq!(view.message.as_deref(), Some("App-level error"));
+            assert!(
+                !has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "Environment and variable names are required."
+                ),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(
+                has_active_toast(view, ToastIntent::Error, "App-level error"),
+                "{:?}",
+                toast_debug(view)
+            );
             assert!(view.environment_manager_dialog.is_some());
         })
         .expect("test window should remain open");
@@ -2760,11 +2850,14 @@ fn environment_manager_routes_blocked_save_and_create_failures_to_its_error(
             view.pending_environment_saves
                 .insert(("development".to_owned(), "host".to_owned()));
             view.save_environment_manager_dialog(window, cx);
-            assert_eq!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str()),
-                Some("Wait for the current save to finish.")
+            assert!(
+                has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "Wait for the current save to finish."
+                ),
+                "{:?}",
+                toast_debug(view)
             );
             view.pending_environment_saves.clear();
 
@@ -2775,10 +2868,9 @@ fn environment_manager_routes_blocked_save_and_create_failures_to_its_error(
                 .name = "base".to_owned();
             view.save_environment_manager_dialog(window, cx);
             assert!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str())
-                    .is_some_and(|error| error.starts_with("Could not save environment:"))
+                has_active_toast(view, ToastIntent::Error, "Could not save environment:"),
+                "{:?}",
+                toast_debug(view)
             );
 
             view.environment_manager_dialog
@@ -2794,12 +2886,10 @@ fn environment_manager_routes_blocked_save_and_create_failures_to_its_error(
             view.submit_create_environment_dialog(window, cx);
             assert!(view.create_environment_dialog.is_some());
             assert!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str())
-                    .is_some_and(|error| error.starts_with("Could not create environment:"))
+                has_active_toast(view, ToastIntent::Error, "Could not create environment:"),
+                "{:?}",
+                toast_debug(view)
             );
-            assert!(view.message.is_none());
         })
         .expect("test window should be open");
 }
@@ -2871,9 +2961,9 @@ fn environment_dialog_auto_dismisses_errors_when_their_condition_resolves(cx: &m
     window
         .update(cx, |view, window, cx| {
             assert!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .is_some_and(|error| error.message.starts_with("Could not save environment:"))
+                has_active_toast(view, ToastIntent::Error, "Could not save environment:"),
+                "{:?}",
+                toast_debug(view)
             );
             view.open_create_environment_dialog(window, cx);
             view.submit_create_environment_dialog(window, cx);
@@ -2931,8 +3021,16 @@ fn environment_manager_saves_plain_variables_and_parent(cx: &mut TestAppContext)
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
-            assert!(view.message.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
+            assert!(
+                has_active_toast(view, ToastIntent::Success, "Environment saved."),
+                "{:?}",
+                toast_debug(view)
+            );
         })
         .expect("test window should remain open");
     let reloaded = probe_opencollection::load_workspace(&fixture).expect("saved env should load");
@@ -2982,7 +3080,11 @@ fn environment_manager_save_ignores_edits_made_while_busy(cx: &mut TestAppContex
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             let dialog = view
                 .environment_manager_dialog
                 .as_ref()
@@ -3032,7 +3134,11 @@ fn environment_manager_deletes_a_leaf_environment(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             assert_eq!(
                 view.environment_manager_dialog
                     .as_ref()
@@ -3079,7 +3185,11 @@ fn environment_manager_delete_preserves_a_dirty_draft_for_another_environment(
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             view.select_environment_manager_environment("development", cx);
             let dialog = view
                 .environment_manager_dialog
@@ -3094,7 +3204,11 @@ fn environment_manager_delete_preserves_a_dirty_draft_for_another_environment(
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             let dialog = view
                 .environment_manager_dialog
                 .as_ref()
@@ -3127,7 +3241,11 @@ fn environment_manager_delete_selects_a_neighbor(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             view.select_environment_manager_environment("development", cx);
             view.delete_environment("development".to_owned(), window, cx);
         })
@@ -3136,7 +3254,11 @@ fn environment_manager_delete_selects_a_neighbor(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             assert_eq!(
                 view.environment_manager_dialog
                     .as_ref()
@@ -3171,7 +3293,11 @@ fn environment_manager_delete_of_the_last_environment_closes(cx: &mut TestAppCon
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             assert_eq!(
                 view.environment_manager_dialog
                     .as_ref()
@@ -3185,7 +3311,11 @@ fn environment_manager_delete_of_the_last_environment_closes(cx: &mut TestAppCon
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             assert!(view.environment_manager_dialog.is_none());
             assert_eq!(window.focused(cx), Some(view.focus_handle.clone()));
         })
@@ -3275,7 +3405,7 @@ fn environment_manager_rebinds_after_workspace_reload(cx: &mut TestAppContext) {
                     .map(|dialog| dialog.draft.name.as_str()),
                 Some("renamed-development")
             );
-            assert!(view.message.is_none());
+            assert!(view.toasts.is_empty(), "{:?}", toast_debug(view));
         })
         .expect("test window should be open");
 
@@ -3299,13 +3429,15 @@ fn environment_manager_rebinds_after_workspace_reload(cx: &mut TestAppContext) {
             assert_eq!(dialog.original_name, "development");
             assert_eq!(dialog.draft.name, "development");
             assert_eq!(dialog.draft.extends, None);
-            assert_eq!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str()),
-                Some("This environment changed on disk. Unsaved environment edits were discarded.")
+            assert!(
+                has_active_toast(
+                    view,
+                    ToastIntent::Error,
+                    "This environment changed on disk. Unsaved environment edits were discarded."
+                ),
+                "{:?}",
+                toast_debug(view)
             );
-            assert!(view.message.is_none());
         })
         .expect("test window should remain open");
 
@@ -3526,7 +3658,11 @@ fn creating_an_environment_from_the_switcher_persists_and_selects_it(cx: &mut Te
 
     window
         .update(cx, |view, _, _| {
-            assert!(view.environment_save_task.is_none(), "{:?}", view.message);
+            assert!(
+                view.environment_save_task.is_none(),
+                "{:?}",
+                toast_debug(view)
+            );
             assert_eq!(view.shell.selected_environment(), Some("staging"));
             let loaded = view.loaded_workspace.as_ref().expect("workspace");
             assert!(
@@ -3566,22 +3702,21 @@ fn create_environment_dialog_rejects_an_empty_name(cx: &mut TestAppContext) {
             view.set_workspace(fixture.clone(), workspace);
             view.open_create_environment_dialog(window, cx);
             view.submit_create_environment_dialog(window, cx);
-            assert_eq!(
-                view.environment_dialog_error
-                    .as_ref()
-                    .map(|error| error.message.as_str()),
-                Some("Environment name is required.")
+            assert!(
+                has_active_toast(view, ToastIntent::Error, "Environment name is required."),
+                "{:?}",
+                toast_debug(view)
             );
-            assert!(view.message.is_none());
             assert!(view.create_environment_dialog.is_some());
         })
         .expect("test window should be open");
     cx.run_until_parked();
 
     let mut visual = VisualTestContext::from_window(window.into(), cx);
+    visual.run_until_parked();
     visual
-        .debug_bounds("environment-dialog-error")
-        .expect("validation error should render inside the create-environment dialog");
+        .debug_bounds("toast-0")
+        .expect("validation error should render as a toast");
     fs::remove_file(fixture).unwrap();
 }
 
@@ -4146,7 +4281,7 @@ fn tree_context_menu_duplicate_restores_tree_focus_for_delete_shortcut(cx: &mut 
 
     window
         .update(cx, |view, window, cx| {
-            assert!(view.structure_task.is_none(), "{:?}", view.message);
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
             assert_eq!(window.focused(cx), Some(view.tree_focus_handle.clone()));
             let selected = view
                 .selected_tree_item

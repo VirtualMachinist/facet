@@ -20,6 +20,7 @@ mod structure_editor;
 mod synchronization;
 mod syntax;
 mod theme;
+mod toast;
 mod tree_search;
 
 pub use app::run;

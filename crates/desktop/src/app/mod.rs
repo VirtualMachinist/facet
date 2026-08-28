@@ -22,6 +22,7 @@ use gpui::{Menu, MenuItem, OsAction, SystemMenuType};
 use gpui_base::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_base::{
     AutoScroll, Button, POPUP_PRIORITY, Popover, Positioner, Scrollbar, ScrollbarMode, Tab, Tabs,
+    ToastStack,
 };
 use probe_core::{
     AuthenticationKind, AuthenticationValue, Body, Environment, EnvironmentVariable, FileReference,
@@ -97,6 +98,7 @@ use crate::{
         LocalRequestState, ReconcileResult, ReconciledWorkspace, SynchronizationConflict, reconcile,
     },
     theme::Theme,
+    toast::{ToastCenter, ToastId, ToastIntent, toast_stack_motion},
     tree_search::matching_tree_items,
 };
 
@@ -200,14 +202,14 @@ enum EnvironmentDialogErrorResolution {
 }
 
 struct EnvironmentDialogError {
-    message: String,
+    toast_id: ToastId,
     resolution: EnvironmentDialogErrorResolution,
 }
 
 impl EnvironmentDialogError {
-    fn new(message: impl Into<String>, resolution: EnvironmentDialogErrorResolution) -> Self {
+    fn new(toast_id: ToastId, resolution: EnvironmentDialogErrorResolution) -> Self {
         Self {
-            message: message.into(),
+            toast_id,
             resolution,
         }
     }
@@ -220,11 +222,11 @@ pub(crate) struct ProbeApp {
     create_environment_dialog_focus: FocusHandle,
     environment_manager_dialog_focus: FocusHandle,
     application_dialog_focus: FocusHandle,
+    toast_focus_handle: FocusHandle,
     loaded_workspace: Option<LoadedWorkspace>,
     workspace_path: Option<PathBuf>,
     shell: ShellState,
     loading: bool,
-    message: Option<String>,
     session_store: Option<SessionStore>,
     session: SessionState,
     session_save_task: Option<Task<()>>,
@@ -271,6 +273,9 @@ pub(crate) struct ProbeApp {
     environment_dialog_error: Option<EnvironmentDialogError>,
     application_dialog: Option<ApplicationDialog>,
     pending_application_dialogs: VecDeque<ApplicationDialog>,
+    toasts: ToastCenter,
+    toast_lifecycle_generation: u64,
+    toast_paused: bool,
     request_editor: RequestEditorState,
     execution: ExecutionState,
     response_cache: probe_http::ResponseCache,
@@ -329,6 +334,7 @@ impl ProbeApp {
         let create_environment_dialog_focus = cx.focus_handle();
         let environment_manager_dialog_focus = cx.focus_handle();
         let application_dialog_focus = cx.focus_handle();
+        let toast_focus_handle = cx.focus_handle();
         let workspace_import_trigger_focus = cx.focus_handle();
         let workspace_import_popup_focus = cx.focus_handle();
         let sidebar_import_trigger_focus = cx.focus_handle();
@@ -347,11 +353,11 @@ impl ProbeApp {
             create_environment_dialog_focus,
             environment_manager_dialog_focus,
             application_dialog_focus,
+            toast_focus_handle,
             loaded_workspace: None,
             workspace_path: None,
             shell: ShellState::default(),
             loading: false,
-            message: None,
             session_store: SessionStore::for_application(),
             session: SessionState::default(),
             session_save_task: None,
@@ -398,6 +404,9 @@ impl ProbeApp {
             environment_dialog_error: None,
             application_dialog: None,
             pending_application_dialogs: VecDeque::new(),
+            toasts: ToastCenter::default(),
+            toast_lifecycle_generation: 0,
+            toast_paused: false,
             request_editor: RequestEditorState::default(),
             execution: ExecutionState::default(),
             response_cache,
@@ -465,6 +474,77 @@ impl ProbeApp {
         })
     }
 
+    fn show_toast(
+        &mut self,
+        intent: ToastIntent,
+        message: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) -> ToastId {
+        let now = cx.background_executor().now();
+        let id = self.toasts.push(intent, message, now);
+        self.schedule_toast_lifecycle(cx);
+        cx.notify();
+        id
+    }
+
+    fn dismiss_toast(&mut self, id: ToastId, cx: &mut Context<Self>) {
+        if self
+            .environment_dialog_error
+            .as_ref()
+            .is_some_and(|error| error.toast_id == id)
+        {
+            self.environment_dialog_error = None;
+        }
+        if self.toasts.dismiss(id, cx.background_executor().now()) {
+            self.schedule_toast_lifecycle(cx);
+            cx.notify();
+        }
+    }
+
+    fn clear_environment_dialog_error(&mut self, cx: &mut Context<Self>) {
+        if let Some(error) = self.environment_dialog_error.take() {
+            self.dismiss_toast(error.toast_id, cx);
+        }
+    }
+
+    fn clear_toasts(&mut self) {
+        self.toasts.clear();
+        self.toast_lifecycle_generation = self.toast_lifecycle_generation.wrapping_add(1);
+        self.toast_paused = false;
+    }
+
+    fn schedule_toast_lifecycle(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let paused = self.toasts.stack_state.is_expanded();
+        if paused != self.toast_paused {
+            let changed = self.toasts.advance(now, !paused);
+            self.toast_paused = paused;
+            if changed {
+                cx.notify();
+            }
+        }
+        self.toast_lifecycle_generation = self.toast_lifecycle_generation.wrapping_add(1);
+        let generation = self.toast_lifecycle_generation;
+        let Some(delay) = self.toasts.next_wake(now, paused) else {
+            return;
+        };
+        cx.spawn(async move |view, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = view.update(cx, |view, cx| {
+                if view.toast_lifecycle_generation != generation {
+                    return;
+                }
+                let paused = view.toasts.stack_state.is_expanded();
+                let now = cx.background_executor().now();
+                if view.toasts.advance(now, paused) {
+                    cx.notify();
+                }
+                view.schedule_toast_lifecycle(cx);
+            });
+        })
+        .detach();
+    }
+
     fn reset_caret_blink(&mut self, cx: &mut Context<Self>) {
         let was_visible = crate::caret::CaretBlink::is_visible(cx);
         crate::caret::CaretBlink::show(cx);
@@ -491,10 +571,11 @@ impl ProbeApp {
                         }
                     }
                     Err(error) => {
-                        view.message = Some(format!(
-                            "Could not restore the previous desktop session: {error}"
-                        ));
-                        cx.notify();
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not restore the previous desktop session: {error}"),
+                            cx,
+                        );
                     }
                 });
             })
@@ -517,8 +598,11 @@ impl ProbeApp {
                     Ok(Ok(None)) => return,
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
-                            view.message = Some(format!("Could not open the file picker: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the file picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -546,8 +630,11 @@ impl ProbeApp {
                     Ok(Ok(None)) => return,
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
-                            view.message = Some(format!("Could not open the file picker: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the file picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -601,9 +688,11 @@ impl ProbeApp {
                     Ok(Ok(None)) | Err(_) => return,
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
-                            view.message =
-                                Some(format!("Could not open the Yaak source picker: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the Yaak source picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -613,7 +702,6 @@ impl ProbeApp {
                 };
                 let _ = view.update_in(cx, |view, _, cx| {
                     view.loading = true;
-                    view.message = None;
                     cx.notify();
                 });
                 let preview = match cx
@@ -624,8 +712,11 @@ impl ProbeApp {
                     Err(error) => {
                         let _ = view.update_in(cx, |view, _, cx| {
                             view.loading = false;
-                            view.message = Some(format!("Could not inspect Yaak data: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not inspect Yaak data: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -664,9 +755,11 @@ impl ProbeApp {
                     Ok(Ok(None)) | Err(_) => return,
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
-                            view.message =
-                                Some(format!("Could not open the Postman source picker: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the Postman source picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -676,7 +769,6 @@ impl ProbeApp {
                 };
                 let _ = view.update_in(cx, |view, _, cx| {
                     view.loading = true;
-                    view.message = None;
                     cx.notify();
                 });
                 let preview = match cx
@@ -687,8 +779,11 @@ impl ProbeApp {
                     Err(error) => {
                         let _ = view.update_in(cx, |view, _, cx| {
                             view.loading = false;
-                            view.message = Some(format!("Could not inspect Postman data: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not inspect Postman data: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -741,8 +836,11 @@ impl ProbeApp {
                     }
                     PostmanConversionResult::Failed(error) => {
                         view.loading = false;
-                        view.message = Some(format!("Could not convert Postman data: {error}"));
-                        cx.notify();
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not convert Postman data: {error}"),
+                            cx,
+                        );
                     }
                 });
             })
@@ -772,10 +870,11 @@ impl ProbeApp {
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
                             view.loading = false;
-                            view.message = Some(format!(
-                                "Could not open the import destination picker: {error}"
-                            ));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the import destination picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -813,13 +912,21 @@ impl ProbeApp {
                             view.start_workspace_watcher(window, cx);
                             view.persist_session(cx);
                             if warning_count > 0 {
-                                view.message = Some(format!(
-                                    "Imported Postman collection with {warning_count} warning(s)."
-                                ));
+                                view.show_toast(
+                                    ToastIntent::Warning,
+                                    format!(
+                                        "Imported Postman collection with {warning_count} warning(s)."
+                                    ),
+                                    cx,
+                                );
                             }
                         }
                         Err(error) => {
-                            view.message = Some(format!("Could not import Postman data: {error}"));
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not import Postman data: {error}"),
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -879,8 +986,11 @@ impl ProbeApp {
                     }
                     YaakConversionResult::Failed(error) => {
                         view.loading = false;
-                        view.message = Some(format!("Could not convert Yaak data: {error}"));
-                        cx.notify();
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not convert Yaak data: {error}"),
+                            cx,
+                        );
                     }
                 });
             })
@@ -910,10 +1020,11 @@ impl ProbeApp {
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
                             view.loading = false;
-                            view.message = Some(format!(
-                                "Could not open the import destination picker: {error}"
-                            ));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the import destination picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -946,13 +1057,21 @@ impl ProbeApp {
                             view.start_workspace_watcher(window, cx);
                             view.persist_session(cx);
                             if warning_count > 0 {
-                                view.message = Some(format!(
-                                    "Imported Yaak workspace with {warning_count} warning(s)."
-                                ));
+                                view.show_toast(
+                                    ToastIntent::Warning,
+                                    format!(
+                                        "Imported Yaak workspace with {warning_count} warning(s)."
+                                    ),
+                                    cx,
+                                );
                             }
                         }
                         Err(error) => {
-                            view.message = Some(format!("Could not import Yaak data: {error}"));
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not import Yaak data: {error}"),
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -1004,8 +1123,11 @@ impl ProbeApp {
                     Ok(Ok(None)) => return,
                     Ok(Err(error)) => {
                         let _ = view.update_in(cx, |view, _, cx| {
-                            view.message = Some(format!("Could not open the file picker: {error}"));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not open the file picker: {error}"),
+                                cx,
+                            );
                         });
                         return;
                     }
@@ -1063,7 +1185,6 @@ impl ProbeApp {
     ) {
         self.capture_selected_environment();
         self.loading = true;
-        self.message = None;
         cx.notify();
         let view = cx.weak_entity();
         window
@@ -1096,11 +1217,13 @@ impl ProbeApp {
                                 view.session = state;
                                 view.session.clear_active_collection();
                                 view.persist_session(cx);
-                                view.message = Some(format!(
-                                    "Could not restore the previous collection. {error}"
-                                ));
+                                view.show_toast(
+                                    ToastIntent::Error,
+                                    format!("Could not restore the previous collection. {error}"),
+                                    cx,
+                                );
                             } else {
-                                view.message = Some(error);
+                                view.show_toast(ToastIntent::Error, error, cx);
                             }
                         }
                     }
@@ -1168,7 +1291,6 @@ impl ProbeApp {
     ) {
         self.capture_selected_environment();
         self.loading = true;
-        self.message = None;
         cx.notify();
         let view = cx.weak_entity();
         window
@@ -1198,7 +1320,7 @@ impl ProbeApp {
                             view.persist_session(cx);
                         }
                         Err(error) => {
-                            view.message = Some(error);
+                            view.show_toast(ToastIntent::Error, error, cx);
                         }
                     }
                     cx.notify();
@@ -1263,7 +1385,7 @@ impl ProbeApp {
         self.environment_save_workspace_path = None;
         self.restore_selected_environment();
         self.rebuild_visible_tree_rows();
-        self.message = None;
+        self.clear_toasts();
     }
 
     fn start_workspace_watcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1275,7 +1397,11 @@ impl ProbeApp {
         let watcher = match WorkspaceWatcher::start(&path) {
             Ok(watcher) => watcher,
             Err(error) => {
-                self.message = Some(format!("Could not watch this collection: {error}"));
+                self.show_toast(
+                    ToastIntent::Error,
+                    format!("Could not watch this collection: {error}"),
+                    cx,
+                );
                 return;
             }
         };
@@ -1338,8 +1464,11 @@ impl ProbeApp {
                 };
                 if let Some(error) = watch_error {
                     let _ = view.update_in(cx, |view, _, cx| {
-                        view.message = Some(format!("Collection watcher error: {error}"));
-                        cx.notify();
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Collection watcher error: {error}"),
+                            cx,
+                        );
                     });
                 }
                 if !events
@@ -1366,10 +1495,13 @@ impl ProbeApp {
                     match result {
                         Ok(fresh) => view.reconcile_filesystem_workspace(fresh, hints, window, cx),
                         Err(error) => {
-                            view.message = Some(format!(
-                                "The collection changed on disk but is not yet valid: {error}. The last valid version is still open."
-                            ));
-                            cx.notify();
+                            view.show_toast(
+                                ToastIntent::Warning,
+                                format!(
+                                    "The collection changed on disk but is not yet valid: {error}. The last valid version is still open."
+                                ),
+                                cx,
+                            );
                         }
                     }
                 });
@@ -1536,11 +1668,11 @@ impl ProbeApp {
                 ApplicationDialogAction::UseDisk,
             ) => self.reload_conflicted_workspace(path, window, cx),
             (ApplicationDialog::FilesystemConflict { .. }, ApplicationDialogAction::KeepLocal) => {
-                self.message = Some(
-                    "Kept local edits. Probe will not overwrite the changed disk files; resolve the conflict before saving."
-                        .to_owned(),
+                self.show_toast(
+                    ToastIntent::Warning,
+                    "Kept local edits. Probe will not overwrite the changed disk files; resolve the conflict before saving.",
+                    cx,
                 );
-                cx.notify();
             }
             (
                 ApplicationDialog::SelectYaakWorkspace {
@@ -1624,16 +1756,19 @@ impl ProbeApp {
                                 reconcile(clean_local, workspace, &BTreeMap::new())
                             {
                                 view.apply_reconciled_workspace(*reconciled, cx);
-                                view.message = Some(
-                                    "Reloaded the collection from disk; conflicting local edits were discarded."
-                                        .to_owned(),
+                                view.show_toast(
+                                    ToastIntent::Warning,
+                                    "Reloaded the collection from disk; conflicting local edits were discarded.",
+                                    cx,
                                 );
                             }
                         }
                         Err(error) => {
-                            view.message = Some(format!(
-                                "Could not reload the collection from disk: {error}"
-                            ));
+                            view.show_toast(
+                                ToastIntent::Error,
+                                format!("Could not reload the collection from disk: {error}"),
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -1834,8 +1969,7 @@ impl ProbeApp {
         self.restore_shell_selectors(&reconciled.selector_remaps, selectors);
         self.remap_structure_dialog(&reconciled.selector_remaps);
         self.create_environment_dialog = None;
-        self.message = None;
-        self.sync_environment_manager_after_reload(environment_manager_reload);
+        self.sync_environment_manager_after_reload(environment_manager_reload, cx);
         if self.shell.selected_environment().is_some_and(|name| {
             !self
                 .loaded_workspace
@@ -1975,8 +2109,11 @@ impl ProbeApp {
             let result = cx.background_spawn(async move { store.save(&state) }).await;
             if let Err(error) = result {
                 let _ = view.update(cx, |view, cx| {
-                    view.message = Some(format!("Could not save desktop session state: {error}"));
-                    cx.notify();
+                    view.show_toast(
+                        ToastIntent::Error,
+                        format!("Could not save desktop session state: {error}"),
+                        cx,
+                    );
                 });
             }
         }));
@@ -1998,6 +2135,7 @@ impl ProbeApp {
         self.filesystem_watcher = None;
         self.visible_tree_rows.clear();
         self.session.clear_active_collection();
+        self.clear_toasts();
         self.persist_session(cx);
         cx.notify();
     }
@@ -2012,8 +2150,11 @@ impl ProbeApp {
         &mut self,
         message: impl Into<String>,
         resolution: EnvironmentDialogErrorResolution,
+        cx: &mut Context<Self>,
     ) {
-        self.environment_dialog_error = Some(EnvironmentDialogError::new(message, resolution));
+        self.clear_environment_dialog_error(cx);
+        let toast_id = self.show_toast(ToastIntent::Error, message, cx);
+        self.environment_dialog_error = Some(EnvironmentDialogError::new(toast_id, resolution));
     }
 
     fn environment_manager_draft_has_required_names(&self) -> bool {
@@ -2031,7 +2172,7 @@ impl ProbeApp {
             })
     }
 
-    fn clear_resolved_environment_dialog_error(&mut self) {
+    fn clear_resolved_environment_dialog_error(&mut self, cx: &mut Context<Self>) {
         let Some(resolution) = self
             .environment_dialog_error
             .as_ref()
@@ -2057,7 +2198,7 @@ impl ProbeApp {
             EnvironmentDialogErrorResolution::Manual => false,
         };
         if resolved {
-            self.environment_dialog_error = None;
+            self.clear_environment_dialog_error(cx);
         }
     }
 
@@ -2081,7 +2222,7 @@ impl ProbeApp {
             return;
         };
         self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(selected));
-        self.environment_dialog_error = None;
+        self.clear_environment_dialog_error(cx);
         self.environment_manager_dialog_focus.focus(window, cx);
         cx.notify();
     }
@@ -2106,6 +2247,7 @@ impl ProbeApp {
             return;
         }
         self.discard_environment_manager_dialog();
+        self.clear_environment_dialog_error(cx);
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
@@ -2115,7 +2257,6 @@ impl ProbeApp {
         self.environment_manager_context_menu_position = None;
         self.environment_manager_close_after_save = false;
         self.environment_manager_dialog = None;
-        self.environment_dialog_error = None;
     }
 
     fn environment_manager_reload_snapshot(
@@ -2135,6 +2276,7 @@ impl ProbeApp {
     fn sync_environment_manager_after_reload(
         &mut self,
         previous: Option<(EnvironmentManagerDialog, Option<Environment>)>,
+        cx: &mut Context<Self>,
     ) {
         let Some((dialog, previous_original)) = previous else {
             return;
@@ -2168,6 +2310,7 @@ impl ProbeApp {
                 "This environment changed on disk. Unsaved environment edits were discarded."
                     .to_owned(),
                 EnvironmentDialogErrorResolution::Manual,
+                cx,
             );
             return;
         }
@@ -2210,6 +2353,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Save or cancel the current environment changes first.",
                 EnvironmentDialogErrorResolution::ManagerClean,
+                cx,
             );
             cx.notify();
             return;
@@ -2221,7 +2365,7 @@ impl ProbeApp {
             .find(|environment| environment.name == name)
         {
             self.environment_manager_dialog = Some(EnvironmentManagerDialog::new(environment));
-            self.environment_dialog_error = None;
+            self.clear_environment_dialog_error(cx);
             cx.notify();
         }
     }
@@ -2235,6 +2379,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Wait for the current save to finish.",
                 EnvironmentDialogErrorResolution::SavesIdle,
+                cx,
             );
             cx.notify();
             return;
@@ -2262,6 +2407,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Environment and variable names are required.",
                 EnvironmentDialogErrorResolution::ManagerDraftValid,
+                cx,
             );
             cx.notify();
             return;
@@ -2277,6 +2423,7 @@ impl ProbeApp {
                 self.show_environment_dialog_error(
                     format!("Could not save environment: {error}"),
                     EnvironmentDialogErrorResolution::Manual,
+                    cx,
                 );
                 cx.notify();
                 return;
@@ -2315,13 +2462,15 @@ impl ProbeApp {
                             }
                         }
                         view.environment_manager_close_after_save = false;
-                        view.environment_dialog_error = None;
+                        view.clear_environment_dialog_error(cx);
+                        view.show_toast(ToastIntent::Success, "Environment saved.", cx);
                     }
                     Err(error) => {
                         view.environment_manager_close_after_save = false;
                         view.show_environment_dialog_error(
                             format!("Could not save environment: {error}"),
                             EnvironmentDialogErrorResolution::Manual,
+                            cx,
                         );
                     }
                 }
@@ -2377,6 +2526,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Wait for the current save to finish.",
                 EnvironmentDialogErrorResolution::SavesIdle,
+                cx,
             );
             cx.notify();
             return;
@@ -2390,6 +2540,7 @@ impl ProbeApp {
                 self.show_environment_dialog_error(
                     format!("Could not delete environment: {error}"),
                     EnvironmentDialogErrorResolution::Manual,
+                    cx,
                 );
                 cx.notify();
                 return;
@@ -2405,7 +2556,7 @@ impl ProbeApp {
                 match result {
                     Ok(saved) => {
                         let close_manager = view.complete_deleted_environment(saved, &name, cx);
-                        view.environment_dialog_error = None;
+                        view.clear_environment_dialog_error(cx);
                         if close_manager {
                             view.close_environment_manager_dialog(window, cx);
                         }
@@ -2414,6 +2565,7 @@ impl ProbeApp {
                         view.show_environment_dialog_error(
                             format!("Could not delete environment: {error}"),
                             EnvironmentDialogErrorResolution::Manual,
+                            cx,
                         );
                     }
                 }
@@ -2511,12 +2663,13 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Save or discard unsaved environment changes first.",
                 EnvironmentDialogErrorResolution::ManagerClean,
+                cx,
             );
             cx.notify();
             return;
         }
         self.structure_dialog = None;
-        self.environment_dialog_error = None;
+        self.clear_environment_dialog_error(cx);
         self.create_environment_dialog = Some(String::new());
         self.create_environment_dialog_focus.focus(window, cx);
         cx.notify();
@@ -2527,7 +2680,7 @@ impl ProbeApp {
             return;
         }
         self.create_environment_dialog = None;
-        self.environment_dialog_error = None;
+        self.clear_environment_dialog_error(cx);
         self.restore_environment_dialog_focus(window, cx);
         cx.notify();
     }
@@ -2541,6 +2694,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Environment name is required.",
                 EnvironmentDialogErrorResolution::CreateNameValid,
+                cx,
             );
             cx.notify();
             return;
@@ -2561,6 +2715,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Wait for the current save before creating an environment.",
                 EnvironmentDialogErrorResolution::SavesIdle,
+                cx,
             );
             cx.notify();
             return;
@@ -2569,6 +2724,7 @@ impl ProbeApp {
             self.show_environment_dialog_error(
                 "Save or discard unsaved environment changes first.",
                 EnvironmentDialogErrorResolution::ManagerClean,
+                cx,
             );
             cx.notify();
             return;
@@ -2582,13 +2738,14 @@ impl ProbeApp {
                 self.show_environment_dialog_error(
                     format!("Could not create environment: {error}"),
                     EnvironmentDialogErrorResolution::Manual,
+                    cx,
                 );
                 cx.notify();
                 return;
             }
         };
         self.environment_save_workspace_path = self.workspace_path.clone();
-        self.environment_dialog_error = None;
+        self.clear_environment_dialog_error(cx);
         self.environment_save_task = Some(cx.spawn_in(window, async move |view, window| {
             let result = window
                 .background_spawn(async move { prepared.execute() })
@@ -2611,7 +2768,7 @@ impl ProbeApp {
                         }
                         view.environment_save_workspace_path = None;
                         view.create_environment_dialog = None;
-                        view.environment_dialog_error = None;
+                        view.clear_environment_dialog_error(cx);
                         view.restore_environment_dialog_focus(window, cx);
                         view.start_next_request_save(window, cx);
                         view.start_next_environment_save(window, cx);
@@ -2630,6 +2787,7 @@ impl ProbeApp {
                         view.show_environment_dialog_error(
                             format!("Could not create environment: {error}"),
                             EnvironmentDialogErrorResolution::Manual,
+                            cx,
                         );
                     }
                 }
@@ -2870,8 +3028,7 @@ impl ProbeApp {
                 self.apply_structure(operation, window, cx);
             }
             Err(message) => {
-                self.message = Some(message);
-                cx.notify();
+                self.show_toast(ToastIntent::Error, message, cx);
             }
         }
     }
@@ -2912,9 +3069,11 @@ impl ProbeApp {
             return;
         }
         if self.request_save_task.is_some() || self.environment_save_task.is_some() {
-            self.message =
-                Some("Wait for the current save before changing collection structure.".to_owned());
-            cx.notify();
+            self.show_toast(
+                ToastIntent::Warning,
+                "Wait for the current save before changing collection structure.",
+                cx,
+            );
             return;
         }
         let (Some(mut workspace), Some(path)) =
@@ -2923,7 +3082,6 @@ impl ProbeApp {
             return;
         };
         self.loading = true;
-        self.message = None;
         let operation_for_task = operation.clone();
         self.structure_task = Some(cx.spawn_in(window, async move |view, window| {
             let result = window
@@ -2951,8 +3109,11 @@ impl ProbeApp {
                         );
                     }
                     Err(error) => {
-                        view.message =
-                            Some(format!("Could not edit collection structure: {error}"));
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not edit collection structure: {error}"),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
@@ -3078,7 +3239,6 @@ impl ProbeApp {
             self.scroll_selected_tree_item_into_view();
         }
         self.reveal_active_tab();
-        self.message = None;
         self.persist_session(cx);
     }
 
@@ -3386,8 +3546,11 @@ impl ProbeApp {
             Err(error) => {
                 self.persistence.fail(key);
                 self.pending_close = None;
-                self.message = Some(format!("Could not save request: {error}"));
-                cx.notify();
+                self.show_toast(
+                    ToastIntent::Error,
+                    format!("Could not save request: {error}"),
+                    cx,
+                );
                 return;
             }
         };
@@ -3403,14 +3566,18 @@ impl ProbeApp {
                             loaded.complete_request_save(saved);
                         }
                         view.persistence.complete(key, snapshot);
-                        view.message = None;
+                        view.show_toast(ToastIntent::Success, "Request saved.", cx);
                         view.start_next_request_save(window, cx);
                         view.start_next_environment_save(window, cx);
                     }
                     Err(error) => {
                         view.persistence.fail(key);
                         view.pending_close = None;
-                        view.message = Some(format!("Could not save request: {error}"));
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not save request: {error}"),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();
@@ -4150,8 +4317,11 @@ impl ProbeApp {
             Err(error) => {
                 self.pending_environment_saves.insert((environment, name));
                 self.pending_close = None;
-                self.message = Some(format!("Could not save environment variable: {error}"));
-                cx.notify();
+                self.show_toast(
+                    ToastIntent::Error,
+                    format!("Could not save environment variable: {error}"),
+                    cx,
+                );
                 return;
             }
         };
@@ -4170,15 +4340,17 @@ impl ProbeApp {
                             loaded.complete_environment_save(saved);
                         }
                         view.environment_save_workspace_path = None;
-                        view.message = None;
                         view.start_next_request_save(window, cx);
                         view.start_next_environment_save(window, cx);
                     }
                     Err(error) => {
                         view.environment_save_workspace_path = None;
                         view.pending_close = None;
-                        view.message =
-                            Some(format!("Could not save environment variable: {error}"));
+                        view.show_toast(
+                            ToastIntent::Error,
+                            format!("Could not save environment variable: {error}"),
+                            cx,
+                        );
                     }
                 }
                 cx.notify();

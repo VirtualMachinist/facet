@@ -891,7 +891,6 @@ impl ProbeApp {
         let name_enter_view = cx.weak_entity();
         let cancel_view = cx.weak_entity();
         let submit_view = cx.weak_entity();
-        let dismiss_error_view = cx.weak_entity();
         let busy = self.environment_save_task.is_some();
         let mut content = components::dialog_surface(
             theme,
@@ -899,24 +898,6 @@ impl ProbeApp {
             components::COMPACT_DIALOG_WIDTH,
         )
         .child(components::dialog_title(theme, "New Environment"));
-        if let Some(error) = self
-            .environment_dialog_error
-            .as_ref()
-            .map(|error| error.message.clone())
-        {
-            content = content.child(components::dialog_error_banner(
-                theme,
-                "environment-dialog-error",
-                "environment-dialog-error-dismiss",
-                error,
-                move |_, _, cx| {
-                    let _ = dismiss_error_view.update(cx, |view, cx| {
-                        view.environment_dialog_error = None;
-                        cx.notify();
-                    });
-                },
-            ));
-        }
         content = content
             .child(
                 div()
@@ -1492,7 +1473,6 @@ impl ProbeApp {
 
         let close_view = cx.weak_entity();
         let save_view = cx.weak_entity();
-        let dismiss_error_view = cx.weak_entity();
         let save_disabled = busy || !dirty;
         let mut content = components::dialog_surface(theme, "environment-manager-dialog", 900.0)
             .debug_selector(|| "environment-manager-dialog".into())
@@ -1502,25 +1482,6 @@ impl ProbeApp {
                 theme,
                 format!("Environments — {}", self.workspace_name()),
             ));
-        if self.create_environment_dialog.is_none()
-            && let Some(error) = self
-                .environment_dialog_error
-                .as_ref()
-                .map(|error| error.message.clone())
-        {
-            content = content.child(components::dialog_error_banner(
-                theme,
-                "environment-dialog-error",
-                "environment-dialog-error-dismiss",
-                error,
-                move |_, _, cx| {
-                    let _ = dismiss_error_view.update(cx, |view, cx| {
-                        view.environment_dialog_error = None;
-                        cx.notify();
-                    });
-                },
-            ));
-        }
         content = content
             .child(
                 div()

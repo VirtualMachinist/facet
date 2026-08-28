@@ -1,6 +1,37 @@
 use super::*;
 
 impl ProbeApp {
+    fn render_toasts(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.toasts.is_empty() {
+            return div().into_any_element();
+        }
+
+        let mut stack = ToastStack::new("probe-toast-stack", self.toasts.stack_state.clone())
+            .motion(toast_stack_motion())
+            .placement(Anchor::BottomRight)
+            .focus_handle(self.toast_focus_handle.clone())
+            .absolute()
+            .bottom(px(theme.metrics.spacing_3))
+            .right(px(theme.metrics.spacing_3))
+            .w(px(components::TOAST_STACK_WIDTH))
+            .max_h(relative(0.8))
+            .occlude();
+
+        for (id, notification, status) in self.toasts.iter() {
+            let dismiss_view = cx.weak_entity();
+            stack = stack.item(
+                ("probe-toast", id),
+                components::toast(theme, id, notification, status, move |_, _, cx| {
+                    let _ = dismiss_view.update(cx, |view, cx| view.dismiss_toast(id, cx));
+                }),
+            );
+        }
+
+        deferred(stack)
+            .with_priority(POPUP_PRIORITY.saturating_sub(1))
+            .into_any_element()
+    }
+
     fn render_request_tab_tooltip(&self, theme: Theme) -> gpui::AnyElement {
         let Some(tooltip) = self.request_tab_tooltip else {
             return div().into_any_element();
@@ -2976,9 +3007,10 @@ impl ProbeApp {
                     move |_, offset, _, cx| {
                         let _ = inspect_view.update(cx, |view, cx| {
                             if view.response_viewer.tab() != ResponseViewerTab::Pretty {
-                                view.message = Some(
-                                    "Inspect from the Pretty tab to select a response value."
-                                        .to_owned(),
+                                view.show_toast(
+                                    ToastIntent::Info,
+                                    "Inspect from the Pretty tab to select a response value.",
+                                    cx,
                                 );
                             } else if view
                                 .response_viewer
@@ -2986,7 +3018,11 @@ impl ProbeApp {
                                 .is_some_and(|document| document.inspection_pending)
                             {
                                 view.response_viewer.set_tab(ResponseViewerTab::Inspect);
-                                view.message = Some("Inspection is still running.".to_owned());
+                                view.show_toast(
+                                    ToastIntent::Info,
+                                    "Inspection is still running.",
+                                    cx,
+                                );
                             } else if let Some(selection) = view
                                 .response_viewer
                                 .select_inspection_at_offset(key, offset)
@@ -2994,8 +3030,10 @@ impl ProbeApp {
                                 view.pending_inspector_reveal.set(Some(selection));
                                 view.pretty_reveal.set(None);
                             } else {
-                                view.message = Some(
-                                    "No inspected JWT or timestamp found at that value.".to_owned(),
+                                view.show_toast(
+                                    ToastIntent::Info,
+                                    "No inspected JWT or timestamp found at that value.",
+                                    cx,
                                 );
                             }
                             cx.notify();
@@ -3194,9 +3232,10 @@ impl ProbeApp {
                                                             },
                                                         ));
                                                     } else {
-                                                        view.message = Some(
-                                                            "Pretty source is unavailable."
-                                                                .to_owned(),
+                                                        view.show_toast(
+                                                            ToastIntent::Warning,
+                                                            "Pretty source is unavailable.",
+                                                            cx,
                                                         );
                                                     }
                                                     cx.notify();
@@ -3368,7 +3407,7 @@ impl ProbeApp {
 
 impl Render for ProbeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.clear_resolved_environment_dialog_error();
+        self.clear_resolved_environment_dialog_error(cx);
         if !cx.has_active_drag()
             && (self.tree_drop_target.is_some() || self.tree_drag_source.is_some())
         {
@@ -3383,7 +3422,9 @@ impl Render for ProbeApp {
         }
         let theme = Theme::for_window_appearance(window.appearance());
         let sidebar_view = cx.weak_entity();
-        let status_message = self.message.clone();
+        if self.toasts.stack_state.is_expanded() != self.toast_paused {
+            self.schedule_toast_lifecycle(cx);
+        }
 
         div()
             .size_full()
@@ -3597,49 +3638,6 @@ impl Render for ProbeApp {
                 cx.listener(|view, _, _, cx| view.finish_resize(cx)),
             )
             .child(self.render_titlebar(theme, window, cx))
-            .when_some(status_message, |root, message| {
-                root.child(
-                    div()
-                        .px(px(theme.metrics.spacing_3))
-                        .py(px(theme.metrics.spacing_2))
-                        .flex()
-                        .items_start()
-                        .justify_between()
-                        .gap(px(theme.metrics.spacing_2))
-                        .bg(theme.colors.status.error)
-                        .text_color(theme.colors.text.inverse)
-                        .child(div().flex_1().min_w(px(0.0)).child(message))
-                        .child(
-                            Button::new("status-message-dismiss")
-                                .focusable(true)
-                                .tab_stop(true)
-                                .flex_none()
-                                .w(px(theme.metrics.control_height - 4.0))
-                                .h(px(theme.metrics.control_height - 4.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(theme.metrics.radius_small))
-                                .text_color(theme.colors.text.inverse)
-                                .hover(move |button| {
-                                    button.bg(components::hover_fill(theme.colors.status.error))
-                                })
-                                .on_click({
-                                    let dismiss_view = cx.weak_entity();
-                                    move |_, _, cx| {
-                                        let _ = dismiss_view.update(cx, |view, cx| {
-                                            view.message = None;
-                                            cx.notify();
-                                        });
-                                    }
-                                })
-                                .child(
-                                    components::close_icon(theme)
-                                        .text_color(theme.colors.text.inverse),
-                                ),
-                        ),
-                )
-            })
             .child(
                 div()
                     .flex_1()
@@ -3682,5 +3680,6 @@ impl Render for ProbeApp {
             .child(self.render_request_tab_tooltip(theme))
             .child(self.render_tab_context_menu(theme, window, cx))
             .child(self.render_tree_context_menu(theme, window, cx))
+            .child(self.render_toasts(theme, cx))
     }
 }
