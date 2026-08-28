@@ -1112,7 +1112,7 @@ impl ProbeApp {
             .child(
                 div()
                     .mb(px(theme.metrics.spacing_2))
-                    .px(px(theme.metrics.spacing_2))
+                    .pl(px(theme.metrics.spacing_2))
                     .flex()
                     .items_center()
                     .justify_between()
