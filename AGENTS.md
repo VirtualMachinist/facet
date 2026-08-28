@@ -649,6 +649,11 @@ palette values, or contrast ratios. Review appearance visually against
 light/dark appearance selection, pane resize constraints, focus, and
 highlight span ranges without asserting pixel or color values.
 
+Before adding a desktop test, check whether an existing test already builds
+the same workspace, selection, and UI surface. If the new assertion is a
+follow-on interaction on that surface, extend that test. Keep a separate
+test when the fixture, setup, or failure mode is different.
+
 Before completing a task run:
 
 cargo fmt --check
