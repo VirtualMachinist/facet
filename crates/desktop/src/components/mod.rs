@@ -36,6 +36,7 @@ use probe_core::path_variable_ranges;
 mod buttons;
 mod icons;
 mod menus;
+mod splitter;
 mod toasts;
 pub(crate) use buttons::{
     DialogActionStyle, dialog_action_button, dialog_choice_button, primary_button,
@@ -53,6 +54,7 @@ pub(crate) use menus::{
     positioned_cascading_menu, shortcut_label_for_action, shortcut_label_for_action_in_context,
     switch,
 };
+pub(crate) use splitter::pane_splitter;
 pub(crate) use toasts::{TOAST_STACK_WIDTH, toast};
 
 /// Fixed width for compact primary actions such as Send.

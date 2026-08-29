@@ -2200,6 +2200,8 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
         assert!(visual.debug_bounds("response-tab-pretty").is_some());
         assert!(visual.debug_bounds("response-tab-raw").is_some());
         assert!(visual.debug_bounds("response-tab-headers").is_some());
+        assert!(visual.debug_bounds("response-resize-handle").is_some());
+        assert!(visual.debug_bounds("sidebar-resize-handle").is_some());
         assert!(visual.debug_bounds("response-raw-view-text").is_none());
         assert!(visual.debug_bounds("response-raw-view-base64").is_none());
         assert!(visual.debug_bounds("response-search").is_none());
@@ -2292,6 +2294,7 @@ fn completed_response_renders_pretty_raw_headers_and_search(cx: &mut TestAppCont
     cx.run_until_parked();
     {
         let mut visual = VisualTestContext::from_window(window.into(), cx);
+        assert!(visual.debug_bounds("response-inspector-divider").is_some());
         let reveal = visual
             .debug_bounds("response-inspector-reveal-pretty")
             .expect("selected inspection should expose a reveal button");

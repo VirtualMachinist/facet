@@ -9,11 +9,11 @@ use std::{
 };
 
 use gpui::{
-    Action, Anchor, App, AppContext as _, Bounds, Context, CursorStyle, DragMoveEvent, ElementId,
-    FocusHandle, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels, Point, Render,
-    ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _, Task,
-    TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
+    Action, Anchor, App, AppContext as _, Axis, Bounds, Context, CursorStyle, DragMoveEvent,
+    ElementId, FocusHandle, FontWeight, Hsla, InteractiveElement as _, IntoElement, KeyBinding,
+    MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, PathPromptOptions, Pixels,
+    Point, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
+    Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
     WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
     uniform_list,
 };

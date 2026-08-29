@@ -1,9 +1,9 @@
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 use gpui::{
-    AppContext as _, ClipboardItem, Context, Entity, Image, IntoElement, KeyBinding, Modifiers,
-    MouseButton, Render, SharedString, TestAppContext, VisualTestContext, div, hsla, point,
-    prelude::*, px, size, transparent_black,
+    AppContext as _, Axis, ClipboardItem, Context, Entity, Image, IntoElement, KeyBinding,
+    Modifiers, MouseButton, Render, SharedString, TestAppContext, VisualTestContext, div, hsla,
+    point, prelude::*, px, size, transparent_black,
 };
 use gpui_base::{
     Button, Editor, Input, InputBase, Popover,
@@ -13,8 +13,8 @@ use gpui_base::{
 use super::{
     EditorInsets, ProbeEditor, VariableContext, VariableHighlightElement, body_text_highlights,
     clipboard_has_pasteable_text, dropdown, editor_paint_style, editor_value_needs_refresh,
-    input_text_scroll_offset, menu_button, single_line, variable_highlight_runs, variable_ranges,
-    variable_span_layout, variable_tooltip_presentation,
+    input_text_scroll_offset, menu_button, pane_splitter, single_line, variable_highlight_runs,
+    variable_ranges, variable_span_layout, variable_tooltip_presentation,
 };
 use crate::theme::Theme;
 
@@ -951,4 +951,104 @@ fn variable_highlight_shapes_multiline_value_without_panicking(cx: &mut TestAppC
             highlight_path_variables: false,
         },
     );
+}
+
+struct SplitterHarness {
+    presses: Rc<Cell<usize>>,
+}
+
+impl Render for SplitterHarness {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        let presses = self.presses.clone();
+        div().size_full().p(px(8.0)).child(
+            div()
+                .id("splitter-pane")
+                .debug_selector(|| "splitter-pane".into())
+                .size_full()
+                .relative()
+                .child(
+                    pane_splitter(Theme::light(), "test-splitter", Axis::Horizontal)
+                        .debug_selector("test-splitter")
+                        .on_mouse_down(move |_, _, _| {
+                            presses.set(presses.get() + 1);
+                        }),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn pane_splitter_activates_on_pointer_press(cx: &mut TestAppContext) {
+    cx.update(crate::theme::Theme::init);
+    let presses = Rc::new(Cell::new(0));
+    let window = cx.open_window(size(px(240.0), px(80.0)), {
+        let presses = presses.clone();
+        move |_, _| SplitterHarness { presses }
+    });
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let handle = visual
+        .debug_bounds("test-splitter")
+        .expect("splitter hit target should render");
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(handle.center(), MouseButton::Left, Modifiers::default());
+    let pane = visual
+        .debug_bounds("splitter-pane")
+        .expect("splitter parent pane should render");
+    assert_eq!(handle.size.width, px(5.0));
+    assert!(handle.size.height > px(10.0));
+    assert_eq!(handle.center().x, pane.left());
+    assert_eq!(presses.get(), 1);
+}
+
+struct HiddenLineSplitterHarness {
+    presses: Rc<Cell<usize>>,
+}
+
+impl Render for HiddenLineSplitterHarness {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        let presses = self.presses.clone();
+        div().size_full().p(px(8.0)).child(
+            div()
+                .id("hidden-splitter-pane")
+                .debug_selector(|| "hidden-splitter-pane".into())
+                .size_full()
+                .relative()
+                .child(
+                    pane_splitter(Theme::light(), "hidden-splitter", Axis::Horizontal)
+                        .show_line(false)
+                        .trailing()
+                        .debug_selector("hidden-splitter")
+                        .on_mouse_down(move |_, _, _| {
+                            presses.set(presses.get() + 1);
+                        }),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn pane_splitter_without_idle_line_still_exposes_a_hit_target(cx: &mut TestAppContext) {
+    cx.update(crate::theme::Theme::init);
+    let presses = Rc::new(Cell::new(0));
+    let window = cx.open_window(size(px(240.0), px(80.0)), {
+        let presses = presses.clone();
+        move |_, _| HiddenLineSplitterHarness { presses }
+    });
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let handle = visual
+        .debug_bounds("hidden-splitter")
+        .expect("hidden-line splitter should still render a hit target");
+    visual.simulate_mouse_down(handle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(handle.center(), MouseButton::Left, Modifiers::default());
+    let pane = visual
+        .debug_bounds("hidden-splitter-pane")
+        .expect("hidden-line splitter parent pane should render");
+    assert_eq!(handle.size.width, px(5.0));
+    assert!(handle.size.height > px(10.0));
+    assert_eq!(handle.center().x, pane.right());
+    assert_eq!(presses.get(), 1);
 }

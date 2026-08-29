@@ -2655,7 +2655,8 @@ impl ProbeApp {
             .bg(theme.colors.surfaces.raised)
             .child(
                 div()
-                    .h(px(theme.metrics.tab_bar_height))
+                    .pt(px(theme.metrics.spacing_2))
+                    .pb(px(theme.metrics.spacing_1))
                     .px(px(theme.metrics.spacing_2))
                     .flex()
                     .items_center()
@@ -3208,24 +3209,16 @@ impl ProbeApp {
         }
 
         let divider_view = cx.weak_entity();
-        let divider = div()
-            .id("response-inspector-divider")
-            .debug_selector(|| "response-inspector-divider".into())
-            .w(px(5.0))
-            .h_full()
-            .flex_none()
-            .flex()
-            .justify_center()
-            .cursor(CursorStyle::ResizeLeftRight)
-            .hover(move |handle| handle.bg(theme.colors.borders.subtle))
-            .child(div().w(px(1.0)).h_full().bg(theme.colors.borders.subtle))
-            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
-                let _ = divider_view.update(cx, |view, cx| {
-                    view.inspector_resize_start =
-                        Some((f32::from(event.position.x), view.inspector_list_width));
-                    cx.notify();
+        let divider =
+            components::pane_splitter(theme, "response-inspector-divider", Axis::Horizontal)
+                .debug_selector("response-inspector-divider")
+                .on_mouse_down(move |event, _, cx| {
+                    let _ = divider_view.update(cx, |view, cx| {
+                        view.inspector_resize_start =
+                            Some((f32::from(event.position.x), view.inspector_list_width));
+                        cx.notify();
+                    });
                 });
-            });
 
         Self::inspect_tab_content_boundary(
             theme,
@@ -3237,79 +3230,91 @@ impl ProbeApp {
                 .flex()
                 .child(
                     Self::response_tab_content_spacing(theme)
-                        .pr(px(theme.metrics.spacing_1))
+                        .pr(px(theme.metrics.spacing_2))
                         .w(px(self.inspector_list_width))
                         .flex_none()
                         .min_h(px(0.0))
                         .child(list),
                 )
-                .child(divider)
                 .child(
-                    Self::response_tab_content_spacing(theme)
-                        .pl(px(theme.metrics.spacing_1))
-                        .pt(px(theme.metrics.spacing_2))
+                    div()
+                        .relative()
                         .flex_1()
                         .min_w(px(0.0))
                         .min_h(px(0.0))
                         .child(
-                            div()
-                                .relative()
+                            Self::response_tab_content_spacing(theme)
+                                .pl(px(theme.metrics.spacing_2))
+                                .pt(px(theme.metrics.spacing_2))
                                 .size_full()
-                                .child(components::response_inspector_input(
-                                    theme,
-                                    "response-inspector-editor",
-                                    detail,
-                                    move |range, cx| {
-                                        #[cfg(test)]
-                                        {
-                                            let _ = view.update(cx, |this, _| {
-                                                this.rendered_response_rows = range.len();
-                                            });
-                                        }
-                                        #[cfg(not(test))]
-                                        {
-                                            let _ = (&view, range, cx);
-                                        }
-                                    },
-                                ))
-                                .when(revealable, |detail| {
-                                    let reveal_view = cx.weak_entity();
-                                    detail.child(
-                                        div()
-                                            .absolute()
-                                            .top(px(theme.metrics.spacing_3))
-                                            .right(px(theme.metrics.spacing_3))
-                                            .child(components::compact_icon_button(
-                                                theme,
-                                                "response-inspector-reveal-pretty",
-                                                "Reveal in Pretty",
-                                                components::locate_icon(theme),
-                                                move |_, _, cx| {
-                                                    let _ = reveal_view.update(cx, |view, cx| {
-                                                        if let Some(selection) = view
-                                                            .response_viewer
-                                                            .reveal_inspection_in_pretty(key)
-                                                        {
-                                                            view.pretty_reveal.set(Some(
-                                                                PrettyRevealState {
-                                                                    selection,
-                                                                    scroll_pending: true,
-                                                                },
-                                                            ));
-                                                        } else {
-                                                            view.show_toast(
-                                                                ToastIntent::Warning,
-                                                                "Pretty source is unavailable.",
-                                                                cx,
-                                                            );
-                                                        }
-                                                        cx.notify();
+                                .child(
+                                    div()
+                                        .relative()
+                                        .size_full()
+                                        .child(components::response_inspector_input(
+                                            theme,
+                                            "response-inspector-editor",
+                                            detail,
+                                            move |range, cx| {
+                                                #[cfg(test)]
+                                                {
+                                                    let _ = view.update(cx, |this, _| {
+                                                        this.rendered_response_rows = range.len();
                                                     });
-                                                },
-                                            )),
-                                    )
-                                }),
-                        ),
+                                                }
+                                                #[cfg(not(test))]
+                                                {
+                                                    let _ = (&view, range, cx);
+                                                }
+                                            },
+                                        ))
+                                        .when(revealable, |detail| {
+                                            let reveal_view = cx.weak_entity();
+                                            detail.child(
+                                                div()
+                                                    .absolute()
+                                                    .top(px(theme.metrics.spacing_3))
+                                                    .right(px(theme.metrics.spacing_3))
+                                                    .child(components::compact_icon_button(
+                                                        theme,
+                                                        "response-inspector-reveal-pretty",
+                                                        "Reveal in Pretty",
+                                                        components::locate_icon(theme),
+                                                        move |_, _, cx| {
+                                                            let _ = reveal_view.update(
+                                                                cx,
+                                                                |view, cx| {
+                                                                    if let Some(selection) = view
+                                                                        .response_viewer
+                                                                        .reveal_inspection_in_pretty(
+                                                                            key,
+                                                                        )
+                                                                    {
+                                                                        view.pretty_reveal.set(
+                                                                            Some(
+                                                                                PrettyRevealState {
+                                                                                    selection,
+                                                                                    scroll_pending: true,
+                                                                                },
+                                                                            ),
+                                                                        );
+                                                                    } else {
+                                                                        view.show_toast(
+                                                                            ToastIntent::Warning,
+                                                                            "Pretty source is unavailable.",
+                                                                            cx,
+                                                                        );
+                                                                    }
+                                                                    cx.notify();
+                                                                },
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                        }),
+                                ),
+                        )
+                        .child(divider),
                 ),
         )
         .into_any_element()
@@ -3387,34 +3392,22 @@ impl ProbeApp {
     fn render_editor_response(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::Div {
         let response_view = cx.weak_entity();
         let horizontal = self.shell.pane_layout == PaneLayout::Horizontal;
-        let handle = div()
-            .id("response-resize-handle")
-            .flex_none()
-            .when(horizontal, |handle| {
-                handle
-                    .w(px(5.0))
-                    .h_full()
-                    .flex()
-                    .justify_center()
-                    .cursor(CursorStyle::ResizeLeftRight)
-                    .child(div().w(px(1.0)).h_full().bg(theme.colors.borders.subtle))
-            })
-            .when(!horizontal, |handle| {
-                handle
-                    .h(px(5.0))
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .cursor(CursorStyle::ResizeUpDown)
-                    .child(div().h(px(1.0)).w_full().bg(theme.colors.borders.subtle))
-            })
-            .hover(move |handle| handle.bg(theme.colors.borders.subtle))
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                let _ = response_view.update(cx, |view, cx| {
-                    view.shell.resizing = Some(ResizePane::Response);
-                    cx.notify();
-                });
+        let splitter = components::pane_splitter(
+            theme,
+            "response-resize-handle",
+            if horizontal {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            },
+        )
+        .debug_selector("response-resize-handle")
+        .on_mouse_down(move |_, _, cx| {
+            let _ = response_view.update(cx, |view, cx| {
+                view.shell.resizing = Some(ResizePane::Response);
+                cx.notify();
             });
+        });
 
         div()
             .flex_1()
@@ -3424,8 +3417,11 @@ impl ProbeApp {
             .when(horizontal, |work_area| work_area.flex_row())
             .when(!horizontal, |work_area| work_area.flex_col())
             .child(self.render_request_editor(theme, cx))
-            .child(handle)
-            .child(self.render_response_panel(theme, cx))
+            .child(
+                self.render_response_panel(theme, cx)
+                    .relative()
+                    .child(splitter),
+            )
     }
 
     pub(super) fn active_request(&self) -> Option<&HttpRequest> {
@@ -3733,31 +3729,37 @@ impl Render for ProbeApp {
                     .flex()
                     .bg(theme.colors.surfaces.raised)
                     .when(!self.shell.sidebar_collapsed, |row| {
-                        row.child(self.render_sidebar(theme, cx)).child(
-                            div()
-                                .id("sidebar-resize-handle")
-                                .w(px(5.0))
-                                .h_full()
-                                .ml(px(-5.0))
-                                .flex_none()
-                                .cursor(CursorStyle::ResizeLeftRight)
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    let _ = sidebar_view.update(cx, |view, cx| {
-                                        view.shell.resizing = Some(ResizePane::Sidebar);
-                                        cx.notify();
-                                    });
-                                }),
-                        )
+                        row.child(self.render_sidebar(theme, cx))
                     })
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.0))
                             .h_full()
+                            .relative()
                             .flex()
                             .flex_col()
                             .child(self.render_tabs(theme, cx))
-                            .child(self.render_editor_response(theme, cx)),
+                            .child(self.render_editor_response(theme, cx))
+                            .when(!self.shell.sidebar_collapsed, |column| {
+                                column.child(
+                                    components::pane_splitter(
+                                        theme,
+                                        "sidebar-resize-handle",
+                                        Axis::Horizontal,
+                                    )
+                                    .show_line(false)
+                                    .debug_selector("sidebar-resize-handle")
+                                    .on_mouse_down(
+                                        move |_, _, cx| {
+                                            let _ = sidebar_view.update(cx, |view, cx| {
+                                                view.shell.resizing = Some(ResizePane::Sidebar);
+                                                cx.notify();
+                                            });
+                                        },
+                                    ),
+                                )
+                            }),
                     ),
             )
             .child(self.render_structure_dialog(theme, window, cx))
