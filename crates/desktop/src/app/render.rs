@@ -2507,17 +2507,20 @@ impl ProbeApp {
     fn render_response_panel(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::Div {
         let active_key = self.shell.active_tab();
         let state = active_key.and_then(|key| self.execution.response(key));
-        let (summary, content) = match state {
+        let (header_leading, header_trailing, content) = match state {
             Some(state @ ResponseState::Running { .. }) => (
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Sending…")
+                    .into_any_element(),
                 div()
                     .min_w(px(0.0))
                     .flex()
                     .items_center()
                     .justify_end()
                     .child(
-                        components::truncated_label(format!(
-                            "Sending… • {}",
-                            format_duration(state.elapsed().unwrap_or_default())
+                        components::truncated_label(format_duration(
+                            state.elapsed().unwrap_or_default(),
                         ))
                         .text_color(theme.colors.text.muted),
                     )
@@ -2532,6 +2535,10 @@ impl ProbeApp {
                     .into_any_element(),
             ),
             Some(ResponseState::Cancelled) => (
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Response")
+                    .into_any_element(),
                 div()
                     .min_w(px(0.0))
                     .flex()
@@ -2552,6 +2559,10 @@ impl ProbeApp {
                     .into_any_element(),
             ),
             Some(ResponseState::Failed(error)) => (
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Response")
+                    .into_any_element(),
                 div()
                     .min_w(px(0.0))
                     .flex()
@@ -2579,6 +2590,15 @@ impl ProbeApp {
                 );
                 let document = active_key.and_then(|key| self.response_viewer.document(key));
                 (
+                    document.map_or_else(
+                        || {
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Response")
+                                .into_any_element()
+                        },
+                        |document| self.render_response_tabs(theme, document, cx),
+                    ),
                     div()
                         .min_w(px(0.0))
                         .flex()
@@ -2606,6 +2626,10 @@ impl ProbeApp {
                 )
             }
             None => (
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Response")
+                    .into_any_element(),
                 div().into_any_element(),
                 div()
                     .flex_1()
@@ -2637,9 +2661,14 @@ impl ProbeApp {
                     .items_center()
                     .justify_between()
                     .gap(px(theme.metrics.spacing_2))
-                    .border_b_1()
-                    .border_color(theme.colors.borders.subtle)
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child("Response"))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .items_center()
+                            .child(header_leading),
+                    )
                     .child(
                         div()
                             .id("response-status")
@@ -2647,32 +2676,18 @@ impl ProbeApp {
                             .flex_1()
                             .min_w(px(0.0))
                             .text_size(px(theme.typography.caption_size))
-                            .child(summary),
+                            .child(header_trailing),
                     ),
             )
             .child(content)
     }
 
-    fn render_response_document(
+    fn render_response_tabs(
         &self,
         theme: Theme,
-        document: Option<&PreparedDocument>,
+        document: &PreparedDocument,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(key) = self.shell.active_tab() else {
-            return div().into_any_element();
-        };
-        let Some(document) = document else {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.colors.text.muted)
-                .child("Preparing response…")
-                .into_any_element();
-        };
-
         let mut tabs = Tabs::new("response-view-tabs")
             .flex()
             .items_center()
@@ -2714,35 +2729,58 @@ impl ProbeApp {
                 }),
             );
         }
+        tabs.into_any_element()
+    }
 
+    fn render_raw_response_tabs(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         let mut raw_views = Tabs::new("response-raw-view-tabs")
             .flex()
             .items_center()
             .gap(px(theme.metrics.spacing_1));
-        if self.response_viewer.tab() == ResponseViewerTab::Raw {
-            for (index, view) in RawBodyView::ALL.iter().copied().enumerate() {
-                let view_entity = cx.weak_entity();
-                let selected = self.response_viewer.raw_view() == view;
-                raw_views = raw_views.child(
-                    components::editor_subtab(
-                        theme,
-                        ("response-raw-view", index),
-                        view.label(),
-                        selected,
-                        index + 1,
-                        RawBodyView::ALL.len(),
-                        move |_, _, cx| {
-                            let _ = view_entity.update(cx, |app, cx| {
-                                app.set_raw_body_view(view, cx);
-                            });
-                        },
-                    )
-                    .debug_selector(move || {
-                        format!("response-raw-view-{}", view.label().to_ascii_lowercase())
-                    }),
-                );
-            }
+        for (index, view) in RawBodyView::ALL.iter().copied().enumerate() {
+            let view_entity = cx.weak_entity();
+            let selected = self.response_viewer.raw_view() == view;
+            raw_views = raw_views.child(
+                components::editor_subtab(
+                    theme,
+                    ("response-raw-view", index),
+                    view.label(),
+                    selected,
+                    index + 1,
+                    RawBodyView::ALL.len(),
+                    move |_, _, cx| {
+                        let _ = view_entity.update(cx, |app, cx| {
+                            app.set_raw_body_view(view, cx);
+                        });
+                    },
+                )
+                .debug_selector(move || {
+                    format!("response-raw-view-{}", view.label().to_ascii_lowercase())
+                }),
+            );
         }
+        raw_views.into_any_element()
+    }
+
+    fn render_response_document(
+        &self,
+        theme: Theme,
+        document: Option<&PreparedDocument>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(key) = self.shell.active_tab() else {
+            return div().into_any_element();
+        };
+        let Some(document) = document else {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme.colors.text.muted)
+                .child("Preparing response…")
+                .into_any_element();
+        };
 
         let mut banners = div()
             .px(px(theme.metrics.spacing_2))
@@ -2881,26 +2919,48 @@ impl ProbeApp {
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .px(px(theme.metrics.spacing_2))
-                    .py(px(theme.metrics.spacing_1))
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(theme.metrics.spacing_2))
-                    .border_b_1()
-                    .border_color(theme.colors.borders.subtle)
-                    .child(tabs)
-                    .when(
-                        self.response_viewer.tab() == ResponseViewerTab::Raw,
-                        |bar| bar.child(raw_views),
-                    ),
+            .when(
+                self.response_viewer.tab() == ResponseViewerTab::Raw,
+                |panel| {
+                    panel.child(
+                        div()
+                            .h(px(theme.metrics.control_height))
+                            .px(px(theme.metrics.spacing_2))
+                            .flex()
+                            .items_center()
+                            .child(self.render_raw_response_tabs(theme, cx)),
+                    )
+                },
             )
             .when(has_banner, |panel| panel.child(banners))
             .child(list)
             .into_any_element()
+    }
+
+    fn response_tab_content_spacing(theme: Theme) -> gpui::Div {
+        div()
+            .px(px(theme.metrics.spacing_2))
+            .pt(px(theme.metrics.spacing_1))
+            .pb(px(theme.metrics.spacing_2))
+    }
+
+    fn inspect_tab_content_boundary(theme: Theme, content: impl gpui::IntoElement) -> gpui::Div {
+        div()
+            .flex_1()
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .pt(px(theme.metrics.spacing_1))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .border_t_1()
+                    .border_color(theme.colors.borders.subtle)
+                    .child(content),
+            )
     }
 
     fn render_response_body(
@@ -2959,12 +3019,11 @@ impl ProbeApp {
                 scroll_pending: false,
             }));
         }
-        div()
+        Self::response_tab_content_spacing(theme)
             .id("response-body")
             .debug_selector(|| "response-body".into())
             .flex_1()
             .min_h(px(0.0))
-            .p(px(theme.metrics.spacing_2))
             .child(components::response_body_input(
                 theme,
                 "response-body-editor",
@@ -3059,12 +3118,11 @@ impl ProbeApp {
             return placeholder_message(theme, "No response headers");
         }
         let view = cx.weak_entity();
-        div()
+        Self::response_tab_content_spacing(theme)
             .id("response-headers")
             .debug_selector(|| "response-headers".into())
             .flex_1()
             .min_h(px(0.0))
-            .p(px(theme.metrics.spacing_2))
             .child(components::response_headers_input(
                 theme,
                 "response-headers-editor",
@@ -3132,18 +3190,21 @@ impl ProbeApp {
         .track_scroll(&self.inspector_scroll);
 
         if row_count == 0 && !document.inspection_pending {
-            return div()
-                .id("response-inspector-empty")
-                .debug_selector(|| "response-inspector-empty".into())
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.colors.text.muted)
-                .child(document.inspection.skipped.clone().unwrap_or_else(|| {
-                    "JWTs and Unix timestamps are detected automatically.".to_owned()
-                }))
-                .into_any_element();
+            return Self::inspect_tab_content_boundary(
+                theme,
+                div()
+                    .id("response-inspector-empty")
+                    .debug_selector(|| "response-inspector-empty".into())
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme.colors.text.muted)
+                    .child(document.inspection.skipped.clone().unwrap_or_else(|| {
+                        "JWTs and Unix timestamps are detected automatically.".to_owned()
+                    })),
+            )
+            .into_any_element();
         }
 
         let divider_view = cx.weak_entity();
@@ -3153,10 +3214,11 @@ impl ProbeApp {
             .w(px(5.0))
             .h_full()
             .flex_none()
-            .border_l_1()
-            .border_color(theme.colors.borders.subtle)
+            .flex()
+            .justify_center()
             .cursor(CursorStyle::ResizeLeftRight)
             .hover(move |handle| handle.bg(theme.colors.borders.subtle))
+            .child(div().w(px(1.0)).h_full().bg(theme.colors.borders.subtle))
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 let _ = divider_view.update(cx, |view, cx| {
                     view.inspector_resize_start =
@@ -3165,88 +3227,92 @@ impl ProbeApp {
                 });
             });
 
-        div()
-            .id("response-inspector")
-            .debug_selector(|| "response-inspector".into())
-            .flex_1()
-            .min_h(px(0.0))
-            .flex()
-            .child(
-                div()
-                    .w(px(self.inspector_list_width))
-                    .flex_none()
-                    .min_h(px(0.0))
-                    .p(px(theme.metrics.spacing_2))
-                    .child(list),
-            )
-            .child(divider)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .min_h(px(0.0))
-                    .p(px(theme.metrics.spacing_2))
-                    .child(
-                        div()
-                            .relative()
-                            .size_full()
-                            .child(components::response_inspector_input(
-                                theme,
-                                "response-inspector-editor",
-                                detail,
-                                move |range, cx| {
-                                    #[cfg(test)]
-                                    {
-                                        let _ = view.update(cx, |this, _| {
-                                            this.rendered_response_rows = range.len();
-                                        });
-                                    }
-                                    #[cfg(not(test))]
-                                    {
-                                        let _ = (&view, range, cx);
-                                    }
-                                },
-                            ))
-                            .when(revealable, |detail| {
-                                let reveal_view = cx.weak_entity();
-                                detail.child(
-                                    div()
-                                        .absolute()
-                                        .top(px(theme.metrics.spacing_3))
-                                        .right(px(theme.metrics.spacing_3))
-                                        .child(components::compact_icon_button(
-                                            theme,
-                                            "response-inspector-reveal-pretty",
-                                            "Reveal in Pretty",
-                                            components::locate_icon(theme),
-                                            move |_, _, cx| {
-                                                let _ = reveal_view.update(cx, |view, cx| {
-                                                    if let Some(selection) = view
-                                                        .response_viewer
-                                                        .reveal_inspection_in_pretty(key)
-                                                    {
-                                                        view.pretty_reveal.set(Some(
-                                                            PrettyRevealState {
-                                                                selection,
-                                                                scroll_pending: true,
-                                                            },
-                                                        ));
-                                                    } else {
-                                                        view.show_toast(
-                                                            ToastIntent::Warning,
-                                                            "Pretty source is unavailable.",
-                                                            cx,
-                                                        );
-                                                    }
-                                                    cx.notify();
-                                                });
-                                            },
-                                        )),
-                                )
-                            }),
-                    ),
-            )
-            .into_any_element()
+        Self::inspect_tab_content_boundary(
+            theme,
+            div()
+                .id("response-inspector")
+                .debug_selector(|| "response-inspector".into())
+                .flex_1()
+                .min_h(px(0.0))
+                .flex()
+                .child(
+                    Self::response_tab_content_spacing(theme)
+                        .pr(px(theme.metrics.spacing_1))
+                        .w(px(self.inspector_list_width))
+                        .flex_none()
+                        .min_h(px(0.0))
+                        .child(list),
+                )
+                .child(divider)
+                .child(
+                    Self::response_tab_content_spacing(theme)
+                        .pl(px(theme.metrics.spacing_1))
+                        .pt(px(theme.metrics.spacing_2))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .child(
+                            div()
+                                .relative()
+                                .size_full()
+                                .child(components::response_inspector_input(
+                                    theme,
+                                    "response-inspector-editor",
+                                    detail,
+                                    move |range, cx| {
+                                        #[cfg(test)]
+                                        {
+                                            let _ = view.update(cx, |this, _| {
+                                                this.rendered_response_rows = range.len();
+                                            });
+                                        }
+                                        #[cfg(not(test))]
+                                        {
+                                            let _ = (&view, range, cx);
+                                        }
+                                    },
+                                ))
+                                .when(revealable, |detail| {
+                                    let reveal_view = cx.weak_entity();
+                                    detail.child(
+                                        div()
+                                            .absolute()
+                                            .top(px(theme.metrics.spacing_3))
+                                            .right(px(theme.metrics.spacing_3))
+                                            .child(components::compact_icon_button(
+                                                theme,
+                                                "response-inspector-reveal-pretty",
+                                                "Reveal in Pretty",
+                                                components::locate_icon(theme),
+                                                move |_, _, cx| {
+                                                    let _ = reveal_view.update(cx, |view, cx| {
+                                                        if let Some(selection) = view
+                                                            .response_viewer
+                                                            .reveal_inspection_in_pretty(key)
+                                                        {
+                                                            view.pretty_reveal.set(Some(
+                                                                PrettyRevealState {
+                                                                    selection,
+                                                                    scroll_pending: true,
+                                                                },
+                                                            ));
+                                                        } else {
+                                                            view.show_toast(
+                                                                ToastIntent::Warning,
+                                                                "Pretty source is unavailable.",
+                                                                cx,
+                                                            );
+                                                        }
+                                                        cx.notify();
+                                                    });
+                                                },
+                                            )),
+                                    )
+                                }),
+                        ),
+                ),
+        )
+        .into_any_element()
     }
 
     fn render_inspector_list_row(
@@ -3328,17 +3394,19 @@ impl ProbeApp {
                 handle
                     .w(px(5.0))
                     .h_full()
-                    .border_l_1()
-                    .border_color(theme.colors.borders.subtle)
+                    .flex()
+                    .justify_center()
                     .cursor(CursorStyle::ResizeLeftRight)
+                    .child(div().w(px(1.0)).h_full().bg(theme.colors.borders.subtle))
             })
             .when(!horizontal, |handle| {
                 handle
                     .h(px(5.0))
                     .w_full()
-                    .border_t_1()
-                    .border_color(theme.colors.borders.subtle)
+                    .flex()
+                    .items_center()
                     .cursor(CursorStyle::ResizeUpDown)
+                    .child(div().h(px(1.0)).w_full().bg(theme.colors.borders.subtle))
             })
             .hover(move |handle| handle.bg(theme.colors.borders.subtle))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
