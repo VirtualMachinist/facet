@@ -13,9 +13,15 @@ use crate::repository::{
     relative_selector,
 };
 
+mod bundled;
 mod errors;
+mod filesystem;
+mod unbundled;
 
+use bundled::*;
 pub use errors::StructureError;
+use filesystem::*;
+use unbundled::*;
 
 /// The kind of collection item affected by a structural operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,6 +94,66 @@ pub enum StructureOperation {
     ReorderRequest { selector: String, index: usize },
     /// Reorders a folder within its current parent.
     ReorderFolder { selector: String, index: usize },
+}
+
+impl StructureOperation {
+    fn selected_item(&self) -> Option<(&str, ItemKind)> {
+        match self {
+            Self::DuplicateRequest { selector } => Some((selector, ItemKind::Request)),
+            _ => self.source(),
+        }
+    }
+
+    fn source(&self) -> Option<(&str, ItemKind)> {
+        match self {
+            Self::RenameRequest { selector, .. }
+            | Self::DeleteRequest { selector }
+            | Self::MoveRequest { selector, .. }
+            | Self::ReorderRequest { selector, .. } => Some((selector, ItemKind::Request)),
+            Self::RenameFolder { selector, .. }
+            | Self::DeleteFolder { selector }
+            | Self::MoveFolder { selector, .. }
+            | Self::ReorderFolder { selector, .. } => Some((selector, ItemKind::Folder)),
+            Self::CreateRequest { .. }
+            | Self::CreateFolder { .. }
+            | Self::DuplicateRequest { .. } => None,
+        }
+    }
+
+    fn destination_parent(&self) -> Option<&str> {
+        match self {
+            Self::CreateRequest { parent, .. }
+            | Self::CreateFolder { parent, .. }
+            | Self::MoveRequest { parent, .. }
+            | Self::MoveFolder { parent, .. } => parent.as_deref(),
+            _ => None,
+        }
+    }
+
+    fn removes_source(&self) -> bool {
+        matches!(
+            self,
+            Self::DeleteRequest { .. }
+                | Self::DeleteFolder { .. }
+                | Self::MoveRequest { .. }
+                | Self::MoveFolder { .. }
+                | Self::ReorderRequest { .. }
+                | Self::ReorderFolder { .. }
+        )
+    }
+
+    fn inserts_item(&self) -> bool {
+        matches!(
+            self,
+            Self::CreateRequest { .. }
+                | Self::CreateFolder { .. }
+                | Self::DuplicateRequest { .. }
+                | Self::MoveRequest { .. }
+                | Self::MoveFolder { .. }
+                | Self::ReorderRequest { .. }
+                | Self::ReorderFolder { .. }
+        )
+    }
 }
 
 /// The persisted location resulting from a structural operation.
@@ -238,21 +304,7 @@ fn validate_operation_selectors(
     workspace: &LoadedWorkspace,
     operation: &StructureOperation,
 ) -> Result<(), StructureError> {
-    let source = match operation {
-        StructureOperation::RenameRequest { selector, .. }
-        | StructureOperation::DeleteRequest { selector }
-        | StructureOperation::DuplicateRequest { selector }
-        | StructureOperation::MoveRequest { selector, .. }
-        | StructureOperation::ReorderRequest { selector, .. } => {
-            Some((ItemKind::Request, selector))
-        }
-        StructureOperation::RenameFolder { selector, .. }
-        | StructureOperation::DeleteFolder { selector }
-        | StructureOperation::MoveFolder { selector, .. }
-        | StructureOperation::ReorderFolder { selector, .. } => Some((ItemKind::Folder, selector)),
-        StructureOperation::CreateRequest { .. } | StructureOperation::CreateFolder { .. } => None,
-    };
-    if let Some((kind, selector)) = source {
+    if let Some((selector, kind)) = operation.selected_item() {
         let exists = match kind {
             ItemKind::Request => workspace.request_key(selector).is_some(),
             ItemKind::Folder => workspace.folder_key(selector).is_some(),
@@ -260,18 +312,11 @@ fn validate_operation_selectors(
         if !exists {
             return Err(StructureError::ItemNotFound {
                 kind,
-                selector: selector.clone(),
+                selector: selector.to_owned(),
             });
         }
     }
-    let parent = match operation {
-        StructureOperation::CreateRequest { parent, .. }
-        | StructureOperation::CreateFolder { parent, .. }
-        | StructureOperation::MoveRequest { parent, .. }
-        | StructureOperation::MoveFolder { parent, .. } => parent.as_deref(),
-        _ => None,
-    };
-    if let Some(parent) = parent
+    if let Some(parent) = operation.destination_parent()
         && workspace.folder_key(parent).is_none()
     {
         return Err(StructureError::DestinationNotFound(parent.to_owned()));
@@ -299,7 +344,7 @@ fn unbundled_selector_remaps(
     result: &StructureResult,
     old_items: &[(String, ItemKind)],
 ) -> BTreeMap<String, String> {
-    let source = operation_source(operation);
+    let source = operation.source();
     let deleted = matches!(
         operation,
         StructureOperation::DeleteRequest { .. } | StructureOperation::DeleteFolder { .. }
@@ -333,28 +378,12 @@ fn bundled_selector_remaps(
     result: &StructureResult,
     old_items: &[(String, ItemKind)],
 ) -> Result<BTreeMap<String, String>, StructureError> {
-    let source_path = operation_source(operation)
+    let source_path = operation
+        .source()
         .map(|(selector, _)| parse_selector(selector))
         .transpose()?;
-    let removes_source = matches!(
-        operation,
-        StructureOperation::DeleteRequest { .. }
-            | StructureOperation::DeleteFolder { .. }
-            | StructureOperation::MoveRequest { .. }
-            | StructureOperation::MoveFolder { .. }
-            | StructureOperation::ReorderRequest { .. }
-            | StructureOperation::ReorderFolder { .. }
-    );
-    let inserts_item = matches!(
-        operation,
-        StructureOperation::CreateRequest { .. }
-            | StructureOperation::CreateFolder { .. }
-            | StructureOperation::DuplicateRequest { .. }
-            | StructureOperation::MoveRequest { .. }
-            | StructureOperation::MoveFolder { .. }
-            | StructureOperation::ReorderRequest { .. }
-            | StructureOperation::ReorderFolder { .. }
-    );
+    let removes_source = operation.removes_source();
+    let inserts_item = operation.inserts_item();
     let insertion_path = if inserts_item {
         result.selector.as_deref().map(parse_selector).transpose()?
     } else {
@@ -394,24 +423,6 @@ fn bundled_selector_remaps(
     Ok(remaps)
 }
 
-fn operation_source(operation: &StructureOperation) -> Option<(&str, ItemKind)> {
-    match operation {
-        StructureOperation::RenameRequest { selector, .. }
-        | StructureOperation::DeleteRequest { selector }
-        | StructureOperation::MoveRequest { selector, .. }
-        | StructureOperation::ReorderRequest { selector, .. } => {
-            Some((selector, ItemKind::Request))
-        }
-        StructureOperation::RenameFolder { selector, .. }
-        | StructureOperation::DeleteFolder { selector }
-        | StructureOperation::MoveFolder { selector, .. }
-        | StructureOperation::ReorderFolder { selector, .. } => Some((selector, ItemKind::Folder)),
-        StructureOperation::CreateRequest { .. }
-        | StructureOperation::CreateFolder { .. }
-        | StructureOperation::DuplicateRequest { .. } => None,
-    }
-}
-
 fn shift_after_removal(path: &mut [usize], removed: &[usize]) {
     let parent_len = removed.len() - 1;
     if path.len() > parent_len
@@ -434,883 +445,6 @@ fn shift_after_insertion(path: &mut [usize], inserted: &[usize]) {
 
 fn selector_from_full_path(path: &[usize]) -> String {
     selector_for(&path[..path.len() - 1], path[path.len() - 1])
-}
-
-fn mutate_bundled(
-    document: &mut Value,
-    operation: StructureOperation,
-) -> Result<StructureResult, StructureError> {
-    match operation {
-        StructureOperation::CreateRequest {
-            parent,
-            index,
-            name,
-            method,
-            url,
-        } => {
-            validate_name(&name)?;
-            let parent_path = destination_path(document, parent.as_deref())?;
-            let items = items_mut(document, &parent_path)?;
-            let index = checked_index(index, items.len())?;
-            items.insert(index, request_value(&name, method, url));
-            Ok(result(ItemKind::Request, None, parent, index, &parent_path))
-        }
-        StructureOperation::CreateFolder {
-            parent,
-            index,
-            name,
-        } => {
-            validate_name(&name)?;
-            let parent_path = destination_path(document, parent.as_deref())?;
-            let items = items_mut(document, &parent_path)?;
-            let index = checked_index(index, items.len())?;
-            items.insert(index, folder_value(&name));
-            Ok(result(ItemKind::Folder, None, parent, index, &parent_path))
-        }
-        StructureOperation::RenameRequest { selector, name } => {
-            validate_name(&name)?;
-            rename_bundled(document, &selector, ItemKind::Request, &name)?;
-            let (parent, index) = selector_parent(&selector)?;
-            Ok(StructureResult {
-                kind: ItemKind::Request,
-                previous_selector: Some(selector.clone()),
-                selector: Some(selector),
-                parent,
-                index: Some(index),
-                selector_remaps: BTreeMap::new(),
-            })
-        }
-        StructureOperation::RenameFolder { selector, name } => {
-            validate_name(&name)?;
-            rename_bundled(document, &selector, ItemKind::Folder, &name)?;
-            let (parent, index) = selector_parent(&selector)?;
-            Ok(StructureResult {
-                kind: ItemKind::Folder,
-                previous_selector: Some(selector.clone()),
-                selector: Some(selector),
-                parent,
-                index: Some(index),
-                selector_remaps: BTreeMap::new(),
-            })
-        }
-        StructureOperation::DeleteRequest { selector } => {
-            delete_bundled(document, &selector, ItemKind::Request)
-        }
-        StructureOperation::DuplicateRequest { selector } => duplicate_bundled(document, selector),
-        StructureOperation::DeleteFolder { selector } => {
-            delete_bundled(document, &selector, ItemKind::Folder)
-        }
-        StructureOperation::MoveRequest {
-            selector,
-            parent,
-            index,
-        } => move_bundled(document, selector, ItemKind::Request, parent, index),
-        StructureOperation::MoveFolder {
-            selector,
-            parent,
-            index,
-        } => move_bundled(document, selector, ItemKind::Folder, parent, index),
-        StructureOperation::ReorderRequest { selector, index } => {
-            let (parent, _) = selector_parent(&selector)?;
-            move_bundled(document, selector, ItemKind::Request, parent, Some(index))
-        }
-        StructureOperation::ReorderFolder { selector, index } => {
-            let (parent, _) = selector_parent(&selector)?;
-            move_bundled(document, selector, ItemKind::Folder, parent, Some(index))
-        }
-    }
-}
-
-fn mutate_unbundled(
-    root: &Path,
-    operation: StructureOperation,
-) -> Result<StructureResult, StructureError> {
-    match operation {
-        StructureOperation::CreateRequest {
-            parent,
-            index,
-            name,
-            method,
-            url,
-        } => {
-            validate_name(&name)?;
-            let directory = destination_directory(root, parent.as_deref())?;
-            let path = directory.join(format!("{}.yml", slug(&name)?));
-            ensure_absent(root, &path)?;
-            create_atomic(
-                &path,
-                serde_yaml_ng::to_string(&request_value(&name, method, url))
-                    .map_err(|error| StructureError::InvalidDocument(error.to_string()))?
-                    .as_bytes(),
-            )?;
-            let index = match reorder_directories(&[(&directory, Some((&path, index)))]) {
-                Ok(indices) => indices[0],
-                Err(error) => {
-                    if let Err(cleanup) = fs::remove_file(&path) {
-                        return Err(StructureError::RecoveryRequired(format!(
-                            "could not remove failed request creation {}: {cleanup}",
-                            path.display()
-                        )));
-                    }
-                    return Err(error);
-                }
-            };
-            Ok(unbundled_result(
-                root,
-                ItemKind::Request,
-                None,
-                &path,
-                index,
-            ))
-        }
-        StructureOperation::CreateFolder {
-            parent,
-            index,
-            name,
-        } => {
-            validate_name(&name)?;
-            let directory = destination_directory(root, parent.as_deref())?;
-            let path = directory.join(slug(&name)?);
-            ensure_absent(root, &path)?;
-            fs::create_dir(&path).map_err(|source| io_error(&path, source))?;
-            let config = path.join("folder.yml");
-            if let Err(error) = create_atomic(
-                &config,
-                serde_yaml_ng::to_string(&item_value(&name, "folder", None))
-                    .map_err(|error| StructureError::InvalidDocument(error.to_string()))?
-                    .as_bytes(),
-            ) {
-                if let Err(cleanup) = fs::remove_dir_all(&path) {
-                    return Err(StructureError::RecoveryRequired(format!(
-                        "could not remove failed folder creation {}: {cleanup}",
-                        path.display()
-                    )));
-                }
-                return Err(error);
-            }
-            let index = match reorder_directories(&[(&directory, Some((&path, index)))]) {
-                Ok(indices) => indices[0],
-                Err(error) => {
-                    if let Err(cleanup) = fs::remove_dir_all(&path) {
-                        return Err(StructureError::RecoveryRequired(format!(
-                            "could not remove failed folder creation {}: {cleanup}",
-                            path.display()
-                        )));
-                    }
-                    return Err(error);
-                }
-            };
-            Ok(unbundled_result(root, ItemKind::Folder, None, &path, index))
-        }
-        StructureOperation::RenameRequest { selector, name } => {
-            rename_unbundled(root, selector, ItemKind::Request, name)
-        }
-        StructureOperation::RenameFolder { selector, name } => {
-            rename_unbundled(root, selector, ItemKind::Folder, name)
-        }
-        StructureOperation::DeleteRequest { selector } => {
-            delete_unbundled(root, selector, ItemKind::Request)
-        }
-        StructureOperation::DuplicateRequest { selector } => duplicate_unbundled(root, selector),
-        StructureOperation::DeleteFolder { selector } => {
-            delete_unbundled(root, selector, ItemKind::Folder)
-        }
-        StructureOperation::MoveRequest {
-            selector,
-            parent,
-            index,
-        } => move_unbundled(root, selector, ItemKind::Request, parent, index),
-        StructureOperation::MoveFolder {
-            selector,
-            parent,
-            index,
-        } => move_unbundled(root, selector, ItemKind::Folder, parent, index),
-        StructureOperation::ReorderRequest { selector, index } => {
-            reorder_unbundled(root, selector, ItemKind::Request, index)
-        }
-        StructureOperation::ReorderFolder { selector, index } => {
-            reorder_unbundled(root, selector, ItemKind::Folder, index)
-        }
-    }
-}
-
-fn reorder_unbundled(
-    root: &Path,
-    selector: String,
-    kind: ItemKind,
-    index: usize,
-) -> Result<StructureResult, StructureError> {
-    let path = existing_path(root, &selector, kind)?;
-    let parent = path.parent().expect("workspace item must have a parent");
-    let indices = reorder_directories(&[(parent, Some((&path, Some(index))))])?;
-    Ok(unbundled_result(
-        root,
-        kind,
-        Some(selector),
-        &path,
-        indices[0],
-    ))
-}
-
-fn rename_unbundled(
-    root: &Path,
-    selector: String,
-    kind: ItemKind,
-    name: String,
-) -> Result<StructureResult, StructureError> {
-    validate_name(&name)?;
-    let old = existing_path(root, &selector, kind)?;
-    let parent = old.parent().expect("workspace item must have a parent");
-    let index = direct_children(parent)?
-        .iter()
-        .position(|child| child.path == old)
-        .expect("validated item must be an orderable child");
-    let extension = (kind == ItemKind::Request).then_some("yml");
-    let mut new = parent.join(slug(&name)?);
-    if let Some(extension) = extension {
-        new.set_extension(extension);
-    }
-    let old_config = item_config(&old, kind);
-    let original = fs::read(&old_config).map_err(|source| io_error(&old_config, source))?;
-    let mut value: Value = serde_yaml_ng::from_slice(&original)
-        .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
-    set_info_field(&mut value, "name", Value::String(name))?;
-    let serialized = serde_yaml_ng::to_string(&value)
-        .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
-    if new != old {
-        ensure_absent(root, &new)?;
-        fs::rename(&old, &new).map_err(|source| io_error(&old, source))?;
-    }
-    let config = item_config(&new, kind);
-    if let Err(error) = atomic_write(&config, serialized.as_bytes(), &original) {
-        if new != old
-            && let Err(rollback) = fs::rename(&new, &old)
-        {
-            return Err(StructureError::RecoveryRequired(format!(
-                "could not restore {} after rename failed: {rollback}",
-                old.display()
-            )));
-        }
-        return Err(error.into());
-    }
-    Ok(unbundled_result(root, kind, Some(selector), &new, index))
-}
-
-fn delete_unbundled(
-    root: &Path,
-    selector: String,
-    kind: ItemKind,
-) -> Result<StructureResult, StructureError> {
-    let path = existing_path(root, &selector, kind)?;
-    let parent = path.parent().expect("workspace item must have a parent");
-    let tombstone = deletion_tombstone(root)?;
-    fs::rename(&path, &tombstone).map_err(|source| io_error(&path, source))?;
-    if let Err(error) = reorder_directories(&[(parent, None)]) {
-        return Err(path_rollback_error(
-            error,
-            &path,
-            fs::rename(&tombstone, &path),
-        ));
-    }
-    let result = StructureResult {
-        kind,
-        previous_selector: Some(selector),
-        selector: None,
-        parent: relative_parent(root, parent),
-        index: None,
-        selector_remaps: BTreeMap::new(),
-    };
-    finish_deletion(&tombstone, result, |path| {
-        if kind == ItemKind::Folder {
-            fs::remove_dir_all(path)
-        } else {
-            fs::remove_file(path)
-        }
-    })
-}
-
-fn duplicate_unbundled(root: &Path, selector: String) -> Result<StructureResult, StructureError> {
-    let source = existing_path(root, &selector, ItemKind::Request)?;
-    let parent = source.parent().expect("workspace item must have a parent");
-    let source_index = direct_children(parent)?
-        .iter()
-        .position(|child| child.path == source)
-        .expect("validated request must be an orderable child");
-    let original = fs::read(&source).map_err(|source_error| io_error(&source, source_error))?;
-    let mut value: Value = serde_yaml_ng::from_slice(&original)
-        .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
-    ensure_kind(&value, ItemKind::Request, &selector)?;
-    let name = copied_request_name(&value)?;
-    set_info_field(&mut value, "name", Value::String(name.clone()))?;
-    let path = parent.join(format!("{}.yml", slug(&name)?));
-    ensure_absent(root, &path)?;
-    create_atomic(
-        &path,
-        serde_yaml_ng::to_string(&value)
-            .map_err(|error| StructureError::InvalidDocument(error.to_string()))?
-            .as_bytes(),
-    )?;
-    let index = match reorder_directories(&[(parent, Some((&path, Some(source_index + 1))))]) {
-        Ok(indices) => indices[0],
-        Err(error) => {
-            if let Err(cleanup) = fs::remove_file(&path) {
-                return Err(StructureError::RecoveryRequired(format!(
-                    "could not remove failed request duplicate {}: {cleanup}",
-                    path.display()
-                )));
-            }
-            return Err(error);
-        }
-    };
-    Ok(unbundled_result(
-        root,
-        ItemKind::Request,
-        None,
-        &path,
-        index,
-    ))
-}
-
-fn deletion_tombstone(root: &Path) -> Result<PathBuf, StructureError> {
-    let parent = root.parent().ok_or_else(|| {
-        StructureError::InvalidDestination(
-            "workspace root has no parent for recoverable deletion".to_owned(),
-        )
-    })?;
-    let tombstone = parent.join(format!(".probe-delete-{}", unique_suffix()));
-    if tombstone.exists() {
-        Err(StructureError::DuplicateDestination(
-            tombstone.display().to_string(),
-        ))
-    } else {
-        Ok(tombstone)
-    }
-}
-
-fn finish_deletion(
-    tombstone: &Path,
-    result: StructureResult,
-    cleanup: impl FnOnce(&Path) -> io::Result<()>,
-) -> Result<StructureResult, StructureError> {
-    match cleanup(tombstone) {
-        Ok(()) => Ok(result),
-        Err(error) => Err(StructureError::CommittedCleanupFailed {
-            result: Box::new(result),
-            path: tombstone.to_owned(),
-            message: error.to_string(),
-        }),
-    }
-}
-
-fn move_unbundled(
-    root: &Path,
-    selector: String,
-    kind: ItemKind,
-    parent_selector: Option<String>,
-    index: Option<usize>,
-) -> Result<StructureResult, StructureError> {
-    let old = existing_path(root, &selector, kind)?;
-    let old_parent = old.parent().expect("workspace item must have a parent");
-    let destination = destination_directory(root, parent_selector.as_deref())?;
-    if kind == ItemKind::Folder && destination.starts_with(&old) {
-        return Err(StructureError::InvalidDestination(
-            "folder cannot be moved into itself or its descendant".to_owned(),
-        ));
-    }
-    let new = destination.join(
-        old.file_name()
-            .ok_or_else(|| StructureError::InvalidDestination(selector.clone()))?,
-    );
-    if new != old {
-        ensure_absent(root, &new)?;
-        fs::rename(&old, &new).map_err(|source| io_error(&old, source))?;
-    }
-    let plans = if old_parent == destination {
-        vec![(destination.as_path(), Some((new.as_path(), index)))]
-    } else {
-        vec![
-            (old_parent, None),
-            (destination.as_path(), Some((new.as_path(), index))),
-        ]
-    };
-    let indices = match reorder_directories(&plans) {
-        Ok(indices) => indices,
-        Err(error) => {
-            let rollback = if new == old {
-                Ok(())
-            } else {
-                fs::rename(&new, &old)
-            };
-            return Err(path_rollback_error(error, &old, rollback));
-        }
-    };
-    let resulting_index = *indices
-        .last()
-        .expect("destination plan must return an index");
-    Ok(unbundled_result(
-        root,
-        kind,
-        Some(selector),
-        &new,
-        resulting_index,
-    ))
-}
-
-fn path_rollback_error(
-    operation_error: StructureError,
-    original_path: &Path,
-    rollback: io::Result<()>,
-) -> StructureError {
-    match rollback {
-        Ok(()) => operation_error,
-        Err(rollback_error) => StructureError::RecoveryRequired(format!(
-            "operation failed ({operation_error}); could not restore {}: {rollback_error}",
-            original_path.display()
-        )),
-    }
-}
-
-type ReorderPlan<'a> = (&'a Path, Option<(&'a Path, Option<usize>)>);
-
-fn reorder_directories(plans: &[ReorderPlan<'_>]) -> Result<Vec<usize>, StructureError> {
-    let mut outputs = Vec::with_capacity(plans.len());
-    let mut updates = BTreeMap::<PathBuf, (Vec<u8>, Vec<u8>)>::new();
-    for (directory, moved) in plans {
-        let mut children = direct_children(directory)?;
-        let resulting_index = if let Some((path, requested)) = moved {
-            let position = children
-                .iter()
-                .position(|child| child.path == *path)
-                .ok_or_else(|| StructureError::InvalidDestination(path.display().to_string()))?;
-            let child = children.remove(position);
-            let index = checked_index(*requested, children.len())?;
-            children.insert(index, child);
-            index
-        } else {
-            0
-        };
-        for (index, child) in children.iter().enumerate() {
-            let original =
-                fs::read(&child.config).map_err(|source| io_error(&child.config, source))?;
-            let mut value: Value = serde_yaml_ng::from_slice(&original)
-                .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
-            set_info_field(&mut value, "seq", Value::Number((index as u64 + 1).into()))?;
-            let serialized = serde_yaml_ng::to_string(&value)
-                .map_err(|error| StructureError::InvalidDocument(error.to_string()))?
-                .into_bytes();
-            updates.insert(child.config.clone(), (original, serialized));
-        }
-        outputs.push(resulting_index);
-    }
-    write_transaction(updates)?;
-    Ok(outputs)
-}
-
-fn write_transaction(updates: BTreeMap<PathBuf, (Vec<u8>, Vec<u8>)>) -> Result<(), StructureError> {
-    write_transaction_with(updates, atomic_write)
-}
-
-fn write_transaction_with(
-    updates: BTreeMap<PathBuf, (Vec<u8>, Vec<u8>)>,
-    mut write: impl FnMut(&Path, &[u8], &[u8]) -> Result<(), SaveError>,
-) -> Result<(), StructureError> {
-    let snapshots = create_recovery_snapshots(&updates)?;
-    let mut written: Vec<PathBuf> = Vec::new();
-    for (path, (original, replacement)) in &updates {
-        if let Err(error) = write(path, replacement, original) {
-            let mut rollback_failure = None;
-            for completed in written.into_iter().rev() {
-                if let Some((before, after)) = updates.get(&completed)
-                    && let Err(rollback_error) = write(&completed, before, after)
-                {
-                    rollback_failure.get_or_insert_with(|| {
-                        format!(
-                            "could not restore {}: {rollback_error}",
-                            completed.display()
-                        )
-                    });
-                }
-            }
-            if let Some(message) = rollback_failure {
-                return Err(StructureError::RecoveryRequired(format!(
-                    "{message}; durable snapshots retained: {}",
-                    recovery_snapshot_summary(&snapshots)
-                )));
-            }
-            remove_recovery_snapshots(&snapshots);
-            return Err(error.into());
-        }
-        written.push(path.to_owned());
-    }
-    remove_recovery_snapshots(&snapshots);
-    Ok(())
-}
-
-struct RecoverySnapshots {
-    directory: Option<PathBuf>,
-    files: Vec<(PathBuf, PathBuf)>,
-}
-
-fn create_recovery_snapshots(
-    updates: &BTreeMap<PathBuf, (Vec<u8>, Vec<u8>)>,
-) -> Result<RecoverySnapshots, StructureError> {
-    if updates.is_empty() {
-        return Ok(RecoverySnapshots {
-            directory: None,
-            files: Vec::new(),
-        });
-    }
-    let suffix = unique_suffix();
-    let common = common_parent(updates.keys()).ok_or_else(|| {
-        StructureError::InvalidDestination(
-            "ordering transaction paths do not share a recovery directory".to_owned(),
-        )
-    })?;
-    let directory = common.join(format!(".probe-recovery-{suffix}"));
-    fs::create_dir(&directory).map_err(|source| io_error(&directory, source))?;
-    let mut snapshots = RecoverySnapshots {
-        directory: Some(directory.clone()),
-        files: Vec::with_capacity(updates.len()),
-    };
-    let mut manifest = String::new();
-    for (index, (path, (original, _))) in updates.iter().enumerate() {
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("document");
-        let backup = directory.join(format!("{index:04}-{file_name}.bak"));
-        if let Err(error) = create_atomic(&backup, original) {
-            remove_recovery_snapshots(&snapshots);
-            return Err(error);
-        }
-        manifest.push_str(&format!("{}\t{}\n", backup.display(), path.display()));
-        snapshots.files.push((path.clone(), backup));
-    }
-    let manifest_path = directory.join("manifest.txt");
-    if let Err(error) = create_atomic(&manifest_path, manifest.as_bytes()) {
-        remove_recovery_snapshots(&snapshots);
-        return Err(error);
-    }
-    Ok(snapshots)
-}
-
-fn common_parent<'a>(mut paths: impl Iterator<Item = &'a PathBuf>) -> Option<PathBuf> {
-    let mut common = paths.next()?.parent()?.to_owned();
-    for path in paths {
-        while !path.starts_with(&common) {
-            if !common.pop() {
-                return None;
-            }
-        }
-    }
-    Some(common)
-}
-
-fn remove_recovery_snapshots(snapshots: &RecoverySnapshots) {
-    if let Some(directory) = &snapshots.directory {
-        let _ = fs::remove_dir_all(directory);
-    }
-}
-
-fn recovery_snapshot_summary(snapshots: &RecoverySnapshots) -> String {
-    snapshots
-        .files
-        .iter()
-        .map(|(original, backup)| format!("{} -> {}", original.display(), backup.display()))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-#[derive(Debug)]
-struct DiskChild {
-    path: PathBuf,
-    config: PathBuf,
-    sequence: f64,
-}
-
-fn direct_children(directory: &Path) -> Result<Vec<DiskChild>, StructureError> {
-    let mut children = Vec::new();
-    for entry in fs::read_dir(directory)
-        .map_err(|source| io_error(directory, source))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| io_error(directory, source))?
-    {
-        let path = entry.path();
-        let config = if path.is_dir() {
-            let yml = path.join("folder.yml");
-            let yaml = path.join("folder.yaml");
-            if yml.is_file() {
-                yml
-            } else if yaml.is_file() {
-                yaml
-            } else {
-                continue;
-            }
-        } else if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("yml" | "yaml")
-        ) && !matches!(
-            path.file_stem().and_then(|value| value.to_str()),
-            Some("opencollection" | "folder")
-        ) {
-            path.clone()
-        } else {
-            continue;
-        };
-        let source = fs::read(&config).map_err(|error| io_error(&config, error))?;
-        let value: Value = serde_yaml_ng::from_slice(&source)
-            .map_err(|error| StructureError::InvalidDocument(error.to_string()))?;
-        if !matches!(
-            value
-                .get("info")
-                .and_then(|info| info.get("type"))
-                .and_then(Value::as_str),
-            Some("http" | "folder")
-        ) {
-            continue;
-        }
-        let sequence = value
-            .get("info")
-            .and_then(|info| info.get("seq"))
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::INFINITY);
-        children.push(DiskChild {
-            path,
-            config,
-            sequence,
-        });
-    }
-    children.sort_by(|left, right| {
-        left.sequence
-            .total_cmp(&right.sequence)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-    Ok(children)
-}
-
-fn discover_documents(root: &Path) -> Result<BTreeSet<PathBuf>, StructureError> {
-    let mut documents = BTreeSet::new();
-    let root_config = ["yml", "yaml"]
-        .into_iter()
-        .map(|extension| root.join(format!("opencollection.{extension}")))
-        .find(|path| path.is_file())
-        .ok_or_else(|| StructureError::ConcurrentModification(root.join("opencollection.yml")))?;
-    documents.insert(root_config);
-    discover_item_documents(root, "opencollection", &mut documents)?;
-    Ok(documents)
-}
-
-fn discover_item_documents(
-    directory: &Path,
-    reserved_stem: &str,
-    documents: &mut BTreeSet<PathBuf>,
-) -> Result<(), StructureError> {
-    for entry in fs::read_dir(directory)
-        .map_err(|source| io_error(directory, source))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|source| io_error(directory, source))?
-    {
-        let file_type = entry
-            .file_type()
-            .map_err(|source| io_error(&entry.path(), source))?;
-        if file_type.is_symlink() {
-            continue;
-        }
-        let path = entry.path();
-        if file_type.is_dir() {
-            let config = ["yml", "yaml"]
-                .into_iter()
-                .map(|extension| path.join(format!("folder.{extension}")))
-                .find(|candidate| candidate.is_file());
-            if let Some(config) = config {
-                documents.insert(config);
-                discover_item_documents(&path, "folder", documents)?;
-            }
-        } else if matches!(
-            path.extension().and_then(|value| value.to_str()),
-            Some("yml" | "yaml")
-        ) && path.file_stem().and_then(|value| value.to_str()) != Some(reserved_stem)
-        {
-            documents.insert(path);
-        }
-    }
-    Ok(())
-}
-
-fn move_bundled(
-    document: &mut Value,
-    selector: String,
-    kind: ItemKind,
-    parent: Option<String>,
-    requested_index: Option<usize>,
-) -> Result<StructureResult, StructureError> {
-    if kind == ItemKind::Folder
-        && parent.as_deref().is_some_and(|destination| {
-            destination == selector || destination.starts_with(&(selector.clone() + "/items/"))
-        })
-    {
-        return Err(StructureError::InvalidDestination(
-            "folder cannot be moved into itself or its descendant".to_owned(),
-        ));
-    }
-    let source_path = parse_selector(&selector)?;
-    let source_index = *source_path
-        .last()
-        .ok_or_else(|| StructureError::InvalidDocument("empty selector".to_owned()))?;
-    let source_parent = &source_path[..source_path.len() - 1];
-    let mut destination_path = destination_path(document, parent.as_deref())?;
-    let source_items = items_mut(document, source_parent)?;
-    let item = source_items
-        .get(source_index)
-        .ok_or_else(|| StructureError::ItemNotFound {
-            kind,
-            selector: selector.clone(),
-        })?;
-    ensure_kind(item, kind, &selector)?;
-    let item = source_items.remove(source_index);
-    adjust_path_after_removal(&mut destination_path, source_parent, source_index);
-    let destination_items = items_mut(document, &destination_path)?;
-    let index = checked_index(requested_index, destination_items.len())?;
-    destination_items.insert(index, item);
-    let actual_parent = selector_from_path(&destination_path);
-    Ok(result(
-        kind,
-        Some(selector),
-        actual_parent,
-        index,
-        &destination_path,
-    ))
-}
-
-fn adjust_path_after_removal(
-    destination_path: &mut [usize],
-    source_parent: &[usize],
-    source_index: usize,
-) {
-    if destination_path.len() > source_parent.len()
-        && destination_path[..source_parent.len()] == *source_parent
-        && destination_path[source_parent.len()] > source_index
-    {
-        destination_path[source_parent.len()] -= 1;
-    }
-}
-
-fn delete_bundled(
-    document: &mut Value,
-    selector: &str,
-    kind: ItemKind,
-) -> Result<StructureResult, StructureError> {
-    let path = parse_selector(selector)?;
-    let index = *path
-        .last()
-        .ok_or_else(|| StructureError::InvalidDocument("empty selector".to_owned()))?;
-    let parent_path = &path[..path.len() - 1];
-    let items = items_mut(document, parent_path)?;
-    let item = items
-        .get(index)
-        .ok_or_else(|| StructureError::ItemNotFound {
-            kind,
-            selector: selector.to_owned(),
-        })?;
-    ensure_kind(item, kind, selector)?;
-    items.remove(index);
-    let (parent, _) = selector_parent(selector)?;
-    Ok(StructureResult {
-        kind,
-        previous_selector: Some(selector.to_owned()),
-        selector: None,
-        parent,
-        index: None,
-        selector_remaps: BTreeMap::new(),
-    })
-}
-
-fn duplicate_bundled(
-    document: &mut Value,
-    selector: String,
-) -> Result<StructureResult, StructureError> {
-    let path = parse_selector(&selector)?;
-    let index = *path
-        .last()
-        .ok_or_else(|| StructureError::InvalidDocument("empty selector".to_owned()))?;
-    let parent_path = &path[..path.len() - 1];
-    let mut duplicate = item(document, &path)
-        .ok_or_else(|| StructureError::ItemNotFound {
-            kind: ItemKind::Request,
-            selector: selector.clone(),
-        })?
-        .clone();
-    ensure_kind(&duplicate, ItemKind::Request, &selector)?;
-    let name = copied_request_name(&duplicate)?;
-    set_info_field(&mut duplicate, "name", Value::String(name))?;
-    let items = items_mut(document, parent_path)?;
-    let insertion_index = index + 1;
-    items.insert(insertion_index, duplicate);
-    Ok(result(
-        ItemKind::Request,
-        None,
-        selector_from_path(parent_path),
-        insertion_index,
-        parent_path,
-    ))
-}
-
-fn rename_bundled(
-    document: &mut Value,
-    selector: &str,
-    kind: ItemKind,
-    name: &str,
-) -> Result<(), StructureError> {
-    let path = parse_selector(selector)?;
-    let item = item_mut(document, &path).ok_or_else(|| StructureError::ItemNotFound {
-        kind,
-        selector: selector.to_owned(),
-    })?;
-    ensure_kind(item, kind, selector)?;
-    set_info_field(item, "name", Value::String(name.to_owned()))
-}
-
-fn copied_request_name(value: &Value) -> Result<String, StructureError> {
-    let original = value
-        .get("info")
-        .and_then(|info| info.get("name"))
-        .and_then(Value::as_str)
-        .unwrap_or("Untitled request");
-    let name = format!("{original} Copied");
-    validate_name(&name)?;
-    Ok(name)
-}
-
-fn destination_path(
-    document: &Value,
-    selector: Option<&str>,
-) -> Result<Vec<usize>, StructureError> {
-    let Some(selector) = selector else {
-        return Ok(Vec::new());
-    };
-    let path = parse_selector(selector)?;
-    let item = item(document, &path)
-        .ok_or_else(|| StructureError::DestinationNotFound(selector.to_owned()))?;
-    ensure_kind(item, ItemKind::Folder, selector)
-        .map_err(|_| StructureError::DestinationNotFound(selector.to_owned()))?;
-    Ok(path)
-}
-
-fn result(
-    kind: ItemKind,
-    previous_selector: Option<String>,
-    parent: Option<String>,
-    index: usize,
-    parent_path: &[usize],
-) -> StructureResult {
-    StructureResult {
-        kind,
-        previous_selector,
-        selector: Some(selector_for(parent_path, index)),
-        parent,
-        index: Some(index),
-        selector_remaps: BTreeMap::new(),
-    }
 }
 
 fn request_value(name: &str, method: Option<String>, url: Option<String>) -> Value {

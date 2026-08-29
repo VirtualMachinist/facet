@@ -1,4 +1,5 @@
 use super::*;
+use serde::Serialize;
 
 /// Creates an empty bundled OpenCollection YAML file at `path` and loads it.
 ///
@@ -53,83 +54,14 @@ pub fn create_bundled_workspace_from_collection(
 /// the final link is an atomic create-if-absent operation on the destination
 /// filesystem, unlike an atomic rename which would replace an existing path.
 fn write_new_collection_file(path: &Path, contents: &[u8]) -> Result<(), CreateError> {
-    let map_io = |source| CreateError::Io {
-        path: path.to_owned(),
-        source,
-    };
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-        && !parent.exists()
-    {
-        fs::create_dir_all(parent).map_err(map_io)?;
+    match write_new_file(path, contents) {
+        Ok(()) => Ok(()),
+        Err(NewFileError::AlreadyExists) => Err(CreateError::AlreadyExists(path.to_owned())),
+        Err(NewFileError::Io(source)) => Err(CreateError::Io {
+            path: path.to_owned(),
+            source,
+        }),
     }
-
-    let (temporary_path, mut file) = create_unique_temporary_file(path)?;
-    let write_result = file.write_all(contents).and_then(|()| file.sync_all());
-    drop(file);
-    let write_result = write_result.and_then(|()| fs::hard_link(&temporary_path, path));
-    let cleanup_result = fs::remove_file(&temporary_path);
-
-    match write_result {
-        Ok(()) => {
-            // The destination is already durable and visible. A stale hidden
-            // temporary file is harmless, so never misreport a committed import
-            // as failed solely because cleanup was interrupted.
-            let _ = cleanup_result;
-            Ok(())
-        }
-        Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-            let _ = cleanup_result;
-            Err(CreateError::AlreadyExists(path.to_owned()))
-        }
-        Err(source) => {
-            let _ = cleanup_result;
-            Err(map_io(source))
-        }
-    }
-}
-
-pub(super) fn create_unique_temporary_file(
-    path: &Path,
-) -> Result<(PathBuf, fs::File), CreateError> {
-    static NEXT_TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
-
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty());
-    let directory = parent.unwrap_or_else(|| Path::new("."));
-    let filename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("collection.yml");
-    for _ in 0..128 {
-        let id = NEXT_TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
-        let candidate = directory.join(format!(
-            ".{filename}.probe-import-{}-{id}.tmp",
-            std::process::id()
-        ));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => return Ok((candidate, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(source) => {
-                return Err(CreateError::Io {
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        }
-    }
-    Err(CreateError::Io {
-        path: path.to_owned(),
-        source: io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "could not allocate a unique import temporary file",
-        ),
-    })
 }
 
 fn with_yaml_extension(path: &Path) -> PathBuf {
