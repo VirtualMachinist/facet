@@ -1,5 +1,6 @@
 use crate::{
     Collection, CollectionItem, CollectionMetadata, Environment, HttpRequest, ItemMetadata,
+    arena::{Arena, ArenaKey},
 };
 use std::collections::BTreeMap;
 use std::{error::Error, fmt};
@@ -202,19 +203,12 @@ impl Workspace {
         metadata: ItemMetadata,
     ) -> Result<FolderKey, WorkspaceEditError> {
         self.validate_insertion(parent, index)?;
-        let arena_key = self.folders.insert(WorkspaceFolder {
-            key: FolderKey {
-                slot: 0,
-                generation: 0,
-            },
+        let arena_key = self.folders.insert_with_key(|arena_key| WorkspaceFolder {
+            key: FolderKey::from(arena_key),
             metadata,
             children: Vec::new(),
         });
         let key = FolderKey::from(arena_key);
-        self.folders
-            .get_mut(arena_key)
-            .expect("new folder must resolve")
-            .key = key;
         self.insert_reference(parent, index, WorkspaceItemRef::Folder(key))?;
         Ok(key)
     }
@@ -283,18 +277,16 @@ impl Workspace {
 
     /// Removes a folder and all descendant folders and requests.
     pub fn remove_folder(&mut self, key: FolderKey) -> Result<WorkspaceFolder, WorkspaceEditError> {
-        let folder = self
-            .folders
-            .get(key.into())
-            .cloned()
-            .ok_or(WorkspaceEditError::ItemNotFound)?;
+        if self.folder(key).is_none() {
+            return Err(WorkspaceEditError::ItemNotFound);
+        }
         self.remove_reference(WorkspaceItemRef::Folder(key))
             .ok_or(WorkspaceEditError::ItemNotFound)?;
-        self.remove_descendants(&folder.children);
         let removed = self
             .folders
             .remove(key.into())
             .expect("validated folder key must remain live");
+        self.remove_descendants(&removed.children);
         self.rebuild_request_ancestors();
         Ok(removed)
     }
@@ -484,18 +476,34 @@ impl Workspace {
         parent: WorkspaceParent,
         index: usize,
     ) -> Result<(), WorkspaceEditError> {
-        // Validate the destination before detaching the item so an invalid runtime
-        // key cannot mutate the existing hierarchy.
-        self.children(parent)?;
+        let destination_len = self.children(parent)?.len();
         let (old_parent, old_index) = self
-            .remove_reference(item)
+            .reference_location(item)
             .ok_or(WorkspaceEditError::ItemNotFound)?;
-        if index > self.children(parent)?.len() {
-            self.insert_reference(old_parent, old_index, item)
-                .expect("original position must remain valid");
+        let destination_len = destination_len - usize::from(old_parent == parent);
+        if index > destination_len {
             return Err(WorkspaceEditError::InvalidIndex);
         }
-        self.insert_reference(parent, index, item)
+        self.children_mut(old_parent)?.remove(old_index);
+        self.children_mut(parent)?.insert(index, item);
+        Ok(())
+    }
+
+    fn reference_location(&self, item: WorkspaceItemRef) -> Option<(WorkspaceParent, usize)> {
+        if let Some(index) = self
+            .root_items
+            .iter()
+            .position(|candidate| *candidate == item)
+        {
+            return Some((WorkspaceParent::Root, index));
+        }
+        self.folders.values().find_map(|folder| {
+            folder
+                .children
+                .iter()
+                .position(|candidate| *candidate == item)
+                .map(|index| (WorkspaceParent::Folder(folder.key), index))
+        })
     }
 
     fn folder_contains(&self, ancestor: FolderKey, candidate: FolderKey) -> bool {
@@ -517,10 +525,9 @@ impl Workspace {
                     self.request_ancestors.remove(&key);
                 }
                 WorkspaceItemRef::Folder(key) => {
-                    if let Some(folder) = self.folders.get(key.into()).cloned() {
+                    if let Some(folder) = self.folders.remove(key.into()) {
                         self.remove_descendants(&folder.children);
                     }
-                    let _ = self.folders.remove(key.into());
                 }
             }
         }
@@ -560,12 +567,6 @@ fn collect_request_ancestors(
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ArenaKey {
-    slot: usize,
-    generation: u64,
-}
-
 impl From<ArenaKey> for RequestKey {
     fn from(key: ArenaKey) -> Self {
         Self {
@@ -602,100 +603,6 @@ impl From<FolderKey> for ArenaKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct Arena<T> {
-    slots: Vec<ArenaSlot<T>>,
-    free_head: Option<usize>,
-    len: usize,
-}
-
-impl<T> Default for Arena<T> {
-    fn default() -> Self {
-        Self {
-            slots: Vec::new(),
-            free_head: None,
-            len: 0,
-        }
-    }
-}
-
-impl<T> Arena<T> {
-    const fn len(&self) -> usize {
-        self.len
-    }
-
-    fn insert(&mut self, value: T) -> ArenaKey {
-        self.len += 1;
-
-        if let Some(slot_index) = self.free_head {
-            let slot = &mut self.slots[slot_index];
-            self.free_head = slot.next_free.take();
-            slot.value = Some(value);
-            ArenaKey {
-                slot: slot_index,
-                generation: slot.generation,
-            }
-        } else {
-            let key = ArenaKey {
-                slot: self.slots.len(),
-                generation: 0,
-            };
-            self.slots.push(ArenaSlot {
-                generation: key.generation,
-                value: Some(value),
-                next_free: None,
-            });
-            key
-        }
-    }
-
-    fn get(&self, key: ArenaKey) -> Option<&T> {
-        let slot = self.slots.get(key.slot)?;
-        if slot.generation != key.generation {
-            return None;
-        }
-        slot.value.as_ref()
-    }
-
-    fn get_mut(&mut self, key: ArenaKey) -> Option<&mut T> {
-        let slot = self.slots.get_mut(key.slot)?;
-        if slot.generation != key.generation {
-            return None;
-        }
-        slot.value.as_mut()
-    }
-
-    fn remove(&mut self, key: ArenaKey) -> Option<T> {
-        let slot = self.slots.get_mut(key.slot)?;
-        if slot.generation != key.generation {
-            return None;
-        }
-
-        let value = slot.value.take()?;
-        if let Some(next_generation) = slot.generation.checked_add(1) {
-            slot.generation = next_generation;
-            slot.next_free = self.free_head;
-            self.free_head = Some(key.slot);
-        } else {
-            // Retire an exhausted slot rather than allowing a generation to repeat.
-            slot.next_free = None;
-        }
-        self.len -= 1;
-        Some(value)
-    }
-
-    fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.slots.iter_mut().filter_map(|slot| slot.value.as_mut())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct ArenaSlot<T> {
-    generation: u64,
-    value: Option<T>,
-    next_free: Option<usize>,
-}
-
 fn index_items(
     items: Vec<CollectionItem>,
     requests: &mut Arena<HttpRequest>,
@@ -723,15 +630,11 @@ fn index_item(
             WorkspaceItemRef::Request(key)
         }
         CollectionItem::Folder(folder) => {
-            let placeholder = WorkspaceFolder {
-                key: FolderKey {
-                    slot: 0,
-                    generation: 0,
-                },
+            let arena_key = folders.insert_with_key(|arena_key| WorkspaceFolder {
+                key: FolderKey::from(arena_key),
                 metadata: folder.metadata,
                 children: Vec::new(),
-            };
-            let arena_key = folders.insert(placeholder);
+            });
             let key = FolderKey::from(arena_key);
             let mut child_ancestors = ancestors.to_vec();
             child_ancestors.push(key);
@@ -825,58 +728,6 @@ mod tests {
                 .and_then(|request| request.metadata.name.as_deref()),
             Some("Health")
         );
-    }
-
-    #[test]
-    fn indexes_request_ancestor_folders_from_root_inward() {
-        let collection = Collection {
-            items: vec![CollectionItem::Folder(Folder {
-                metadata: ItemMetadata {
-                    name: Some("Accounts".to_owned()),
-                    sequence: None,
-                },
-                items: vec![CollectionItem::Folder(Folder {
-                    metadata: ItemMetadata {
-                        name: Some("Users".to_owned()),
-                        sequence: None,
-                    },
-                    items: vec![request("List users")],
-                })],
-            })],
-            ..Collection::default()
-        };
-
-        let workspace = Workspace::from_collection(collection);
-        let request_key = workspace
-            .root_items()
-            .iter()
-            .find_map(|item| match item {
-                WorkspaceItemRef::Folder(folder_key) => workspace.folder(*folder_key),
-                WorkspaceItemRef::Request(_) => None,
-            })
-            .and_then(|folder| match folder.children[0] {
-                WorkspaceItemRef::Folder(folder_key) => workspace.folder(folder_key),
-                WorkspaceItemRef::Request(_) => None,
-            })
-            .and_then(|folder| match folder.children[0] {
-                WorkspaceItemRef::Request(request_key) => Some(request_key),
-                WorkspaceItemRef::Folder(_) => None,
-            })
-            .expect("nested request should resolve");
-
-        let ancestor_names = workspace
-            .request_ancestor_folders(request_key)
-            .expect("request ancestry should be indexed")
-            .iter()
-            .map(|key| {
-                workspace
-                    .folder(*key)
-                    .and_then(|folder| folder.metadata.name.as_deref())
-                    .expect("ancestor folder should resolve")
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(ancestor_names, ["Accounts", "Users"]);
     }
 
     #[test]

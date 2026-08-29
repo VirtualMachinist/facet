@@ -4,10 +4,7 @@ use std::{
     fmt,
 };
 
-use crate::{
-    AuthenticationValue, Body, Environment, EnvironmentVariable, HttpRequest, MultipartValue,
-    RequestBody, Variable, VariableValue, VariableValueSet,
-};
+use crate::{Environment, EnvironmentVariable, Variable, VariableValue, VariableValueSet};
 
 /// An environment selected and resolved entirely in memory.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,28 +134,63 @@ pub struct EffectiveEnvironmentVariable {
 pub fn validate_environments(
     environments: &[Environment],
 ) -> Result<(), EnvironmentResolutionError> {
-    let mut by_name = BTreeMap::new();
-    for environment in environments {
-        if by_name
-            .insert(environment.name.as_str(), environment)
-            .is_some()
-        {
-            return Err(EnvironmentResolutionError::DuplicateEnvironment(
-                environment.name.clone(),
-            ));
+    EnvironmentIndex::new(environments).map(|_| ())
+}
+
+struct EnvironmentIndex<'a> {
+    by_name: BTreeMap<&'a str, &'a Environment>,
+}
+
+impl<'a> EnvironmentIndex<'a> {
+    fn new(environments: &'a [Environment]) -> Result<Self, EnvironmentResolutionError> {
+        let mut by_name = BTreeMap::new();
+        for environment in environments {
+            if by_name
+                .insert(environment.name.as_str(), environment)
+                .is_some()
+            {
+                return Err(EnvironmentResolutionError::DuplicateEnvironment(
+                    environment.name.clone(),
+                ));
+            }
         }
+
+        let mut validated = BTreeSet::new();
+        for environment in environments {
+            validate_environment_inheritance(
+                &environment.name,
+                &by_name,
+                &mut Vec::new(),
+                &mut validated,
+            )?;
+        }
+        Ok(Self { by_name })
     }
 
-    let mut validated = BTreeSet::new();
-    for environment in environments {
-        validate_environment_inheritance(
-            &environment.name,
-            &by_name,
-            &mut Vec::new(),
-            &mut validated,
-        )?;
+    fn get(&self, name: &str) -> Option<&'a Environment> {
+        self.by_name.get(name).copied()
     }
-    Ok(())
+
+    fn inheritance_chain(
+        &self,
+        selected: &str,
+    ) -> Result<Vec<&'a Environment>, EnvironmentResolutionError> {
+        let mut environment = self
+            .get(selected)
+            .ok_or_else(|| EnvironmentResolutionError::EnvironmentNotFound(selected.to_owned()))?;
+        let mut chain = Vec::new();
+        loop {
+            chain.push(environment);
+            let Some(parent) = environment.extends.as_deref() else {
+                break;
+            };
+            environment = self
+                .get(parent)
+                .expect("validated parent environment must exist");
+        }
+        chain.reverse();
+        Ok(chain)
+    }
 }
 
 fn validate_environment_inheritance<'a>(
@@ -270,331 +302,10 @@ impl fmt::Display for EnvironmentResolutionError {
 impl Error for EnvironmentResolutionError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum RawVariable {
+pub(crate) enum RawVariable {
     Value(String),
     Unavailable,
     Secret,
-}
-
-/// Creates a new environment with an optional parent.
-///
-/// The new environment starts with no variables. Validation rejects duplicate names,
-/// missing parents, and inheritance cycles.
-pub fn create_environment(
-    environments: &mut Vec<Environment>,
-    name: String,
-    extends: Option<String>,
-) -> Result<(), EnvironmentResolutionError> {
-    if name.is_empty() {
-        return Err(EnvironmentResolutionError::InvalidEnvironmentName);
-    }
-    if environments
-        .iter()
-        .any(|environment| environment.name == name)
-    {
-        return Err(EnvironmentResolutionError::DuplicateEnvironment(name));
-    }
-    if let Some(parent) = extends.as_deref()
-        && !environments
-            .iter()
-            .any(|environment| environment.name == parent)
-    {
-        return Err(EnvironmentResolutionError::ParentEnvironmentNotFound {
-            environment: name.clone(),
-            parent: parent.to_owned(),
-        });
-    }
-    environments.push(Environment {
-        name,
-        color: None,
-        extends,
-        dot_env_file_path: None,
-        variables: Vec::new(),
-    });
-    validate_environments(environments)
-}
-
-/// Removes an environment created in this session if it still has no children.
-pub fn revert_created_environment(environments: &mut Vec<Environment>, name: &str) {
-    if environments
-        .iter()
-        .any(|environment| environment.extends.as_deref() == Some(name))
-    {
-        return;
-    }
-    if let Some(index) = environments
-        .iter()
-        .position(|environment| environment.name == name)
-    {
-        environments.remove(index);
-    }
-}
-
-/// Replaces one environment and revalidates the complete inheritance graph.
-pub fn replace_environment(
-    environments: &mut [Environment],
-    original_name: &str,
-    replacement: Environment,
-) -> Result<(), EnvironmentResolutionError> {
-    if replacement.name.is_empty() {
-        return Err(EnvironmentResolutionError::InvalidEnvironmentName);
-    }
-    let Some(index) = environments
-        .iter()
-        .position(|environment| environment.name == original_name)
-    else {
-        return Err(EnvironmentResolutionError::EnvironmentNotFound(
-            original_name.to_owned(),
-        ));
-    };
-    if replacement.name != original_name
-        && environments
-            .iter()
-            .any(|environment| environment.name == replacement.name)
-    {
-        return Err(EnvironmentResolutionError::DuplicateEnvironment(
-            replacement.name,
-        ));
-    }
-    validate_unique_variable_names(&replacement)?;
-
-    let mut candidate = environments.to_vec();
-    let renamed = replacement.name.clone();
-    candidate[index] = replacement;
-    if renamed != original_name {
-        for environment in &mut candidate {
-            if environment.extends.as_deref() == Some(original_name) {
-                environment.extends = Some(renamed.clone());
-            }
-        }
-    }
-    validate_environments(&candidate)?;
-    environments.clone_from_slice(&candidate);
-    Ok(())
-}
-
-/// Deletes an environment that is not used as another environment's parent.
-pub fn delete_environment(
-    environments: &mut Vec<Environment>,
-    name: &str,
-) -> Result<Environment, EnvironmentResolutionError> {
-    if environments
-        .iter()
-        .any(|environment| environment.extends.as_deref() == Some(name))
-    {
-        return Err(EnvironmentResolutionError::EnvironmentInUse(
-            name.to_owned(),
-        ));
-    }
-    let Some(index) = environments
-        .iter()
-        .position(|environment| environment.name == name)
-    else {
-        return Err(EnvironmentResolutionError::EnvironmentNotFound(
-            name.to_owned(),
-        ));
-    };
-    Ok(environments.remove(index))
-}
-
-/// Updates a plain variable on the selected environment, or adds an override.
-///
-/// Secret variables cannot be written. A variable defined only on a parent is
-/// added to the selected environment so the parent document is left unchanged.
-pub fn set_environment_variable(
-    environments: &mut [Environment],
-    environment_name: &str,
-    variable_name: &str,
-    value: String,
-) -> Result<(), EnvironmentResolutionError> {
-    if variable_name.is_empty() {
-        return Err(EnvironmentResolutionError::InvalidVariableName);
-    }
-    let raw = raw_variables(environments, environment_name)?;
-    if matches!(raw.get(variable_name), Some(RawVariable::Secret)) {
-        return Err(EnvironmentResolutionError::SecretVariableUnavailable(
-            variable_name.to_owned(),
-        ));
-    }
-    let environment = named_environment_mut(environments, environment_name)?;
-    for variable in &mut environment.variables {
-        let EnvironmentVariable::Plain(variable) = variable else {
-            continue;
-        };
-        if variable.name.as_deref() != Some(variable_name) {
-            continue;
-        }
-        variable.disabled = false;
-        assign_variable_value(&mut variable.value, value);
-        return Ok(());
-    }
-
-    environment
-        .variables
-        .push(EnvironmentVariable::Plain(Variable {
-            name: Some(variable_name.to_owned()),
-            value: Some(VariableValueSet::Single(VariableValue::String(value))),
-            disabled: false,
-        }));
-    Ok(())
-}
-
-/// Removes a plain variable from the named environment so a parent value can show through.
-///
-/// Only that environment's entry is deleted. Parent variables are left unchanged.
-/// Secrets are not converted into plain values or removed.
-pub fn unset_environment_variable(
-    environments: &mut [Environment],
-    environment_name: &str,
-    variable_name: &str,
-) -> Result<(), EnvironmentResolutionError> {
-    if variable_name.is_empty() {
-        return Err(EnvironmentResolutionError::InvalidVariableName);
-    }
-    let environment = named_environment_mut(environments, environment_name)?;
-    let Some(index) = environment
-        .variables
-        .iter()
-        .position(|variable| variable_entry_name(variable) == Some(variable_name))
-    else {
-        return Err(EnvironmentResolutionError::VariableNotFound {
-            environment: environment_name.to_owned(),
-            variable: variable_name.to_owned(),
-        });
-    };
-    if matches!(environment.variables[index], EnvironmentVariable::Secret(_)) {
-        return Err(EnvironmentResolutionError::SecretVariableUnavailable(
-            variable_name.to_owned(),
-        ));
-    }
-    environment.variables.remove(index);
-    Ok(())
-}
-
-/// Rejects duplicate variable names across plain and secret entries in one environment.
-pub fn validate_unique_variable_names(
-    environment: &Environment,
-) -> Result<(), EnvironmentResolutionError> {
-    let mut names = BTreeSet::new();
-    for variable in &environment.variables {
-        let Some(name) = variable_entry_name(variable) else {
-            continue;
-        };
-        if name.is_empty() {
-            continue;
-        }
-        if !names.insert(name) {
-            return Err(EnvironmentResolutionError::DuplicateVariable {
-                environment: environment.name.clone(),
-                variable: name.to_owned(),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Returns effective plain variables for `selected`, including inherited values.
-///
-/// Child entries override parents by name. Disabled variables remain visible. Secrets
-/// are omitted from the result but still shadow inherited plains with the same name.
-#[must_use]
-pub fn effective_environment_variables(
-    environments: &[Environment],
-    selected: &Environment,
-) -> Vec<EffectiveEnvironmentVariable> {
-    let mut rows = Vec::new();
-    let mut seen = BTreeSet::new();
-    for (index, variable) in selected.variables.iter().enumerate() {
-        match variable {
-            EnvironmentVariable::Plain(variable) => {
-                if let Some(name) = &variable.name {
-                    seen.insert(name.clone());
-                }
-                rows.push(EffectiveEnvironmentVariable {
-                    variable: variable.clone(),
-                    defined_in: selected.name.clone(),
-                    direct_index: Some(index),
-                });
-            }
-            EnvironmentVariable::Secret(variable) => {
-                if let Some(name) = &variable.name {
-                    seen.insert(name.clone());
-                }
-            }
-        }
-    }
-
-    let mut visited_parents = BTreeSet::new();
-    let mut parent = selected.extends.as_deref();
-    while let Some(parent_name) = parent {
-        if !visited_parents.insert(parent_name.to_owned()) {
-            break;
-        }
-        let Some(environment) = environments
-            .iter()
-            .find(|environment| environment.name == parent_name)
-        else {
-            break;
-        };
-        for variable in &environment.variables {
-            let Some(name) = variable_entry_name(variable) else {
-                continue;
-            };
-            if !seen.insert(name.to_owned()) {
-                continue;
-            }
-            if let EnvironmentVariable::Plain(variable) = variable {
-                rows.push(EffectiveEnvironmentVariable {
-                    variable: variable.clone(),
-                    defined_in: environment.name.clone(),
-                    direct_index: None,
-                });
-            }
-        }
-        parent = environment.extends.as_deref();
-    }
-    rows
-}
-
-fn named_environment_mut<'a>(
-    environments: &'a mut [Environment],
-    environment_name: &str,
-) -> Result<&'a mut Environment, EnvironmentResolutionError> {
-    environments
-        .iter_mut()
-        .find(|environment| environment.name == environment_name)
-        .ok_or_else(|| EnvironmentResolutionError::EnvironmentNotFound(environment_name.to_owned()))
-}
-
-fn variable_entry_name(variable: &EnvironmentVariable) -> Option<&str> {
-    match variable {
-        EnvironmentVariable::Plain(variable) => variable.name.as_deref(),
-        EnvironmentVariable::Secret(variable) => variable.name.as_deref(),
-    }
-}
-
-fn assign_variable_value(slot: &mut Option<VariableValueSet>, value: String) {
-    match slot {
-        Some(VariableValueSet::Single(VariableValue::String(existing))) => *existing = value,
-        Some(VariableValueSet::Single(VariableValue::Typed { data, .. })) => *data = value,
-        Some(VariableValueSet::Variants(variants)) => {
-            if let Some(selected) = variants.iter_mut().find(|variant| variant.selected) {
-                match &mut selected.value {
-                    VariableValue::String(existing) => *existing = value,
-                    VariableValue::Typed { data, .. } => *data = value,
-                }
-            } else if let Some(first) = variants.first_mut() {
-                first.selected = true;
-                match &mut first.value {
-                    VariableValue::String(existing) => *existing = value,
-                    VariableValue::Typed { data, .. } => *data = value,
-                }
-            } else {
-                *slot = Some(VariableValueSet::Single(VariableValue::String(value)));
-            }
-        }
-        None => *slot = Some(VariableValueSet::Single(VariableValue::String(value))),
-    }
 }
 
 /// Selects an environment, applies its inheritance chain, and resolves variable values.
@@ -623,98 +334,44 @@ pub fn resolve_environment(
     })
 }
 
-fn raw_variables(
+pub(crate) fn raw_variables(
     environments: &[Environment],
     selected: &str,
 ) -> Result<BTreeMap<String, RawVariable>, EnvironmentResolutionError> {
-    validate_environments(environments)?;
-    let mut by_name = BTreeMap::new();
-    for environment in environments {
-        by_name.insert(environment.name.as_str(), environment);
-    }
-    if !by_name.contains_key(selected) {
-        return Err(EnvironmentResolutionError::EnvironmentNotFound(
-            selected.to_owned(),
-        ));
-    }
-
+    let index = EnvironmentIndex::new(environments)?;
     let mut raw = BTreeMap::new();
-    apply_environment(
-        selected,
-        &by_name,
-        &mut Vec::new(),
-        &mut BTreeSet::new(),
-        &mut raw,
-    )?;
+    for environment in index.inheritance_chain(selected)? {
+        for variable in &environment.variables {
+            match variable {
+                EnvironmentVariable::Plain(variable) => {
+                    let Some(name) = variable.name.as_ref() else {
+                        continue;
+                    };
+                    let value = match (&variable.value, variable.disabled) {
+                        (_, true) | (None, false) => RawVariable::Unavailable,
+                        (Some(value), false) => {
+                            RawVariable::Value(select_value(value, &environment.name, name)?)
+                        }
+                    };
+                    raw.insert(name.clone(), value);
+                }
+                EnvironmentVariable::Secret(variable) => {
+                    let Some(name) = variable.name.as_ref() else {
+                        continue;
+                    };
+                    raw.insert(
+                        name.clone(),
+                        if variable.disabled {
+                            RawVariable::Unavailable
+                        } else {
+                            RawVariable::Secret
+                        },
+                    );
+                }
+            }
+        }
+    }
     Ok(raw)
-}
-
-fn apply_environment<'a>(
-    name: &'a str,
-    environments: &BTreeMap<&'a str, &'a Environment>,
-    stack: &mut Vec<String>,
-    applied: &mut BTreeSet<String>,
-    variables: &mut BTreeMap<String, RawVariable>,
-) -> Result<(), EnvironmentResolutionError> {
-    if applied.contains(name) {
-        return Ok(());
-    }
-    if let Some(position) = stack.iter().position(|item| item == name) {
-        let mut cycle = stack[position..].to_vec();
-        cycle.push(name.to_owned());
-        return Err(EnvironmentResolutionError::EnvironmentInheritanceCycle(
-            cycle,
-        ));
-    }
-
-    let environment = environments
-        .get(name)
-        .expect("environment names are checked before inheritance traversal");
-    stack.push(name.to_owned());
-    if let Some(parent) = environment.extends.as_deref() {
-        if !environments.contains_key(parent) {
-            return Err(EnvironmentResolutionError::ParentEnvironmentNotFound {
-                environment: environment.name.clone(),
-                parent: parent.to_owned(),
-            });
-        }
-        apply_environment(parent, environments, stack, applied, variables)?;
-    }
-
-    for variable in &environment.variables {
-        match variable {
-            EnvironmentVariable::Plain(variable) => {
-                let Some(name) = variable.name.as_ref() else {
-                    continue;
-                };
-                let value = if variable.disabled {
-                    RawVariable::Unavailable
-                } else if let Some(value) = variable.value.as_ref() {
-                    RawVariable::Value(select_value(value, &environment.name, name)?)
-                } else {
-                    RawVariable::Unavailable
-                };
-                variables.insert(name.clone(), value);
-            }
-            EnvironmentVariable::Secret(variable) => {
-                let Some(name) = variable.name.as_ref() else {
-                    continue;
-                };
-                variables.insert(
-                    name.clone(),
-                    if variable.disabled {
-                        RawVariable::Unavailable
-                    } else {
-                        RawVariable::Secret
-                    },
-                );
-            }
-        }
-    }
-
-    stack.pop();
-    applied.insert(name.to_owned());
-    Ok(())
 }
 
 fn select_value(
@@ -805,119 +462,4 @@ where
     }
     output.push_str(remaining);
     Ok(output)
-}
-
-/// Clones a request and interpolates every currently supported request-value field.
-pub fn resolve_request(
-    request: &HttpRequest,
-    environment: &ResolvedEnvironment,
-) -> Result<HttpRequest, EnvironmentResolutionError> {
-    let mut request = request.clone();
-    interpolate_optional(&mut request.method, environment)?;
-    interpolate_optional(&mut request.url, environment)?;
-    for header in &mut request.headers {
-        header.name = environment.interpolate(&header.name)?;
-        header.value = environment.interpolate(&header.value)?;
-    }
-    for parameter in &mut request.query_parameters {
-        parameter.name = environment.interpolate(&parameter.name)?;
-        parameter.value = environment.interpolate(&parameter.value)?;
-    }
-    for parameter in &mut request.path_parameters {
-        parameter.name = environment.interpolate(&parameter.name)?;
-        parameter.value = environment.interpolate(&parameter.value)?;
-    }
-    if let Some(body) = &mut request.body {
-        resolve_body(body, environment)?;
-    }
-    if let Some(authentication) = &mut request.authentication {
-        for value in authentication.properties.values_mut() {
-            resolve_authentication_value(value, environment)?;
-        }
-    }
-    Ok(request)
-}
-
-fn interpolate_optional(
-    value: &mut Option<String>,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
-    if let Some(value) = value {
-        *value = environment.interpolate(value)?;
-    }
-    Ok(())
-}
-
-fn resolve_body(
-    body: &mut RequestBody,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
-    match body {
-        RequestBody::Single(body) => resolve_body_value(body, environment),
-        RequestBody::Variants(variants) => {
-            for variant in variants {
-                resolve_body_value(&mut variant.body, environment)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn resolve_body_value(
-    body: &mut Body,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
-    match body {
-        Body::Raw(body) => body.data = environment.interpolate(&body.data)?,
-        Body::FormUrlEncoded(fields) => {
-            for field in fields {
-                field.name = environment.interpolate(&field.name)?;
-                field.value = environment.interpolate(&field.value)?;
-            }
-        }
-        Body::Multipart(parts) => {
-            for part in parts {
-                part.name = environment.interpolate(&part.name)?;
-                match &mut part.value {
-                    MultipartValue::Single(value) => *value = environment.interpolate(value)?,
-                    MultipartValue::Multiple(values) => {
-                        for value in values {
-                            *value = environment.interpolate(value)?;
-                        }
-                    }
-                }
-                interpolate_optional(&mut part.content_type, environment)?;
-            }
-        }
-        Body::File(files) => {
-            for file in files {
-                file.file_path = environment.interpolate(&file.file_path)?;
-                file.content_type = environment.interpolate(&file.content_type)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn resolve_authentication_value(
-    value: &mut AuthenticationValue,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
-    match value {
-        AuthenticationValue::String(value) | AuthenticationValue::Number(value) => {
-            *value = environment.interpolate(value)?;
-        }
-        AuthenticationValue::Sequence(values) => {
-            for value in values {
-                resolve_authentication_value(value, environment)?;
-            }
-        }
-        AuthenticationValue::Object(values) => {
-            for value in values.values_mut() {
-                resolve_authentication_value(value, environment)?;
-            }
-        }
-        AuthenticationValue::Boolean(_) | AuthenticationValue::Null => {}
-    }
-    Ok(())
 }

@@ -266,8 +266,12 @@ fn rewrite_path_segments(
                 continue;
             }
         }
-        result.push(char::from(bytes[cursor]));
-        cursor += 1;
+        let character = path[cursor..]
+            .chars()
+            .next()
+            .expect("cursor must be within the path");
+        result.push(character);
+        cursor += character.len_utf8();
     }
     result.push_str(&url[bounds.end..]);
     result
@@ -325,6 +329,19 @@ mod tests {
     }
 
     #[test]
+    fn rewriting_path_parameters_preserves_unicode() {
+        let url = apply_path_parameters(
+            "https://api.example.com/café/:userId",
+            &[QueryParameter {
+                name: "userId".to_owned(),
+                value: "probe".to_owned(),
+                disabled: false,
+            }],
+        );
+        assert_eq!(url, "https://api.example.com/café/probe");
+    }
+
+    #[test]
     fn synchronize_path_parameters_removes_stale_enabled_rows() {
         let mut request = HttpRequest {
             path_parameters: vec![QueryParameter {
@@ -341,9 +358,9 @@ mod tests {
     }
 
     #[test]
-    fn ensure_path_parameters_from_url_preserves_extra_yaml_rows() {
+    fn ensure_path_parameters_from_url_adds_placeholders_and_preserves_extra_yaml_rows() {
         let mut request = HttpRequest {
-            url: Some("https://api.example.com/pets".to_owned()),
+            url: Some("https://api.example.com/users/:userId".to_owned()),
             path_parameters: vec![QueryParameter {
                 name: "ownerId".to_owned(),
                 value: "42".to_owned(),
@@ -352,19 +369,10 @@ mod tests {
             ..HttpRequest::default()
         };
         ensure_path_parameters_from_url(&mut request);
-        assert_eq!(request.path_parameters.len(), 1);
-        assert_eq!(request.path_parameters[0].name, "ownerId");
-    }
-
-    #[test]
-    fn ensure_path_parameters_from_url_adds_missing_url_placeholders() {
-        let mut request = HttpRequest {
-            url: Some("https://api.example.com/users/:userId".to_owned()),
-            ..HttpRequest::default()
-        };
-        ensure_path_parameters_from_url(&mut request);
-        assert_eq!(request.path_parameters.len(), 1);
+        assert_eq!(request.path_parameters.len(), 2);
         assert_eq!(request.path_parameters[0].name, "userId");
+        assert_eq!(request.path_parameters[1].name, "ownerId");
+        assert_eq!(request.path_parameters[1].value, "42");
     }
 
     #[test]
