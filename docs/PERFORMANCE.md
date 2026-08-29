@@ -1,7 +1,7 @@
 # Performance Baseline
 
-Phase 8 establishes repeatable measurements before desktop optimization begins. The
-suite covers bundled workspaces containing 100, 1,000, and 10,000 requests. Each
+The repeatable performance suite covers bundled workspaces containing 100, 1,000,
+and 10,000 requests. Each
 deterministic fixture contains folders of 100 requests and representative headers,
 query parameters, and JSON bodies.
 
@@ -29,9 +29,9 @@ Criterion stores machine-local reports under `target/criterion`. Compare results
 the same machine and build profile; absolute timings from different machines are not
 directly comparable.
 
-Criterion 0.7 remains pinned from the Phase 8 baseline. Phase 9 raised the workspace
-minimum to Rust 1.95 to match the exact GPUI revision; dependency upgrades remain
-outside this baseline phase.
+Criterion 0.7 remains pinned with the original baseline. The workspace minimum is
+Rust 1.95 to match the exact GPUI revision; dependency upgrades should be handled
+separately from performance measurement.
 
 ## Representative fixture files
 
@@ -77,7 +77,7 @@ from representative machines.
 
 ## Initial reference run
 
-The Phase 8 implementation was exercised on 2026-08-15 using an Apple M4 MacBook Pro
+The initial baseline was recorded on 2026-08-15 using an Apple M4 MacBook Pro
 (10 cores, 16 GB), macOS 26.6.1, and rustc 1.97.1. Criterion point estimates from a
 release build were:
 

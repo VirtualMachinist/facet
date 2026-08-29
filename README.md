@@ -53,19 +53,9 @@ syntax) stay distinct.
 
 ### CLI
 
-The CLI is a first-class product interface intended for:
-
-- AI coding agents
-- shell scripts
-- CI/CD
-- automated testing
-- developers
-- debugging
-- headless environments
-
-It supports human-readable and deterministic JSON output.
-
-Examples:
+The CLI is a first-class, non-interactive interface for developers, AI agents,
+shell automation, CI, testing, debugging, and headless environments. It supports
+human-readable output and deterministic, versioned JSON.
 
 ```bash
 probe collection validate ./api
@@ -74,57 +64,14 @@ cat collection.yml | probe collection validate - --json
 
 probe request list ./api --json
 
-probe request get ./api users/list-users.yml --json
-
-probe request get ./api users/list-users.yml \
-  --environment development --json
-```
-
-Unbundled collections use workspace-relative request paths as selectors. Bundled
-collections use structural selectors:
-
-```bash
-probe request get ./collection.yml items/0/items/0 --json
-```
-
-```bash
 probe request run ./api users/list-users.yml \
   --environment development --json
 
-probe request run ./api reports/download.yml \
-  --environment development --output ./report.pdf --json
-
-probe request set ./api users/list-users.yml \
-  --method GET --url https://api.example.com/v2/users --json
-
-probe environment set ./api --environment development \
-  --name baseUrl --value https://dev.example.com --json
-
-probe environment unset ./api --environment development --name host --json
-
-probe folder create ./api --name Admin --index 0 --json
-
-probe request create ./api --parent admin --name "List admins" \
-  --method GET --url https://api.example.com/admins --json
-
-probe request move ./api list-admins.yml --parent admin --index 0 --json
-
-probe folder rename ./api admin --name Administration --json
-
-probe collection validate ./api --quiet
-
 probe collection import postman ./postman-collection.json ./imported.yml --json
-
-probe collection import yaak ./yaak-export.json ./imported.yml --json
-
-probe collection import yaak ./yaak-sync ./imported.yml \
-  --workspace wk_01 --allow-partial --json
 ```
 
-`--environment <name>` selects an OpenCollection environment, applies its `extends`
-chain, and interpolates request variables before output or execution preflight.
-Use `environment set` and `environment unset` to persist variable values on a named
-environment.
+See [docs/CLI.md](docs/CLI.md) for the complete command surface, selectors, JSON
+schemas, and exit codes.
 
 ## Installation
 
@@ -217,9 +164,6 @@ probe --version
 
 On Windows, place `probe.exe` in a directory included in your `PATH`, or add its directory to `PATH`.
 
-For CLI usage and available commands, see [docs/CLI.md](docs/CLI.md).
-
-
 ## Development
 
 Install [rustup](https://rustup.rs/) and enter the repository. The checked-in
@@ -235,48 +179,10 @@ cargo fmt --check
 On macOS, desktop builds also require the full Xcode developer tools (not only the
 standalone Command Line Tools), because pinned GPUI compiles Metal shaders.
 
-The repository is a Cargo workspace. It currently includes:
-
-- OpenCollection parsing, bundled and unbundled filesystem loading, and an
-  indexed in-memory workspace
-- shared environment resolution and asynchronous HTTP execution
-- a versioned, automation-safe CLI contract
-- Postman Collection v2.0/v2.1 and Yaak export/directory-sync import
-- a native GPUI desktop shell with semantic light/dark themes
-
-The desktop app supports OpenCollection-backed browsing, request tabs,
-resizable editor/response panes, and a title-bar workspace switcher. The
-workspace switcher, empty sidebar, and macOS `File > Import` menu expose the
-same Postman/Yaak import workflow. Empty workspaces can create a new bundled
-collection or open an existing one.
-
-The request editor updates method, URL, query and `:variableName` path
-parameters, headers, body, authentication, and environment selection in memory
-as the user works. Desktop Send and Cancel actions use the same asynchronous
-HTTP engine as the CLI. Completed responses expose status, duration, size,
-headers, and body in a Pretty/Raw/Headers viewer with search. Large bodies are
-virtualized so navigation stays responsive.
-
-The editor and response viewer support vertical or horizontal layouts. The
-local desktop session restores the active workspace, tabs, collapsed folders,
-selected environment, pane orientation, and pane sizes automatically.
-
-Edited requests show a dirty indicator and expose a save icon beside the URL
-while dirty. Saves use the shared atomic OpenCollection repository on a
-background executor, and Probe asks before closing tabs, collections, or the
-application with unsaved changes.
-
-Open collections are watched for filesystem changes. Valid external edits,
-additions, deletions, and identifiable renames are reconciled in the background.
-Conflicting local drafts remain protected until the user chooses which version
-to keep.
-
-The desktop collection tree exposes keyboard-accessible controls for creating,
-renaming, deleting, moving, and reordering requests and folders. The same move
-and reorder operations can be performed by dragging tree rows onto folder or
-sibling targets. Structural writes run in the background through the shared
-repository, while open tabs, collapsed folders, session selectors, and unsaved
-request drafts follow persisted selector remaps.
+The repository is a Cargo workspace. Read [AGENTS.md](AGENTS.md) before changing
+code; it routes each task to the relevant reference without requiring the entire
+documentation set. Start with the [documentation index](docs/README.md) when
+exploring the project.
 
 ```bash
 cargo run -p probe-cli -- --help
@@ -304,24 +210,5 @@ CLI startup, and practical peak-memory profiling at 100, 1,000, and 10,000 reque
 See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for reproducible commands and fixture
 generation.
 
-Desktop work follows the native, platform-aware design and future plain-text theming
-contract in [docs/DESIGN.md](docs/DESIGN.md).
-
-Try the current CLI against the included unbundled fixture:
-
-```bash
-cargo run -p probe-cli -- collection validate \
-  tests/fixtures/opencollection/unbundled --json
-
-cargo run -p probe-cli -- request list \
-  tests/fixtures/opencollection/unbundled --json
-
-cargo run -p probe-cli -- request get \
-  tests/fixtures/opencollection/unbundled users/list-users.yml --json
-
-cargo run -p probe-cli -- request get \
-  tests/fixtures/opencollection/phase4-environments.yml items/0 \
-  --environment development --json
-```
-
-See [docs/CLI.md](docs/CLI.md) for selectors, JSON fields, and exit codes.
+Desktop work follows the native, platform-aware contract in
+[docs/DESIGN.md](docs/DESIGN.md).

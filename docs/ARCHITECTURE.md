@@ -2,17 +2,16 @@
 
 ## Overview
 
-The application uses a layered architecture with multiple interfaces
-over a shared core.
+The application uses two interfaces over shared application and domain layers.
 
                          Interfaces
 
-                ┌────────────┼────────────┐
-                │            │            │
-               CLI          GPUI         MCP
-                │         Desktop       Future
-                │            │            │
-                └────────────┼────────────┘
+                       ┌─────┴─────┐
+                       │           │
+                      CLI         GPUI
+                                Desktop
+                       │           │
+                       └─────┬─────┘
                              │
                     ┌────────▼────────┐
                     │   Application   │
@@ -32,13 +31,13 @@ over a shared core.
                     │ Response       │
                     └────────▲────────┘
                              │
-          ┌──────────────────┼──────────────────┐
-          │                  │                  │
-   OpenCollection          HTTP              History
-    Repository             Engine              Store
-          │                  │                  │
-          ▼                  ▼                  ▼
-        YAML              Network           Files/DB
+                       ┌─────┴─────┐
+                       │           │
+                OpenCollection   HTTP
+                 Repository      Engine
+                       │           │
+                       ▼           ▼
+                     YAML       Network
 
 Portable import formats are inbound adapters. The Postman adapter reads official
 Collection v2.0/v2.1 JSON, while the Yaak adapter reads official export JSON or
@@ -110,16 +109,8 @@ Domain must not depend on:
 
 ## CLI
 
-The CLI is a first-class interface optimized for:
-
-- AI agents
-- automation
-- CI
-- shell usage
-- debugging
-- headless environments
-
-Its responsibilities are limited to:
+The CLI is a first-class automation and headless interface. Its responsibilities
+are limited to:
 
 - argument parsing
 - invoking application operations
@@ -132,20 +123,13 @@ It must not implement domain behavior.
 
 ### Structured output
 
-Programmatic commands should support JSON.
-
-Streaming protocols should support JSONL where appropriate.
-
-Structured stdout must contain only structured command output.
-
-Logs and diagnostics belong on stderr.
-
 The CLI's JSON documents carry an explicit schema version. Automation should branch
 on stable error categories and exit codes, never parse human diagnostic messages.
 Bundled collections may be supplied through stdin without moving YAML parsing into
 the frontend: the OpenCollection repository projects the in-memory document and
 builds the same structural selectors used for bundled files. Quiet mode is a
-presentation concern and suppresses only successful command output.
+presentation concern and suppresses only successful command output. The complete
+public contract is in [CLI.md](CLI.md).
 
 
 ## Desktop Presentation
@@ -180,30 +164,12 @@ application styled component
 feature UI
 
 Desktop components consume semantic design tokens. They must not hard-code theme
-colors or parse theme files. Do not add automated tests for UI spacing or color
-values; review appearance visually against [docs/DESIGN.md](DESIGN.md). Platform presentation may map the same semantic intent to
-different macOS, Windows, and Linux conventions. macOS follows Apple HIG behavior,
-Windows follows Microsoft Windows App Design and Fluent conventions, and Linux uses a
-cross-desktop baseline informed by GNOME and KDE guidance plus applicable
-freedesktop.org standards. The Linux adapter must not become separate GTK and Qt
-imitations.
+colors or parse theme files. Platform presentation may map the same semantic intent
+to different macOS, Windows, and Linux conventions.
 
 Built-in themes map Porcelain Honey (light) and Graphite Honey (dark) onto the
-semantic token model. Future user-defined themes use a separate
-presentation-infrastructure boundary:
-
-Plain-text theme file
-        ↓
-theme parser and validator
-        ↓
-semantic theme model
-        ↓
-GPUI presentation
-
-Theme configuration is local presentation state. It does not belong in the domain
-workspace, OpenCollection YAML, or the canonical collection repository. Invalid or
-incomplete custom themes fall back safely to built-in semantic values. See
-`docs/DESIGN.md` for the design-system contract.
+semantic token model. [DESIGN.md](DESIGN.md) is the canonical source for platform
+behavior, visual testing, themes, and accessibility.
 
 
 ## Application Layer
@@ -243,148 +209,66 @@ For the desktop application, the resulting workspace remains in memory
 for fast navigation.
 
 
-## Desktop Request Selection
+## Desktop Runtime
 
-Fast path:
+Opening a collection delegates filesystem traversal and parsing to the
+OpenCollection repository on a background executor. The desktop retains the resulting
+workspace in memory for the life of the window. Request selection is therefore:
 
-User click
-    ↓
-RequestKey (session-only)
-    ↓
-in-memory lookup
-    ↓
-selected request state
-    ↓
-GPUI notification/render
+    user selection
+        ↓
+    session-only RequestKey
+        ↓
+    O(1) in-memory lookup
+        ↓
+    render notification
 
-It must not include:
+The selection path performs no filesystem, YAML, database, or network work. Folder
+expansion, tabs, pane state, and environment selection are presentation state.
 
-- filesystem reads
-- YAML parsing
-- database queries
-- network operations
+Request controls mutate the in-memory domain request. Saving is a separate shared
+repository operation and never occurs implicitly on each keystroke. Environment
+resolution and mutation use core and repository operations rather than desktop-only
+logic. Secrets remain unavailable for editing until Probe has a supported runtime
+value provider.
 
-The desktop shell retains the repository-loaded workspace for the lifetime of the
-window. Its tree is rendered from `WorkspaceItemRef` values, and tabs retain only
-session-local `RequestKey` values. Opening a collection delegates parsing and
-filesystem traversal to the OpenCollection repository on a background executor;
-the GPUI adapter never parses YAML. Folder expansion, active tabs, and pane sizes are
-presentation state and do not modify the domain workspace.
+Desktop Send resolves the selected environment and executes the same probe-http
+engine used by the CLI, away from the UI thread. Cancellation reaches that engine;
+generation checks prevent stale completions from replacing newer results. Response
+and execution state remain presentation-only.
 
-The window title bar owns workspace-level navigation. Its workspace switcher exposes
-recent collections plus explicit new, open, and close actions, while collection content
-begins directly beneath the title bar without a duplicate application toolbar. New
-Collection uses the platform save panel to create an empty bundled OpenCollection YAML
-file through the shared repository, then loads it with the same path used to open an
-existing collection. The empty sidebar offers the same new and open actions before a
-collection is loaded. The
-request editor and response viewer can be stacked vertically or placed side by side;
-the orientation and independent response-pane dimensions are presentation state.
+The response viewer uses virtualized, read-only editing and performs expensive
+formatting or highlighting on a background executor. The request tree similarly
+virtualizes a flat index of visible in-memory item references.
 
-Request editor controls mutate the repository-loaded in-memory `HttpRequest` directly
-through its runtime `RequestKey`; they do not reload or parse collection files. The tab
-is the single request-name label above the editor, so the URL bar is not preceded by a
-duplicate title. Persistence remains a separate repository operation and is not
-implicitly coupled to individual keystrokes. Hovering a `{{variable}}` span in the
-request editor (URL, headers, and body) shows only that variable, aligned to that
-span, with an input for copying or updating the value on the selected environment.
-An undefined name on a selected environment uses the same input to create the
-variable. The popup stays open while the pointer moves from the span onto the popup.
-Those edits update the in-memory environment used by Send, then persist through the
-same OpenCollection repository operation used by the CLI: merge the changed variable
-into the retained YAML, compare source bytes, and atomically write. Secrets remain
-read-only. After a successful save, the value survives collection reload.
-Environment selection lives at the fixed right edge of the request tab bar and is
-workspace-scoped presentation state, so every
-open request shares the same selected environment. The switcher can create a new
-environment: Probe prompts for a name, updates the in-memory workspace, then persists
-through the same OpenCollection repository create used by the CLI, off the UI thread.
-The same switcher opens a workspace-scoped environment manager. It edits one retained
-environment document as a validated draft and persists name, parent, enabled-state, value,
-addition, and removal changes through one atomic repository replacement. Unbundled rename
-moves `environments/<name>.yml` rather than leaving the previous filename behind. Effective plain
-variables, including inherited values and their defining environment, come from a shared
-core operation rather than a desktop-only inheritance walk. Secrets remain omitted from
-the manager while still participating in name shadowing. Duplicate plain and secret names
-are rejected at the core/repository boundary before memory or disk change. Inherited
-variables remain visually attributable to their source; editing one creates an override on
-the selected environment. Secret declarations are preserved in retained YAML but are
-intentionally omitted from this editor until Probe has a supported runtime value provider.
-Environment deletion rejects parents, uses exact-source conflict checks, and updates the
-in-memory workspace only after persistence succeeds. An unsaved manager draft disables
-environment creation so Add Environment cannot replace it.
-The last selection for each
-collection is restored from the desktop session. Unsaved body representations are
-retained as local editor drafts per request, allowing users to switch body types without
-losing work.
-
-Desktop HTTP execution resolves the selected environment against an in-memory request,
-then runs the shared `probe-http` engine away from the GPUI thread. Cancellation is
-forwarded into that engine. Execution and response state is retained per runtime request
-key, while generation checks prevent a superseded request from replacing a newer result.
-Response state is presentation-only and is not written into OpenCollection YAML.
-
-The response viewer renders Pretty, Raw, and Headers through Longbridge
-gpui-base `Editor` in read-only mode. Probe retains the original response text,
-searches the active representation, applies language highlighting through
-gpui-base's highlighter seam (Syntect for JSON on the Pretty tab), overlays
-search matches as decorations, and lets the editor virtualize the viewport.
-JSON larger than 64 KiB is pretty-printed on a background executor. Syntax
-highlighting scans buffers up to 16 MiB, matching the in-memory response page.
-
-The request tree keeps a flat list of lightweight references for currently visible
-expanded nodes. Its fixed-height GPUI list is virtualized, so scrolling constructs and
-paints only the viewport range rather than every request in a large workspace. Folder
-expansion rebuilds this in-memory visible-row index without filesystem access.
-
-Tree rows are focusable collection items with directional navigation and explicit
-create, rename, delete, move, and reorder controls, so drag and drop is never required.
-The same repository-owned `StructureOperation` values are used when a tree row is
-dragged onto a valid folder or sibling insertion target. The desktop rejects drops onto
-the dragged item, its descendants, duplicate unbundled paths, and other invalid
-destinations, and shows an insertion line or folder highlight only for accepted
-targets. Large virtualized trees autoscroll while a drag is near the viewport edge.
-Failed persistence or conflict checks leave the previous valid workspace visible.
-The desktop converts these interactions into repository-owned `StructureOperation`
-values and executes them on GPUI's background executor. A successful operation returns
-a complete old-to-new selector map and a refreshed repository workspace. The desktop
-uses that map to rebuild runtime keys for open tabs, the active tree item, collapsed
-folders, editor drafts, and session state. Dirty request fields are overlaid onto their
-remapped request after the structural refresh; a structural move or rename does not
-implicitly save unrelated request edits. Folder and request deletion always requires
-confirmation, with a stronger warning when dirty requests would be discarded.
+All create, rename, delete, move, and reorder interactions become repository-owned
+StructureOperation values. A successful operation returns a refreshed workspace and
+selector remaps. The desktop rebuilds runtime keys and remaps tabs, selection,
+collapsed folders, drafts, and session state; dirty request fields are not implicitly
+saved. Destructive operations require confirmation when data or drafts would be lost.
 
 ### Desktop Session Restoration
 
-Probe stores a small, versioned desktop-session document in the operating system's
-local application-data directory. The document may contain the active and recent collection paths, open and active
-request selectors, collapsed folder selectors, the last selected environment for
-each recent collection, and pane sizes and orientation. It is local presentation
-metadata and is never written into an OpenCollection workspace.
+Probe stores a small, versioned session document in the platform application-data
+directory. It contains presentation metadata such as recent collection paths,
+repository selectors, selected environments, pane state, and orientation. It is never
+stored in OpenCollection YAML.
 
-Session writes are atomic and run off the GPUI thread. On launch, the desktop loads the
-session and active collection on a background executor, rebuilds the in-memory
-workspace, and resolves repository selectors to fresh runtime keys. Invalid selectors
-and environment names are ignored because the underlying item may have been removed.
-A missing or invalid collection produces a recoverable diagnostic and remains available
-in the recent list; it does not prevent the application from opening. Explicitly closing
-a collection clears the active session without deleting collection files. The last
-selected environment for that collection remains available when it is opened again.
+Session I/O is atomic and runs off the UI thread. Restoration reloads the collection,
+rebuilds runtime keys, and resolves persisted repository selectors. Missing collections,
+items, or environments produce recoverable state rather than preventing startup.
+Closing a collection clears active session state without deleting collection files.
 
 ### Runtime Identity and Persistence Locators
 
-OpenCollection does not define durable IDs for requests or folders. The active
-workspace therefore assigns compact generational `RequestKey` and `FolderKey` values
-while it is loaded. These keys index in-memory storage directly, are never serialized,
-and are rebuilt the next time the workspace opens. When a deleted slot is reused, its
-generation changes so stale selections and asynchronous results cannot resolve to the
-replacement item.
+OpenCollection does not define durable request or folder IDs. Each loaded workspace
+therefore assigns generational RequestKey and FolderKey values for fast, stale-safe
+in-memory lookup. These keys are never serialized and are rebuilt on reload.
 
-Repository adapters separately own persistence locators. An unbundled collection can
-use a workspace-relative file path; a bundled collection may use a structural item
-path. CLI selectors are derived from repository locators rather than runtime keys.
-Request names are presentation data and must not be treated as identity.
-
+Repository adapters separately own persistence locators: workspace-relative paths for
+unbundled collections and structural item paths for bundled collections. CLI selectors
+and desktop-session references use these locators. Names are presentation data, not
+identity.
 
 ## CLI Request Execution
 
@@ -424,8 +308,8 @@ The resolver returns a cloned, resolved request and leaves the canonical parsed 
 unchanged. It currently interpolates method, URL, headers, query and path parameters, supported
 body fields, file references, and authentication string/number values. OpenCollection
 secret declarations contain no value, so references fail until a separate secure
-runtime value provider is introduced. Loading `dotEnvFilePath` is also outside Phase 4;
-the domain resolver remains independent of filesystem APIs.
+runtime value provider is introduced. The resolver does not load `dotEnvFilePath`;
+the domain remains independent of filesystem APIs.
 
 ## HTTP Execution
 
@@ -466,95 +350,40 @@ remaining quota, Probe deletes its partial spool, continues draining the network
 returns the 16 MiB preview with a retention warning; existing retained responses are not evicted.
 
 
-## Persistence
+## Persistence and Filesystem Synchronization
 
-Desktop editing:
+Interfaces submit domain or repository operations; only the OpenCollection repository
+serializes YAML or mutates collection files. Desktop calls prepare work in memory and
+execute filesystem operations away from the UI thread.
 
-User edit
-    ↓
-in-memory update
-    ↓
-immediate render
-    ↓
-persistence operation
-    ↓
-OpenCollectionRepository
-    ↓
-atomic filesystem write
+For request and environment changes, the repository retains the loaded source and
+merges supported fields into that document so unknown YAML survives. Under a stable
+workspace writer lock it compares the current source with the loaded bytes, writes and
+syncs a temporary file, and atomically replaces the destination. Successful writes
+refresh the retained baseline. Symlinked workspaces update their canonical target
+without replacing the symlink.
 
-CLI mutation:
+Desktop dirty state compares the live request with its last loaded or successfully
+saved snapshot. Save completion acknowledges the captured revision, so edits made
+while I/O is running remain dirty. Failures and external-change conflicts retain the
+in-memory draft. Closing dirty work requires an explicit save, discard, or cancel
+decision.
 
-CLI command
-    ↓
-application operation
-    ↓
-domain update
-    ↓
-same repository
-    ↓
-atomic filesystem write
+Structural mutations are also repository-owned. Bundled operations retain unknown
+YAML and replace one document atomically. Unbundled multi-document moves and ordering
+changes retain rollback data and a recovery manifest; incomplete rollback is reported
+as requiring recovery rather than hidden. Every affected retained source is checked
+before mutation.
 
-The OpenCollection repository retains the exact source bytes for every editable
-request document. A request update is applied to the domain workspace first, then
-merged into the retained YAML so unsupported fields survive. Before the temporary file
-is committed, the repository compares the current file with its loaded bytes and
-rejects externally modified sources. The temporary file is synced and atomically
-committed on Unix, Windows, and WASI through a focused filesystem dependency.
-Successful saves refresh the retained byte snapshot so subsequent edits from the same
-loaded workspace remain safe.
+Filesystem notifications are invalidation hints. The desktop debounces them, reloads
+through the repository on a background executor, and reconciles baseline, local draft,
+and disk state. Non-overlapping field changes merge automatically; overlapping edits,
+dirty deletion, and ambiguous rename require an explicit choice. Invalid or partially
+written files never replace the last valid workspace.
 
-Workspace structure editing is also repository-owned. Interfaces submit one typed create,
-rename, delete, move, or reorder operation using repository selectors; the repository validates
-the destination, applies the corresponding in-memory/domain semantics, persists it, reloads the
-workspace, and returns refreshed selectors. Bundled edits retain unknown YAML and atomically
-replace one document. Unbundled edits use paths as locators and `info.seq` as sibling ordering
-metadata. Multi-document ordering changes retain rollback bytes, while directory moves are
-reversed if metadata persistence fails. Ordering transactions write a hidden recovery directory
-and manifest before mutation and retain them when rollback cannot complete. Folder deletion moves
-the source to an out-of-workspace tombstone before sibling metadata changes, so failed cleanup
-cannot expose partial data in the canonical collection. Every retained source document is checked
-byte-for-byte under the workspace writer lock before structural mutation begins.
-
-Filesystem paths are canonicalized when the workspace opens, so saving through a symlink
-updates its target without replacing the symlink. A stable sidecar advisory lock serializes
-Probe writers across processes; the exact source-byte comparison and atomic replacement both
-happen while that lock is held. Non-cooperating third-party writers cannot be forced to honor
-the advisory lock, so the final compare-to-rename interval remains the smallest portable race
-window.
-
-The repository exposes a prepared request save that captures the retained source baseline and
-supported-field update in memory. Environment-variable set and unset use the same retained-source
-merge, exact-byte conflict check, save lock, and atomic replacement for both bundled
-`config.environments` and unbundled `environments/*.yml` documents. The desktop executes prepared
-saves on GPUI's background executor, then returns the successful source snapshot to the loaded
-repository so later saves use the refreshed conflict baseline. This does not create a second
-persistence path; CLI and desktop use the same implementation. Request and environment writes
-are serialized so a bundled collection file is not saved concurrently with itself.
-
-Desktop dirty state compares each live request with its last loaded or successfully saved snapshot.
-One request save runs at a time, so close and quit protection can safely save several requests
-stored in the same bundled document. Completion acknowledges the captured request snapshot rather than the current
-request; edits made while I/O is running therefore remain dirty. Save failures leave the in-memory
-request unchanged, and destructive tab, workspace, and window closes require an explicit Save,
-Discard, or Cancel decision.
-
-### Filesystem Synchronization
-
-The desktop watches an unbundled collection recursively and watches the containing directory
-of a bundled collection so atomic file replacement does not detach the watch. Notifications are
-debounced and treated only as invalidation hints. Probe reloads and validates the collection
-through `OpenCollectionRepository` on a background executor before changing live state.
-
-Reconciliation is three-way: the repository's last loaded or saved request is the baseline, the
-editor owns a potentially dirty local request, and a fresh repository load supplies the disk
-request. Changes to different supported fields merge automatically. Changes to the same field,
-external deletion of a dirty request, and ambiguous dirty renames require an explicit Use Disk or
-Keep Local decision. Invalid or partially written files leave the last valid workspace open.
-
-Runtime keys are rebuilt after every accepted reload. Tabs and collapsed folders are captured as
-repository selectors and resolved to new keys, with paired filesystem renames and unique unchanged
-content used as rename evidence. A successful Probe save refreshes the repository baseline, so its
-watcher notification reconciles as a no-op instead of appearing as an external conflict.
+Accepted reloads rebuild runtime keys and resolve repository selectors for tabs and
+presentation state. Confident file renames may remap selectors. Successful Probe writes
+refresh the baseline, so their watcher events reconcile as no-ops.
 
 ## OpenCollection Validation
 
@@ -562,74 +391,6 @@ Workspace loading requires the OpenCollection `1.0.0` format marker, collection 
 an explicit `bundled` mode matching the source kind. It also validates environment names and
 the complete inheritance graph, including duplicate names, missing parents, and cycles. This
 validation is shared by `collection validate` and every operation that loads a workspace.
-
-
-## Repository Abstraction
-
-The application should not know that the workspace is represented by
-YAML.
-
-Conceptually:
-
-                  WorkspaceRepository
-                         ▲
-              ┌──────────┴──────────┐
-              │                     │
- OpenCollectionRepository      other repositories
-
-Only OpenCollection is required initially.
-
-
-## HTTP Engine
-
-HTTP execution is shared.
-
-                         HTTP Engine
-                         ▲         ▲
-                         │         │
-                       CLI       GPUI
-
-The engine accepts domain/application request representations rather
-than CLI arguments or GPUI state.
-
-It returns structured response data.
-
-
-## Streaming Protocols
-
-Long-lived protocols require a session/event abstraction.
-
-Conceptually:
-
-WebSocket / SSE / gRPC
-          ↓
-    Protocol Session
-          ↓
-       Event Stream
-       ┌──────────┐
-       ▼          ▼
-      CLI        GPUI
-       │          │
- JSONL/stdin     visual
- terminal        session UI
-
-Terminal interaction must not leak into the protocol implementation.
-
-
-## Responses
-
-Responses are separate from request definitions.
-
-Request metadata
-→ generally resident in desktop memory
-
-Response metadata
-→ cache/history
-
-Response bodies
-→ bounded memory and/or filesystem
-
-Large response bodies must not dictate workspace memory consumption.
 
 
 ## Concurrency
@@ -648,29 +409,3 @@ Slow operations execute outside the GPUI render/event path:
 Completed operations return structured results/events.
 
 Avoid shared mutable global state.
-
-
-## Future MCP Interface
-
-MCP should be another adapter over the application layer.
-
-It should not wrap CLI commands unless there is a compelling reason.
-
-Prefer:
-
-MCP
- ↓
-Application/Core
-
-rather than:
-
-MCP
- ↓
-shell
- ↓
-CLI
- ↓
-Application/Core
-
-This keeps tool semantics structured and avoids unnecessary process and
-text-parsing boundaries.
