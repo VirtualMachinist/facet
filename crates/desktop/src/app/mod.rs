@@ -25,9 +25,9 @@ use gpui_base::{
     ToastStack,
 };
 use probe_core::{
-    AuthenticationKind, AuthenticationValue, Body, Environment, EnvironmentVariable, FileReference,
-    FormField, Header, HttpRequest, MultipartPart, MultipartPartKind, MultipartValue,
-    QueryParameter, RawBodyKind, RequestBody, RequestKey, Variable, VariableValue,
+    AuthenticationKind, AuthenticationValue, Body, Collection, Environment, EnvironmentVariable,
+    FileReference, FormField, Header, HttpRequest, MultipartPart, MultipartPartKind,
+    MultipartValue, QueryParameter, RawBodyKind, RequestBody, RequestKey, Variable, VariableValue,
     VariableValueSet, WorkspaceItemRef, add_path_parameter, ensure_path_parameters_from_url,
     remove_path_parameter_at, rename_path_parameter_at, resolve_environment, resolve_request,
 };
@@ -192,6 +192,41 @@ struct RequestTabTooltip {
     open: bool,
 }
 
+struct PositionedContextMenu<T> {
+    target: T,
+    position: Point<Pixels>,
+}
+
+#[derive(Clone, Copy)]
+enum ImportedCollectionKind {
+    Postman,
+    Yaak,
+}
+
+impl ImportedCollectionKind {
+    const fn source_label(self) -> &'static str {
+        match self {
+            Self::Postman => "Postman",
+            Self::Yaak => "Yaak",
+        }
+    }
+
+    const fn imported_kind(self) -> &'static str {
+        match self {
+            Self::Postman => "collection",
+            Self::Yaak => "workspace",
+        }
+    }
+}
+
+struct CollectionImport {
+    source_name: String,
+    collection: Collection,
+    warning_count: usize,
+    selected_environment: Option<String>,
+    kind: ImportedCollectionKind,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnvironmentDialogErrorResolution {
     ManagerDraftValid,
@@ -250,12 +285,9 @@ pub(crate) struct ProbeApp {
     sidebar_import_trigger_focus: FocusHandle,
     sidebar_import_popup_focus: FocusHandle,
     structure_add_menu_open: bool,
-    tree_context_menu: Option<WorkspaceItemRef>,
-    tree_context_menu_position: Option<Point<Pixels>>,
-    tab_context_menu: Option<RequestKey>,
-    tab_context_menu_position: Option<Point<Pixels>>,
-    environment_manager_context_menu: Option<String>,
-    environment_manager_context_menu_position: Option<Point<Pixels>>,
+    tree_context_menu: Option<PositionedContextMenu<WorkspaceItemRef>>,
+    tab_context_menu: Option<PositionedContextMenu<RequestKey>>,
+    environment_manager_context_menu: Option<PositionedContextMenu<String>>,
     request_tab_tooltip: Option<RequestTabTooltip>,
     request_tab_tooltip_epoch: usize,
     request_tab_tooltip_task: Option<Task<()>>,
@@ -382,11 +414,8 @@ impl ProbeApp {
             sidebar_import_popup_focus,
             structure_add_menu_open: false,
             tree_context_menu: None,
-            tree_context_menu_position: None,
             tab_context_menu: None,
-            tab_context_menu_position: None,
             environment_manager_context_menu: None,
-            environment_manager_context_menu_position: None,
             request_tab_tooltip: None,
             request_tab_tooltip_epoch: 0,
             request_tab_tooltip_task: None,
@@ -853,7 +882,34 @@ impl ProbeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let filename = suggested_collection_filename(&imported.source.name);
+        self.choose_import_destination(
+            CollectionImport {
+                source_name: imported.source.name,
+                collection: imported.collection,
+                warning_count: imported.diagnostics.len(),
+                selected_environment: imported.collection_variables_environment,
+                kind: ImportedCollectionKind::Postman,
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn choose_import_destination(
+        &mut self,
+        import: CollectionImport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let source_label = import.kind.source_label();
+        let imported_kind = import.kind.imported_kind();
+        let filename = suggested_collection_filename(&import.source_name);
+        let CollectionImport {
+            collection,
+            warning_count,
+            selected_environment,
+            ..
+        } = import;
         let receiver = cx.prompt_for_new_path(&self.new_collection_directory(), Some(&filename));
         let view = cx.weak_entity();
         window
@@ -879,15 +935,11 @@ impl ProbeApp {
                         return;
                     }
                 };
-                let warning_count = imported.diagnostics.len();
-                let selected_environment = imported.collection_variables_environment.clone();
                 let result = cx
                     .background_spawn(async move {
-                        let workspace = create_bundled_workspace_from_collection(
-                            &destination,
-                            &imported.collection,
-                        )
-                        .map_err(|error| error.to_string())?;
+                        let workspace =
+                            create_bundled_workspace_from_collection(&destination, &collection)
+                                .map_err(|error| error.to_string())?;
                         let canonical_path = workspace
                             .source_path()
                             .ok_or_else(|| {
@@ -915,7 +967,8 @@ impl ProbeApp {
                                 view.show_toast(
                                     ToastIntent::Warning,
                                     format!(
-                                        "Imported Postman collection with {warning_count} warning(s)."
+                                        "Imported {source_label} {imported_kind} with {} warning(s).",
+                                        warning_count
                                     ),
                                     cx,
                                 );
@@ -924,7 +977,7 @@ impl ProbeApp {
                         Err(error) => {
                             view.show_toast(
                                 ToastIntent::Error,
-                                format!("Could not import Postman data: {error}"),
+                                format!("Could not import {source_label} data: {error}"),
                                 cx,
                             );
                         }
@@ -1003,81 +1056,17 @@ impl ProbeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let filename = suggested_collection_filename(&imported.workspace.name);
-        let receiver = cx.prompt_for_new_path(&self.new_collection_directory(), Some(&filename));
-        let view = cx.weak_entity();
-        window
-            .spawn(cx, async move |cx| {
-                let destination = match receiver.await {
-                    Ok(Ok(Some(path))) => path,
-                    Ok(Ok(None)) | Err(_) => {
-                        let _ = view.update_in(cx, |view, _, cx| {
-                            view.loading = false;
-                            cx.notify();
-                        });
-                        return;
-                    }
-                    Ok(Err(error)) => {
-                        let _ = view.update_in(cx, |view, _, cx| {
-                            view.loading = false;
-                            view.show_toast(
-                                ToastIntent::Error,
-                                format!("Could not open the import destination picker: {error}"),
-                                cx,
-                            );
-                        });
-                        return;
-                    }
-                };
-                let warning_count = imported.diagnostics.len();
-                let result = cx
-                    .background_spawn(async move {
-                        let workspace = create_bundled_workspace_from_collection(
-                            &destination,
-                            &imported.collection,
-                        )
-                        .map_err(|error| error.to_string())?;
-                        let canonical_path = workspace
-                            .source_path()
-                            .ok_or_else(|| {
-                                format!(
-                                    "imported collection at {} has no filesystem path",
-                                    destination.display()
-                                )
-                            })?
-                            .to_owned();
-                        Ok::<_, String>((canonical_path, workspace))
-                    })
-                    .await;
-                let _ = view.update_in(cx, |view, window, cx| {
-                    view.loading = false;
-                    match result {
-                        Ok((path, workspace)) => {
-                            view.set_workspace(path, workspace);
-                            view.start_workspace_watcher(window, cx);
-                            view.persist_session(cx);
-                            if warning_count > 0 {
-                                view.show_toast(
-                                    ToastIntent::Warning,
-                                    format!(
-                                        "Imported Yaak workspace with {warning_count} warning(s)."
-                                    ),
-                                    cx,
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            view.show_toast(
-                                ToastIntent::Error,
-                                format!("Could not import Yaak data: {error}"),
-                                cx,
-                            );
-                        }
-                    }
-                    cx.notify();
-                });
-            })
-            .detach();
+        self.choose_import_destination(
+            CollectionImport {
+                source_name: imported.workspace.name,
+                collection: imported.collection,
+                warning_count: imported.diagnostics.len(),
+                selected_environment: None,
+                kind: ImportedCollectionKind::Yaak,
+            },
+            window,
+            cx,
+        );
     }
 
     fn new_collection_directory(&self) -> PathBuf {
@@ -1603,11 +1592,8 @@ impl ProbeApp {
         self.sidebar_import_menu_open = false;
         self.structure_add_menu_open = false;
         self.tree_context_menu = None;
-        self.tree_context_menu_position = None;
         self.tab_context_menu = None;
-        self.tab_context_menu_position = None;
         self.environment_manager_context_menu = None;
-        self.environment_manager_context_menu_position = None;
     }
 
     fn open_desktop_menu(&mut self, menu: DesktopMenu, cx: &mut Context<Self>) {
@@ -2254,7 +2240,6 @@ impl ProbeApp {
 
     fn discard_environment_manager_dialog(&mut self) {
         self.environment_manager_context_menu = None;
-        self.environment_manager_context_menu_position = None;
         self.environment_manager_close_after_save = false;
         self.environment_manager_dialog = None;
     }
@@ -2282,7 +2267,6 @@ impl ProbeApp {
             return;
         };
         self.environment_manager_context_menu = None;
-        self.environment_manager_context_menu_position = None;
         let Some(disk) = self.loaded_workspace.as_ref().and_then(|loaded| {
             loaded
                 .workspace()
@@ -4152,8 +4136,10 @@ impl ProbeApp {
         if self.structure_task.is_some() {
             return;
         }
-        self.tree_context_menu = Some(item);
-        self.tree_context_menu_position = Some(position);
+        self.tree_context_menu = Some(PositionedContextMenu {
+            target: item,
+            position,
+        });
         self.select_tree_item(item, cx);
     }
 
@@ -4162,7 +4148,6 @@ impl ProbeApp {
             return;
         }
         self.tree_context_menu = None;
-        self.tree_context_menu_position = None;
         cx.notify();
     }
 
@@ -4175,8 +4160,10 @@ impl ProbeApp {
         if !self.shell.tabs().contains(&key) {
             return;
         }
-        self.tab_context_menu = Some(key);
-        self.tab_context_menu_position = Some(position);
+        self.tab_context_menu = Some(PositionedContextMenu {
+            target: key,
+            position,
+        });
         self.request_tab_tooltip = None;
         cx.notify();
     }
@@ -4186,7 +4173,6 @@ impl ProbeApp {
             return;
         }
         self.tab_context_menu = None;
-        self.tab_context_menu_position = None;
         cx.notify();
     }
 
@@ -4199,8 +4185,10 @@ impl ProbeApp {
         if self.environment_manager_dialog.is_none() || self.environment_save_task.is_some() {
             return;
         }
-        self.environment_manager_context_menu = Some(name);
-        self.environment_manager_context_menu_position = Some(position);
+        self.environment_manager_context_menu = Some(PositionedContextMenu {
+            target: name,
+            position,
+        });
         cx.notify();
     }
 
@@ -4209,7 +4197,6 @@ impl ProbeApp {
             return;
         }
         self.environment_manager_context_menu = None;
-        self.environment_manager_context_menu_position = None;
         cx.notify();
     }
 
@@ -4662,7 +4649,7 @@ fn bind_platform_hotkeys(cx: &mut App) {
         ),
     ]);
 
-    #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
         KeyBinding::new("ctrl-o", OpenWorkspace, None),
         KeyBinding::new("ctrl-n", NewCollection, None),
@@ -4673,22 +4660,13 @@ fn bind_platform_hotkeys(cx: &mut App) {
             Some("EnvironmentManagerDialog"),
         ),
         KeyBinding::new("ctrl-w", CloseActiveTab, None),
-        KeyBinding::new("alt-f4", CloseWindow, None),
     ]);
 
+    #[cfg(target_os = "windows")]
+    cx.bind_keys([KeyBinding::new("alt-f4", CloseWindow, None)]);
+
     #[cfg(target_os = "linux")]
-    cx.bind_keys([
-        KeyBinding::new("ctrl-o", OpenWorkspace, None),
-        KeyBinding::new("ctrl-n", NewCollection, None),
-        KeyBinding::new("ctrl-s", SaveRequest, None),
-        KeyBinding::new(
-            "ctrl-s",
-            SubmitEnvironmentManagerDialog,
-            Some("EnvironmentManagerDialog"),
-        ),
-        KeyBinding::new("ctrl-w", CloseActiveTab, None),
-        KeyBinding::new("ctrl-q", QuitApplication, None),
-    ]);
+    cx.bind_keys([KeyBinding::new("ctrl-q", QuitApplication, None)]);
 }
 
 #[cfg(test)]

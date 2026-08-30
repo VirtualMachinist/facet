@@ -1,5 +1,44 @@
 use super::*;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ParameterEditorKind {
+    Path,
+    Query,
+}
+
+impl ParameterEditorKind {
+    const fn is_path(self) -> bool {
+        matches!(self, Self::Path)
+    }
+}
+
+fn response_page_button(
+    theme: Theme,
+    id: &'static str,
+    label: &'static str,
+    disabled: bool,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    Button::new(id)
+        .disabled(disabled)
+        .px(px(theme.metrics.spacing_2))
+        .h(px(theme.metrics.control_height - 8.0))
+        .rounded(px(theme.metrics.radius_small))
+        .border_1()
+        .border_color(theme.colors.borders.standard)
+        .styles(move |styles| {
+            styles.disabled(move |button| {
+                button
+                    .bg(theme.colors.selection.inactive_background)
+                    .border_color(theme.colors.borders.subtle)
+                    .text_color(theme.colors.actions.disabled_foreground)
+            })
+        })
+        .hover(move |button| button.bg(theme.colors.selection.inactive_background))
+        .on_click(on_click)
+        .child(label)
+}
+
 impl ProbeApp {
     fn render_toasts(&self, theme: Theme, cx: &mut Context<Self>) -> gpui::AnyElement {
         if self.toasts.is_empty() {
@@ -103,12 +142,11 @@ impl ProbeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(key) = self.tab_context_menu else {
+        let Some(context_menu) = self.tab_context_menu.as_ref() else {
             return div().into_any_element();
         };
-        let Some(position) = self.tab_context_menu_position else {
-            return div().into_any_element();
-        };
+        let key = context_menu.target;
+        let position = context_menu.position;
         if !self.shell.tabs().contains(&key) {
             return div().into_any_element();
         }
@@ -158,12 +196,11 @@ impl ProbeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(item) = self.tree_context_menu else {
+        let Some(context_menu) = self.tree_context_menu.as_ref() else {
             return div().into_any_element();
         };
-        let Some(position) = self.tree_context_menu_position else {
-            return div().into_any_element();
-        };
+        let item = context_menu.target;
+        let position = context_menu.position;
         let rename_id = match item {
             WorkspaceItemRef::Request(key) => ("tree-context-rename", key.slot()),
             WorkspaceItemRef::Folder(key) => ("tree-context-rename", key.slot()),
@@ -197,7 +234,6 @@ impl ProbeApp {
             move |window, cx| {
                 let _ = rename_view.update(cx, |view, cx| {
                     view.tree_context_menu = None;
-                    view.tree_context_menu_position = None;
                     view.select_tree_item(item, cx);
                     view.open_rename_dialog(window, cx);
                 });
@@ -216,7 +252,6 @@ impl ProbeApp {
                 move |window, cx| {
                     let _ = duplicate_view.update(cx, |view, cx| {
                         view.tree_context_menu = None;
-                        view.tree_context_menu_position = None;
                         view.select_tree_item(item, cx);
                         view.duplicate_selected_request(window, cx);
                     });
@@ -235,7 +270,6 @@ impl ProbeApp {
             move |window, cx| {
                 let _ = delete_view.update(cx, |view, cx| {
                     view.tree_context_menu = None;
-                    view.tree_context_menu_position = None;
                     view.select_tree_item(item, cx);
                     view.request_delete_selected(window, cx);
                 });
@@ -1234,8 +1268,12 @@ impl ProbeApp {
         }
 
         let section = match self.request_editor.section {
-            EditorSection::Query => self.render_query_editor(key, &request, theme, cx),
-            EditorSection::Path => self.render_parameter_editor(key, &request, true, theme, cx),
+            EditorSection::Query => {
+                self.render_parameter_editor(key, &request, ParameterEditorKind::Query, theme, cx)
+            }
+            EditorSection::Path => {
+                self.render_parameter_editor(key, &request, ParameterEditorKind::Path, theme, cx)
+            }
             EditorSection::Headers => self.render_header_editor(key, &request, theme, cx),
             EditorSection::Body => self.render_body_editor(key, &request, theme, cx),
             EditorSection::Authentication => {
@@ -1350,24 +1388,15 @@ impl ProbeApp {
             )
     }
 
-    fn render_query_editor(
-        &self,
-        key: RequestKey,
-        request: &HttpRequest,
-        theme: Theme,
-        cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        self.render_parameter_editor(key, request, false, theme, cx)
-    }
-
     fn render_parameter_editor(
         &self,
         key: RequestKey,
         request: &HttpRequest,
-        path: bool,
+        kind: ParameterEditorKind,
         theme: Theme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let path = kind.is_path();
         let mut rows = div().flex().flex_col().gap(px(theme.metrics.spacing_2));
         let parameters = if path {
             &request.path_parameters
@@ -1381,10 +1410,7 @@ impl ProbeApp {
             let remove_view = cx.weak_entity();
             rows =
                 rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -1552,10 +1578,7 @@ impl ProbeApp {
             let remove_view = cx.weak_entity();
             rows =
                 rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -1793,10 +1816,7 @@ impl ProbeApp {
             let remove_view = cx.weak_entity();
             rows =
                 rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -1948,10 +1968,7 @@ impl ProbeApp {
             let is_file = part.kind == MultipartPartKind::File;
             rows =
                 rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(components::editor_button(
                             theme,
                             ("multipart-kind", index),
@@ -2175,10 +2192,7 @@ impl ProbeApp {
             let browse_view = cx.weak_entity();
             rows =
                 rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(
                             div()
                                 .flex_1()
@@ -2381,10 +2395,7 @@ impl ProbeApp {
                 let remove_name = property_name.clone();
                 let remove_view = cx.weak_entity();
                 editor = editor.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(theme.metrics.spacing_1))
+                    components::editor_key_value_row(theme)
                         .child(div().flex_1().min_w(px(0.0)).child(
                             components::variable_text_input(
                                 theme,
@@ -2819,25 +2830,12 @@ impl ProbeApp {
                             .items_center()
                             .gap(px(theme.metrics.spacing_1))
                             .child(
-                                Button::new("response-page-previous")
-                                    .disabled(!can_previous)
-                                    .px(px(theme.metrics.spacing_2))
-                                    .h(px(theme.metrics.control_height - 8.0))
-                                    .rounded(px(theme.metrics.radius_small))
-                                    .border_1()
-                                    .border_color(theme.colors.borders.standard)
-                                    .styles(move |styles| {
-                                        styles.disabled(move |button| {
-                                            button
-                                                .bg(theme.colors.selection.inactive_background)
-                                                .border_color(theme.colors.borders.subtle)
-                                                .text_color(theme.colors.actions.disabled_foreground)
-                                        })
-                                    })
-                                    .hover(move |button| {
-                                        button.bg(theme.colors.selection.inactive_background)
-                                    })
-                                    .on_click(move |_, _, cx| {
+                                response_page_button(
+                                    theme,
+                                    "response-page-previous",
+                                    "Previous",
+                                    !can_previous,
+                                    move |_, _, cx| {
                                         let _ = previous_view.update(cx, |view, cx| {
                                             view.load_response_page(
                                                 key,
@@ -2845,29 +2843,16 @@ impl ProbeApp {
                                                 cx,
                                             );
                                         });
-                                    })
-                                    .child("Previous"),
+                                    },
+                                ),
                             )
                             .child(
-                                Button::new("response-page-next")
-                                    .disabled(!can_next)
-                                    .px(px(theme.metrics.spacing_2))
-                                    .h(px(theme.metrics.control_height - 8.0))
-                                    .rounded(px(theme.metrics.radius_small))
-                                    .border_1()
-                                    .border_color(theme.colors.borders.standard)
-                                    .styles(move |styles| {
-                                        styles.disabled(move |button| {
-                                            button
-                                                .bg(theme.colors.selection.inactive_background)
-                                                .border_color(theme.colors.borders.subtle)
-                                                .text_color(theme.colors.actions.disabled_foreground)
-                                        })
-                                    })
-                                    .hover(move |button| {
-                                        button.bg(theme.colors.selection.inactive_background)
-                                    })
-                                    .on_click(move |_, _, cx| {
+                                response_page_button(
+                                    theme,
+                                    "response-page-next",
+                                    "Next",
+                                    !can_next,
+                                    move |_, _, cx| {
                                         let _ = next_view.update(cx, |view, cx| {
                                             view.load_response_page(
                                                 key,
@@ -2875,8 +2860,8 @@ impl ProbeApp {
                                                 cx,
                                             );
                                         });
-                                    })
-                                    .child("Next"),
+                                    },
+                                ),
                             ),
                     ),
             );

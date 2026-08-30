@@ -1500,6 +1500,10 @@ pub(crate) fn editor_add_button(
         .child(label.into())
 }
 
+pub(crate) fn editor_key_value_row(theme: Theme) -> gpui::Div {
+    div().flex().items_center().gap(px(theme.metrics.spacing_1))
+}
+
 pub(crate) fn text_tab(
     theme: Theme,
     id: impl Into<ElementId>,

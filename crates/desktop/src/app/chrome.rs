@@ -977,33 +977,17 @@ impl ProbeApp {
         .into_any_element()
     }
 
-    pub(super) fn render_environment_manager_dialog(
-        &self,
+    fn render_environment_manager_sidebar(
         theme: Theme,
-        window: &Window,
+        environments: &[Environment],
+        selected_name: &str,
+        active_environment: Option<&str>,
+        busy: bool,
+        dirty: bool,
         cx: &mut Context<Self>,
-    ) -> gpui::AnyElement {
-        let Some(dialog) = self.environment_manager_dialog.as_ref() else {
-            return div().into_any_element();
-        };
-        let Some(loaded) = self.loaded_workspace.as_ref() else {
-            return div().into_any_element();
-        };
-        let environments = loaded.workspace().environments();
-        let rows = loaded
-            .workspace()
-            .effective_environment_variables(&dialog.draft);
-        let rows_empty = rows.is_empty();
-        let selected_name = dialog.original_name.clone();
-        let busy = self.environment_save_task.is_some();
-        let dirty = environments
-            .iter()
-            .find(|environment| environment.name == dialog.original_name)
-            .is_none_or(|environment| environment != &dialog.draft);
-        let active_environment = self.shell.selected_environment();
+    ) -> gpui::Div {
         let mut selected_background: Hsla = theme.colors.actions.accent.into();
         selected_background.a = 0.12;
-
         let mut environment_list = div()
             .id("environment-manager-list")
             .flex_1()
@@ -1101,7 +1085,7 @@ impl ProbeApp {
         } else {
             "Add environment"
         };
-        let sidebar = div()
+        div()
             .w(px(210.0))
             .h_full()
             .pr(px(theme.metrics.spacing_1))
@@ -1144,7 +1128,37 @@ impl ProbeApp {
                         .disabled(add_disabled),
                     ),
             )
-            .child(environment_list);
+            .child(environment_list)
+    }
+
+    pub(super) fn render_environment_manager_dialog(
+        &self,
+        theme: Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(dialog) = self.environment_manager_dialog.as_ref() else {
+            return div().into_any_element();
+        };
+        let Some(loaded) = self.loaded_workspace.as_ref() else {
+            return div().into_any_element();
+        };
+        let environments = loaded.workspace().environments();
+        let rows = loaded
+            .workspace()
+            .effective_environment_variables(&dialog.draft);
+        let rows_empty = rows.is_empty();
+        let busy = self.environment_save_task.is_some();
+        let dirty = self.environment_manager_is_dirty();
+        let sidebar = Self::render_environment_manager_sidebar(
+            theme,
+            environments,
+            &dialog.original_name,
+            self.shell.selected_environment(),
+            busy,
+            dirty,
+            cx,
+        );
 
         let name_view = cx.weak_entity();
         let name_enter_view = cx.weak_entity();
@@ -1541,12 +1555,11 @@ impl ProbeApp {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let Some(name) = self.environment_manager_context_menu.as_ref() else {
+        let Some(context_menu) = self.environment_manager_context_menu.as_ref() else {
             return div().into_any_element();
         };
-        let Some(position) = self.environment_manager_context_menu_position else {
-            return div().into_any_element();
-        };
+        let name = &context_menu.target;
+        let position = context_menu.position;
         let busy = self.environment_save_task.is_some();
         let delete_name = name.clone();
         let delete_view = cx.weak_entity();

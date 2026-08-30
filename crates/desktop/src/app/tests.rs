@@ -686,17 +686,21 @@ fn http_environment_fixture() -> PathBuf {
         .join("../../tests/fixtures/opencollection/phase5-http.yml")
 }
 
-fn writable_environment_fixture(suffix: &str) -> PathBuf {
+fn writable_fixture(source: PathBuf, prefix: &str, suffix: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let path = std::env::temp_dir().join(format!(
-        "probe-desktop-env-{}-{unique}-{suffix}.yml",
+        "{prefix}-{}-{unique}-{suffix}.yml",
         std::process::id()
     ));
-    fs::copy(environment_fixture(), &path).unwrap();
+    fs::copy(source, &path).unwrap();
     path
+}
+
+fn writable_environment_fixture(suffix: &str) -> PathBuf {
+    writable_fixture(environment_fixture(), "probe-desktop-env", suffix)
 }
 
 fn reconciled_workspace(workspace: probe_opencollection::LoadedWorkspace) -> ReconciledWorkspace {
@@ -744,47 +748,15 @@ fn hover_and_wait(
 }
 
 fn writable_bundled_fixture(suffix: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "probe-desktop-{}-{unique}-{suffix}.yml",
-        std::process::id()
-    ));
-    fs::copy(bundled_fixture(), &path).unwrap();
-    path
+    writable_fixture(bundled_fixture(), "probe-desktop", suffix)
 }
 
 fn writable_large_fixture(suffix: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "probe-desktop-large-{}-{unique}-{suffix}.yml",
-        std::process::id()
-    ));
-    fs::copy(large_fixture(), &path).unwrap();
-    path
+    writable_fixture(large_fixture(), "probe-desktop-large", suffix)
 }
 
 fn writable_structure_fixture(suffix: &str) -> PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "probe-desktop-structure-{}-{unique}-{suffix}.yml",
-        std::process::id()
-    ));
-    fs::copy(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/opencollection/phase16-bundled.yml"),
-        &path,
-    )
-    .unwrap();
-    path
+    writable_fixture(nested_fixture(), "probe-desktop-structure", suffix)
 }
 
 #[gpui::test]
@@ -4402,7 +4374,9 @@ fn request_tab_context_menu_closes_other_tabs(cx: &mut TestAppContext) {
         .expect("test window should remain open");
     cx.run_until_parked();
     let menu_target = window
-        .update(cx, |view, _, _| view.tab_context_menu)
+        .update(cx, |view, _, _| {
+            view.tab_context_menu.as_ref().map(|menu| menu.target)
+        })
         .expect("test window should remain open");
     assert_eq!(menu_target, Some(second));
 
