@@ -92,6 +92,13 @@ pub(crate) fn runtime_fixture(server_url: &str) -> PathBuf {
     path
 }
 
+pub(crate) fn runtime_variables_fixture(server_url: &str) -> PathBuf {
+    let source = fs::read_to_string(fixture("phase-runtime-variables.yml")).unwrap();
+    let path = temporary_path("runtime-variables.yml");
+    fs::write(&path, source.replace("__SERVER_URL__", server_url)).unwrap();
+    path
+}
+
 pub(crate) fn temporary_path(suffix: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -12,7 +12,7 @@ probe collection import yaak <source> <destination> [--workspace <id>] [--allow-
 probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--json]
-probe request run <path> <selector> [--environment <name>] [--output <file>] [--json]
+probe request run <path> <selector> [--environment <name>] [--var <name=value>]... [--output <file>] [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--json]
 probe request rename <path> <selector> --name <name> [--json]
@@ -69,6 +69,11 @@ unresolved `{{variable}}` expressions. That flag is not a write operation; use
 engine. Pressing Ctrl-C cancels the active execution. `--output <file>` writes the raw
 response body to the specified path using bounded streaming; response metadata remains on
 stdout. The destination is replaced only after the complete response has been written.
+
+Repeatable `--var <name=value>` arguments provide invocation-only variables for `request run`.
+They override selected and inherited environment values before dependent variables are
+interpolated, and also work without `--environment`. If a name is repeated, the last value
+wins. Runtime variables are never written to the environment or collection source.
 
 Use `-` instead of `<path>` to read a bundled OpenCollection YAML document from
 stdin. Stdin does not represent an unbundled directory, and requests loaded this way

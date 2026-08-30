@@ -332,6 +332,90 @@ fn executes_request_as_deterministic_json() {
 }
 
 #[test]
+fn run_uses_runtime_variables_without_an_environment_and_does_not_persist_them() {
+    let (server_url, server) = serve_once(Vec::new(), "text/plain");
+    let workspace = runtime_variables_fixture(&server_url);
+    let before = fs::read(&workspace).unwrap();
+    let output = probe()
+        .args(["request", "run"])
+        .arg(&workspace)
+        .arg("items/0")
+        .args(["--var", &format!("serverUrl={server_url}")])
+        .args(["--var", "userId=123"])
+        .args(["--var", "token=abc=def==", "--json"])
+        .output()
+        .expect("run command should accept runtime-only variables");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty());
+    let captured = server.join().unwrap();
+    assert!(captured.head.starts_with("GET /users/123 HTTP/1.1\r\n"));
+    assert!(
+        captured
+            .head
+            .contains("authorization: Bearer abc=def==\r\n")
+    );
+    assert_eq!(fs::read(&workspace).unwrap(), before);
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn run_runtime_variables_override_a_selected_environment_and_last_value_wins() {
+    let (server_url, server) = serve_once(Vec::new(), "text/plain");
+    let workspace = runtime_variables_fixture(&server_url);
+    let before = fs::read(&workspace).unwrap();
+    let output = probe()
+        .args(["request", "run"])
+        .arg(&workspace)
+        .arg("items/0")
+        .args([
+            "--environment",
+            "local",
+            "--var",
+            "userId=123",
+            "--var",
+            "userId=456",
+            "--var",
+            "token=override",
+            "--json",
+        ])
+        .output()
+        .expect("run command should apply runtime overrides");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let captured = server.join().unwrap();
+    assert!(captured.head.starts_with("GET /users/456 HTTP/1.1\r\n"));
+    assert!(captured.head.contains("authorization: Bearer override\r\n"));
+    assert_eq!(fs::read(&workspace).unwrap(), before);
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn run_rejects_malformed_runtime_variables_without_exposing_the_value() {
+    for value in ["missing-separator", "=secret-value"] {
+        let output = probe()
+            .args(["request", "run"])
+            .arg(fixture("phase-runtime-variables.yml"))
+            .args(["items/0", "--var", value, "--json"])
+            .output()
+            .expect("run command should reject malformed runtime variables");
+
+        assert_eq!(output.status.code(), Some(2));
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["error"]["category"], "invalid_arguments");
+        assert!(!json["error"]["message"].as_str().unwrap().contains(value));
+    }
+}
+
+#[test]
 fn writes_response_body_to_an_explicit_file() {
     let response_body = vec![0, 159, 146, 150];
     let (server_url, server) = serve_once(response_body.clone(), "application/octet-stream");

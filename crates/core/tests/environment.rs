@@ -5,7 +5,7 @@ use probe_core::{
     EnvironmentResolutionError, EnvironmentVariable, FormField, Header, HttpRequest, MultipartPart,
     MultipartPartKind, MultipartValue, QueryParameter, RawBody, RawBodyKind, RequestBody,
     SecretVariable, Variable, VariableValue, VariableValueSet, VariableValueVariant,
-    resolve_environment, resolve_request,
+    resolve_environment, resolve_environment_with_overrides, resolve_request,
 };
 
 fn variable(name: &str, value: &str) -> EnvironmentVariable {
@@ -88,6 +88,89 @@ fn resolves_inheritance_overrides_variants_and_nested_values() {
             .interpolate("{{ baseUrl }}/{{region}}/users")
             .unwrap(),
         "https://dev.example.com/au/users"
+    );
+}
+
+#[test]
+fn runtime_variables_override_selected_and_inherited_values_before_resolution() {
+    let environments = vec![
+        environment(
+            "base",
+            None,
+            vec![
+                variable("baseUrl", "https://api.example.com"),
+                variable("usersUrl", "{{baseUrl}}/users"),
+                variable("region", "au"),
+            ],
+        ),
+        environment(
+            "development",
+            Some("base"),
+            vec![variable("baseUrl", "https://dev.example.com")],
+        ),
+    ];
+
+    let resolved = resolve_environment_with_overrides(
+        &environments,
+        Some("development"),
+        &[
+            (
+                "baseUrl".to_owned(),
+                "https://staging.example.com".to_owned(),
+            ),
+            ("region".to_owned(), "us".to_owned()),
+            ("runtimeOnly".to_owned(), "present".to_owned()),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolved.variable("baseUrl"),
+        Some("https://staging.example.com")
+    );
+    assert_eq!(resolved.variable("region"), Some("us"));
+    assert_eq!(resolved.variable("runtimeOnly"), Some("present"));
+    assert_eq!(
+        resolved.variable("usersUrl"),
+        Some("https://staging.example.com/users")
+    );
+}
+
+#[test]
+fn runtime_only_variables_resolve_without_a_selected_environment() {
+    let resolved =
+        resolve_environment_with_overrides(&[], None, &[("userId".to_owned(), "123".to_owned())])
+            .unwrap();
+
+    assert_eq!(resolved.name(), "");
+    assert_eq!(resolved.variable("userId"), Some("123"));
+    assert_eq!(
+        resolved.interpolate("/users/{{userId}}").unwrap(),
+        "/users/123"
+    );
+}
+
+#[test]
+fn duplicate_runtime_variables_use_the_last_value() {
+    let resolved = resolve_environment_with_overrides(
+        &[],
+        None,
+        &[
+            ("userId".to_owned(), "123".to_owned()),
+            ("userId".to_owned(), "456".to_owned()),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(resolved.variable("userId"), Some("456"));
+}
+
+#[test]
+fn runtime_variables_reject_an_empty_name() {
+    assert_eq!(
+        resolve_environment_with_overrides(&[], None, &[(String::new(), "value".to_owned())])
+            .unwrap_err(),
+        EnvironmentResolutionError::InvalidVariableName
     );
 }
 

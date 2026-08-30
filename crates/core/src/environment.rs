@@ -15,7 +15,8 @@ pub struct ResolvedEnvironment {
 }
 
 impl ResolvedEnvironment {
-    /// Returns the selected environment name.
+    /// Returns the selected environment name, or an empty string when only runtime
+    /// overrides were resolved.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -313,7 +314,31 @@ pub fn resolve_environment(
     environments: &[Environment],
     selected: &str,
 ) -> Result<ResolvedEnvironment, EnvironmentResolutionError> {
-    let raw = raw_variables(environments, selected)?;
+    resolve_environment_with_overrides(environments, Some(selected), &[])
+}
+
+/// Resolves an optional selected environment after applying invocation-only overrides.
+///
+/// Overrides are applied after inheritance and before variable interpolation. When a name
+/// occurs more than once, the last value wins. Passing `None` for `selected` resolves only
+/// the supplied runtime variables without selecting or modifying a persisted environment.
+pub fn resolve_environment_with_overrides(
+    environments: &[Environment],
+    selected: Option<&str>,
+    overrides: &[(String, String)],
+) -> Result<ResolvedEnvironment, EnvironmentResolutionError> {
+    let mut raw = if let Some(selected) = selected {
+        raw_variables(environments, selected)?
+    } else {
+        EnvironmentIndex::new(environments)?;
+        BTreeMap::new()
+    };
+    for (name, value) in overrides {
+        if name.is_empty() {
+            return Err(EnvironmentResolutionError::InvalidVariableName);
+        }
+        raw.insert(name.clone(), RawVariable::Value(value.clone()));
+    }
 
     let mut variables = BTreeMap::new();
     let mut resolving = Vec::new();
@@ -328,7 +353,7 @@ pub fn resolve_environment(
         .filter_map(|(name, value)| matches!(value, RawVariable::Secret).then_some(name.clone()))
         .collect();
     Ok(ResolvedEnvironment {
-        name: selected.to_owned(),
+        name: selected.unwrap_or_default().to_owned(),
         variables,
         secrets_without_values,
     })

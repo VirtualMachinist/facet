@@ -1,0 +1,25 @@
+opencollection: 1.0.0
+info:
+  name: Runtime variable fixture
+bundled: true
+config:
+  environments:
+    - name: local
+      variables:
+        - name: serverUrl
+          value: __SERVER_URL__
+        - name: userId
+          value: persisted
+        - name: token
+          value: persisted-token
+items:
+  - info:
+      name: Runtime variable request
+      type: http
+      seq: 1
+    http:
+      method: GET
+      url: "{{serverUrl}}/users/{{userId}}"
+      auth:
+        type: bearer
+        token: "{{token}}"

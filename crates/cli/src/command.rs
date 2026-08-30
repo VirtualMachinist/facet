@@ -16,6 +16,7 @@ const VALUE: u16 = 1 << 7;
 const EXTENDS: u16 = 1 << 8;
 const WORKSPACE: u16 = 1 << 9;
 const ALLOW_PARTIAL: u16 = 1 << 10;
+const VAR: u16 = 1 << 11;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -55,6 +56,7 @@ pub(crate) enum Command {
         input: WorkspaceInput,
         selector: String,
         environment: Option<String>,
+        variables: Vec<(String, String)>,
         output: Option<PathBuf>,
     },
     Set {
@@ -104,6 +106,7 @@ struct Options {
     extends: Option<String>,
     workspace: Option<String>,
     allow_partial: bool,
+    variables: Vec<(String, String)>,
 }
 
 impl Options {
@@ -119,6 +122,7 @@ impl Options {
             | option_bit(self.extends.is_some(), EXTENDS)
             | option_bit(self.workspace.is_some(), WORKSPACE)
             | option_bit(self.allow_partial, ALLOW_PARTIAL)
+            | option_bit(!self.variables.is_empty(), VAR)
     }
 
     fn allow(&self, allowed: u16) -> Result<(), CliError> {
@@ -196,11 +200,12 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             })
         }
         [group, action, path, selector] if group == "request" && action == "run" => {
-            options.allow(ENVIRONMENT | OUTPUT)?;
+            options.allow(ENVIRONMENT | OUTPUT | VAR)?;
             Ok(Command::Run {
                 input: input(path),
                 selector: selector.clone(),
                 environment: options.environment,
+                variables: options.variables,
                 output: options.output,
             })
         }
@@ -399,7 +404,31 @@ fn extract_options(args: &mut Vec<String>) -> Result<Options, CliError> {
         extends: extract_string_option(args, "--extends")?,
         workspace: extract_string_option(args, "--workspace")?,
         allow_partial: extract_flag(args, "--allow-partial")?,
+        variables: extract_variables(args)?,
     })
+}
+
+fn extract_variables(args: &mut Vec<String>) -> Result<Vec<(String, String)>, CliError> {
+    let mut variables = Vec::new();
+    while let Some(position) = args.iter().position(|argument| argument == "--var") {
+        if position + 1 >= args.len() {
+            return Err(invalid_variable());
+        }
+        let argument = args.remove(position + 1);
+        args.remove(position);
+        let Some((name, value)) = argument.split_once('=') else {
+            return Err(invalid_variable());
+        };
+        if name.is_empty() {
+            return Err(invalid_variable());
+        }
+        variables.push((name.to_owned(), value.to_owned()));
+    }
+    Ok(variables)
+}
+
+fn invalid_variable() -> CliError {
+    CliError::invalid_arguments("--var requires NAME=VALUE with a non-empty name")
 }
 
 fn extract_flag(args: &mut Vec<String>, option: &'static str) -> Result<bool, CliError> {

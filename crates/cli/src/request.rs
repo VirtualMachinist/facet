@@ -1,6 +1,6 @@
 use std::{borrow::Cow, io::Read, path::PathBuf};
 
-use probe_core::{HttpRequest, RequestUpdate, resolve_environment, resolve_request};
+use probe_core::{HttpRequest, RequestUpdate, resolve_environment_with_overrides, resolve_request};
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use serde_json::json;
 
@@ -45,7 +45,7 @@ pub(crate) fn get(
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(&loaded, selector, environment)?;
+    let request = selected_request(&loaded, selector, environment, &[])?;
     Ok(CommandOutput {
         human: request_human(selector, environment, &request),
         json: request_json(selector, environment, &request),
@@ -82,11 +82,12 @@ pub(crate) fn run(
     input: &WorkspaceInput,
     selector: &str,
     environment: Option<&str>,
+    variables: &[(String, String)],
     output: Option<&PathBuf>,
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(&loaded, selector, environment)?;
+    let request = selected_request(&loaded, selector, environment, variables)?;
     let options = ExecutionOptions {
         base_directory: input.base_directory(),
         ..ExecutionOptions::default()
@@ -116,14 +117,16 @@ fn selected_request<'a>(
     loaded: &'a probe_opencollection::LoadedWorkspace,
     selector: &str,
     environment: Option<&str>,
+    variables: &[(String, String)],
 ) -> Result<Cow<'a, HttpRequest>, CliError> {
     let key = loaded
         .request_key(selector)
         .ok_or_else(|| CliError::request_not_found(selector))?;
-    if let Some(environment) = environment {
+    if environment.is_some() || !variables.is_empty() {
         let workspace = loaded.workspace();
-        let environment = resolve_environment(workspace.environments(), environment)
-            .map_err(CliError::configuration)?;
+        let environment =
+            resolve_environment_with_overrides(workspace.environments(), environment, variables)
+                .map_err(CliError::configuration)?;
         let request = workspace
             .request(key)
             .expect("repository request key must resolve");

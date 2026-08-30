@@ -21,7 +21,7 @@ pub use collection::{
 };
 pub use environment::{
     EffectiveEnvironmentVariable, EnvironmentResolutionError, ResolvedEnvironment,
-    resolve_environment, validate_environments,
+    resolve_environment, resolve_environment_with_overrides, validate_environments,
 };
 pub use environment_edit::{
     create_environment, delete_environment, effective_environment_variables, replace_environment,
