@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
 
-use probe_core::{ImportDiagnostic, ImportDiagnosticSeverity};
+use probe_core::ImportDiagnostic;
+pub(super) use probe_core::{
+    lossy_import_diagnostic as lossy, nonempty_string as nonempty,
+    warning_import_diagnostic as warning,
+};
 use serde_json::Value;
 
 pub(super) fn convert_string(
@@ -147,72 +151,4 @@ pub(super) fn value_string(value: &Value) -> String {
             serde_json::to_string(value).expect("JSON values must serialize")
         }
     }
-}
-
-pub(super) fn nonempty(value: &str) -> Option<String> {
-    (!value.trim().is_empty()).then(|| value.to_owned())
-}
-
-pub(super) fn warning(
-    code: &'static str,
-    resource_type: &str,
-    resource_id: Option<&str>,
-    field: Option<&str>,
-    message: &str,
-) -> ImportDiagnostic {
-    diagnostic(
-        code,
-        ImportDiagnosticSeverity::Warning,
-        resource_type,
-        resource_id,
-        field,
-        message,
-    )
-}
-
-pub(super) fn lossy(
-    code: &'static str,
-    resource_type: &str,
-    resource_id: Option<&str>,
-    field: Option<&str>,
-    message: &str,
-) -> ImportDiagnostic {
-    diagnostic(
-        code,
-        ImportDiagnosticSeverity::Lossy,
-        resource_type,
-        resource_id,
-        field,
-        message,
-    )
-}
-
-fn diagnostic(
-    code: &'static str,
-    severity: ImportDiagnosticSeverity,
-    resource_type: &str,
-    resource_id: Option<&str>,
-    field: Option<&str>,
-    message: &str,
-) -> ImportDiagnostic {
-    ImportDiagnostic {
-        code,
-        severity,
-        resource_type: resource_type.to_owned(),
-        resource_id: resource_id.map(str::to_owned),
-        field: field.map(str::to_owned),
-        message: message.to_owned(),
-    }
-}
-
-pub(super) fn sort(diagnostics: &mut [ImportDiagnostic]) {
-    diagnostics.sort_by(|left, right| {
-        left.severity
-            .cmp(&right.severity)
-            .then_with(|| left.resource_type.cmp(&right.resource_type))
-            .then_with(|| left.resource_id.cmp(&right.resource_id))
-            .then_with(|| left.field.cmp(&right.field))
-            .then_with(|| left.code.cmp(right.code))
-            .then_with(|| left.message.cmp(&right.message))
-    });
 }

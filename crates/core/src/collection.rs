@@ -50,6 +50,113 @@ pub struct ImportDiagnostic {
     pub message: String,
 }
 
+/// Builds a portable-import warning diagnostic.
+#[must_use]
+pub fn warning_import_diagnostic(
+    code: &'static str,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    field: Option<&str>,
+    message: &str,
+) -> ImportDiagnostic {
+    import_diagnostic(
+        code,
+        ImportDiagnosticSeverity::Warning,
+        resource_type,
+        resource_id,
+        field,
+        message,
+    )
+}
+
+/// Builds a portable-import diagnostic for data that cannot be retained losslessly.
+#[must_use]
+pub fn lossy_import_diagnostic(
+    code: &'static str,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    field: Option<&str>,
+    message: &str,
+) -> ImportDiagnostic {
+    import_diagnostic(
+        code,
+        ImportDiagnosticSeverity::Lossy,
+        resource_type,
+        resource_id,
+        field,
+        message,
+    )
+}
+
+fn import_diagnostic(
+    code: &'static str,
+    severity: ImportDiagnosticSeverity,
+    resource_type: &str,
+    resource_id: Option<&str>,
+    field: Option<&str>,
+    message: &str,
+) -> ImportDiagnostic {
+    ImportDiagnostic {
+        code,
+        severity,
+        resource_type: resource_type.to_owned(),
+        resource_id: resource_id.map(str::to_owned),
+        field: field.map(str::to_owned),
+        message: message.to_owned(),
+    }
+}
+
+/// Sorts and deduplicates portable-import diagnostics into their canonical order.
+pub fn sort_import_diagnostics(diagnostics: &mut Vec<ImportDiagnostic>) {
+    diagnostics.sort_by(|left, right| {
+        left.severity
+            .cmp(&right.severity)
+            .then_with(|| left.resource_type.cmp(&right.resource_type))
+            .then_with(|| left.resource_id.cmp(&right.resource_id))
+            .then_with(|| left.field.cmp(&right.field))
+            .then_with(|| left.code.cmp(right.code))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    diagnostics.dedup();
+}
+
+/// Counts diagnostics that require explicit partial-import permission.
+#[must_use]
+pub fn lossy_import_diagnostic_count(diagnostics: &[ImportDiagnostic]) -> usize {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy)
+        .count()
+}
+
+/// Returns an owned string unless its value is empty or whitespace-only.
+#[must_use]
+pub fn nonempty_string(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then(|| value.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ImportDiagnosticSeverity, lossy_import_diagnostic, sort_import_diagnostics,
+        warning_import_diagnostic,
+    };
+
+    #[test]
+    fn import_diagnostics_have_one_canonical_order_and_no_duplicates() {
+        let warning =
+            warning_import_diagnostic("warning", "z-resource", Some("id"), None, "warning");
+        let lossy = lossy_import_diagnostic("lossy", "a-resource", Some("id"), None, "lossy");
+        let mut diagnostics = vec![lossy, warning.clone(), warning];
+
+        sort_import_diagnostics(&mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(diagnostics[0].severity, ImportDiagnosticSeverity::Warning);
+        assert_eq!(diagnostics[1].severity, ImportDiagnosticSeverity::Lossy);
+    }
+}
+
 /// Collection-level metadata.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CollectionMetadata {

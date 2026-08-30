@@ -9,6 +9,7 @@ use probe_core::{
     CollectionMetadata, Environment, EnvironmentVariable, FileReference, Folder, FormField, Header,
     HttpRequest, ItemMetadata, MultipartPart, MultipartPartKind, MultipartValue, QueryParameter,
     RawBody, RawBodyKind, RequestBody, RequestSettings, Variable, VariableValue, VariableValueSet,
+    lossy_import_diagnostic_count, sort_import_diagnostics,
 };
 use serde_json::Value;
 
@@ -81,10 +82,8 @@ pub(super) fn convert_preview(
             ));
         }
     }
-    sort_diagnostics(&mut diagnostics);
-    let requires_partial = diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy);
+    sort_import_diagnostics(&mut diagnostics);
+    let requires_partial = lossy_import_diagnostic_count(&diagnostics) > 0;
     if requires_partial && !allow_partial {
         return Err(YaakImportError::Unsupported(diagnostics));
     }
@@ -266,8 +265,7 @@ mod request;
 
 pub(super) use diagnostics::diagnose_extra_fields;
 use diagnostics::{
-    convert_templates, diagnose_folder, diagnose_workspace, lossy, nonempty, sort_diagnostics,
-    warning,
+    convert_templates, diagnose_folder, diagnose_workspace, lossy, nonempty, warning,
 };
 use request::convert_request;
 

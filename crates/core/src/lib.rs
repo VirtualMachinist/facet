@@ -17,7 +17,8 @@ mod workspace;
 
 pub use collection::{
     Author, Collection, CollectionItem, CollectionMetadata, Folder, ImportDiagnostic,
-    ImportDiagnosticSeverity, ItemMetadata,
+    ImportDiagnosticSeverity, ItemMetadata, lossy_import_diagnostic, lossy_import_diagnostic_count,
+    nonempty_string, sort_import_diagnostics, warning_import_diagnostic,
 };
 pub use environment::{
     EffectiveEnvironmentVariable, EnvironmentResolutionError, ResolvedEnvironment,

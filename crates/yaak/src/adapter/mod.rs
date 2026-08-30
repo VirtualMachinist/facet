@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use probe_core::{Collection, ImportDiagnostic, ImportDiagnosticSeverity};
+use probe_core::{Collection, ImportDiagnostic, lossy_import_diagnostic_count};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -138,10 +138,7 @@ impl fmt::Display for YaakImportError {
             Self::Unsupported(diagnostics) => write!(
                 formatter,
                 "Yaak workspace requires partial import because {} item(s) cannot be represented losslessly",
-                diagnostics
-                    .iter()
-                    .filter(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy)
-                    .count()
+                lossy_import_diagnostic_count(diagnostics)
             ),
         }
     }

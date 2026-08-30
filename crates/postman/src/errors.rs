@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, path::PathBuf};
 
-use probe_core::{ImportDiagnostic, ImportDiagnosticSeverity};
+use probe_core::{ImportDiagnostic, lossy_import_diagnostic_count};
 
 /// Failure to inspect or convert a Postman collection.
 #[derive(Debug)]
@@ -39,10 +39,7 @@ impl fmt::Display for PostmanImportError {
             Self::Unsupported(diagnostics) => write!(
                 formatter,
                 "Postman collection requires partial import because {} item(s) cannot be represented losslessly",
-                diagnostics
-                    .iter()
-                    .filter(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy)
-                    .count()
+                lossy_import_diagnostic_count(diagnostics)
             ),
         }
     }

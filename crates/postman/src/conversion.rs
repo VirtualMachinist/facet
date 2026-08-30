@@ -5,7 +5,7 @@ mod variables;
 
 use probe_core::{
     Collection, CollectionItem, CollectionMetadata, Folder, Header, HttpRequest, ImportDiagnostic,
-    ImportDiagnosticSeverity, ItemMetadata, RequestSettings,
+    ItemMetadata, RequestSettings, lossy_import_diagnostic_count, sort_import_diagnostics,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -21,8 +21,7 @@ use crate::{
         convert_string, description_text, events as diagnose_events,
         extra_fields as diagnose_extra_fields, lossy,
         meaningful_value as diagnose_meaningful_value, nonempty,
-        nonempty_description as diagnose_nonempty_description, sort as sort_diagnostics,
-        value_string, version_text,
+        nonempty_description as diagnose_nonempty_description, value_string, version_text,
     },
     schema::{PostmanItem, PostmanParameter, PostmanRequest},
 };
@@ -72,10 +71,8 @@ pub(super) fn convert_preview(
         environments,
     };
 
-    sort_diagnostics(&mut diagnostics);
-    let partial = diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == ImportDiagnosticSeverity::Lossy);
+    sort_import_diagnostics(&mut diagnostics);
+    let partial = lossy_import_diagnostic_count(&diagnostics) > 0;
     if partial && !allow_partial {
         return Err(PostmanImportError::Unsupported(diagnostics));
     }
