@@ -12,8 +12,110 @@ pub(super) enum ParameterEditorKind {
 }
 
 impl ParameterEditorKind {
-    pub(super) const fn is_path(self) -> bool {
-        matches!(self, Self::Path)
+    fn parameters(self, request: &HttpRequest) -> &[QueryParameter] {
+        match self {
+            Self::Path => &request.path_parameters,
+            Self::Query => &request.query_parameters,
+        }
+    }
+
+    fn parameter_mut(self, request: &mut HttpRequest, index: usize) -> Option<&mut QueryParameter> {
+        match self {
+            Self::Path => request.path_parameters.get_mut(index),
+            Self::Query => request.query_parameters.get_mut(index),
+        }
+    }
+
+    fn rename(self, request: &mut HttpRequest, index: usize, name: &str) {
+        match self {
+            Self::Path => {
+                rename_path_parameter_at(request, index, name);
+            }
+            Self::Query => {
+                if let Some(parameter) = request.query_parameters.get_mut(index) {
+                    parameter.name = name.to_owned();
+                }
+            }
+        }
+    }
+
+    fn remove(self, request: &mut HttpRequest, index: usize) {
+        match self {
+            Self::Path => {
+                remove_path_parameter_at(request, index);
+            }
+            Self::Query if index < request.query_parameters.len() => {
+                request.query_parameters.remove(index);
+            }
+            Self::Query => {}
+        }
+    }
+
+    fn add(self, request: &mut HttpRequest) {
+        match self {
+            Self::Path => add_path_parameter(request),
+            Self::Query => request.query_parameters.push(QueryParameter {
+                name: String::new(),
+                value: String::new(),
+                disabled: false,
+            }),
+        }
+    }
+
+    const fn name_id(self) -> &'static str {
+        match self {
+            Self::Path => "path-name",
+            Self::Query => "query-name",
+        }
+    }
+
+    const fn value_id(self) -> &'static str {
+        match self {
+            Self::Path => "path-value",
+            Self::Query => "query-value",
+        }
+    }
+
+    const fn enabled_id(self) -> &'static str {
+        match self {
+            Self::Path => "path-enabled",
+            Self::Query => "query-enabled",
+        }
+    }
+
+    const fn remove_id(self) -> &'static str {
+        match self {
+            Self::Path => "remove-path",
+            Self::Query => "remove-query",
+        }
+    }
+
+    const fn add_id(self) -> &'static str {
+        match self {
+            Self::Path => "add-path-parameter",
+            Self::Query => "add-query-parameter",
+        }
+    }
+
+    const fn enable_label(self) -> &'static str {
+        match self {
+            Self::Path => "Enable path parameter",
+            Self::Query => "Enable query parameter",
+        }
+    }
+
+    const fn remove_label(self) -> &'static str {
+        match self {
+            Self::Path => "Remove path parameter",
+            Self::Query => "Remove query parameter",
+        }
+    }
+
+    const fn add_label(self) -> &'static str {
+        match self {
+            Self::Path => "Add path parameter",
+            Self::Query => "Add query parameter",
+        }
     }
 }
 

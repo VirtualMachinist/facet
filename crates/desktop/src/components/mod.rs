@@ -50,12 +50,7 @@ pub(crate) use editor::{
     response_inspector_input, single_line,
 };
 #[cfg(test)]
-use editor::{
-    ProbeEditor, VariableHighlightElement, body_text_highlights, editor_value_needs_refresh,
-    input_text_scroll_offset, normalize_search_char_bounds, search_fallback_char_size,
-    search_match_bounds, search_match_char_ranges, variable_highlight_runs, variable_ranges,
-    variable_span_layout, variable_tooltip_presentation,
-};
+use editor::{ProbeEditor, editor_value_needs_refresh};
 use editor::{
     VariableTooltipPresentation, editor_paint_style, input_variable_ranges, variable_input_overlay,
 };
