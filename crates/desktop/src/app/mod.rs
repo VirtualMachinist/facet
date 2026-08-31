@@ -665,7 +665,7 @@ fn open_probe_window(cx: &mut App) {
                 title: None,
                 appears_transparent: cfg!(any(target_os = "macos", target_os = "windows")),
                 traffic_light_position: if cfg!(target_os = "macos") {
-                    Some(point(px(9.0), px(9.0)))
+                    Some(point(px(9.0), px(11.0)))
                 } else {
                     None
                 },

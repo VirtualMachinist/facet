@@ -476,14 +476,16 @@ impl ProbeApp {
             )
             .content(move |_, _, _| popup);
 
+        let titlebar_padding = theme.metrics.spacing_1;
         div()
-            .h(px(theme.metrics.tab_bar_height))
+            .h(px(theme.metrics.control_height + titlebar_padding * 2.0))
             .w_full()
             .pl(px(if cfg!(target_os = "macos") {
                 80.0
             } else {
                 theme.metrics.spacing_3
             }))
+            .py(px(titlebar_padding))
             .flex_none()
             .flex()
             .items_center()
