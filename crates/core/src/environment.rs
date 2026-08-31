@@ -309,6 +309,50 @@ pub(crate) enum RawVariable {
     Secret,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum EffectiveVariableDeclaration {
+    Plain,
+    Secret,
+    Disabled,
+}
+
+pub(crate) fn effective_variable_declarations(
+    environments: &[Environment],
+    selected: Option<&str>,
+) -> Result<BTreeMap<String, EffectiveVariableDeclaration>, EnvironmentResolutionError> {
+    let Some(selected) = selected else {
+        return Ok(BTreeMap::new());
+    };
+    let index = EnvironmentIndex::new(environments)?;
+    let mut declarations = BTreeMap::new();
+    for environment in index.inheritance_chain(selected)? {
+        for variable in &environment.variables {
+            let (name, declaration) = match variable {
+                EnvironmentVariable::Plain(variable) => (
+                    variable.name.as_ref(),
+                    if variable.disabled {
+                        EffectiveVariableDeclaration::Disabled
+                    } else {
+                        EffectiveVariableDeclaration::Plain
+                    },
+                ),
+                EnvironmentVariable::Secret(variable) => (
+                    variable.name.as_ref(),
+                    if variable.disabled {
+                        EffectiveVariableDeclaration::Disabled
+                    } else {
+                        EffectiveVariableDeclaration::Secret
+                    },
+                ),
+            };
+            if let Some(name) = name {
+                declarations.insert(name.clone(), declaration);
+            }
+        }
+    }
+    Ok(declarations)
+}
+
 /// Selects an environment, applies its inheritance chain, and resolves variable values.
 pub fn resolve_environment(
     environments: &[Environment],
@@ -466,7 +510,10 @@ fn resolve_variable(
     Ok(value)
 }
 
-fn interpolate<F>(input: &str, mut lookup: F) -> Result<String, EnvironmentResolutionError>
+pub(crate) fn interpolate<F>(
+    input: &str,
+    mut lookup: F,
+) -> Result<String, EnvironmentResolutionError>
 where
     F: FnMut(&str) -> Result<String, EnvironmentResolutionError>,
 {

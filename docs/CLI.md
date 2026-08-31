@@ -12,6 +12,7 @@ probe collection import yaak <source> <destination> [--workspace <id>] [--allow-
 probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--json]
+probe request variables <path> <selector> [--environment <name>] [--json]
 probe request run <path> <selector> [--environment <name>] [--var <name=value>]... [--output <file>] [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--json]
@@ -64,6 +65,12 @@ applies parent environments from `extends`, and interpolates variables in suppor
 request fields. Without it, `request get` returns the request as stored, including
 unresolved `{{variable}}` expressions. That flag is not a write operation; use
 `environment set` and `environment unset` to persist variable values.
+
+`request variables` reports the interpolation variables referenced by a request and
+their request locations. With `--environment`, it also reports whether each variable
+is defined by the effective inherited environment and whether its declaration is a
+secret. It never resolves values, reads secrets, accepts runtime `--var` values, or
+executes the request.
 
 `request run` resolves the request and executes it through the shared asynchronous HTTP
 engine. Pressing Ctrl-C cancels the active execution. `--output <file>` writes the raw
@@ -222,6 +229,31 @@ parameters are referenced from URLs with `:variableName` segments.
 
 `request set --json` returns the same request shape after the persisted update,
 with `environment` set to JSON `null`.
+
+`request variables --json` returns variables sorted by name, with deduplicated usages in
+request-field order:
+
+```json
+{
+  "schemaVersion": 1,
+  "variables": [
+    {
+      "name": "token",
+      "defined": true,
+      "secret": true,
+      "usages": [
+        { "location": "header", "name": "Authorization" },
+        { "location": "authentication", "name": "token" }
+      ]
+    }
+  ]
+}
+```
+
+Without `--environment`, `defined` and `secret` are false because no effective
+environment was selected. Usage locations are `method`, `url`, `header`,
+`query_parameter`, `path_parameter`, `body`, `form_urlencoded`, `multipart`, `file`,
+or `authentication`. Named request fields also include `name`.
 
 `environment set --json` and `environment unset --json` return `environment`, `name`,
 and `operation`. `set` also returns `value`.

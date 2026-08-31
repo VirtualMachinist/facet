@@ -43,7 +43,9 @@ pub use request::{
     FormField, Header, HttpRequest, MultipartPart, MultipartPartKind, MultipartValue,
     QueryParameter, RawBody, RawBodyKind, RequestBody, RequestSettings, RequestUpdate,
 };
-pub use request_resolution::resolve_request;
+pub use request_resolution::{
+    RequestVariableInfo, VariableUsage, discover_request_variables, resolve_request,
+};
 pub use workspace::{
     FolderKey, RequestKey, Workspace, WorkspaceEditError, WorkspaceFolder, WorkspaceItemRef,
     WorkspaceParent,

@@ -1,7 +1,89 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::{
-    AuthenticationValue, Body, EnvironmentResolutionError, HttpRequest, MultipartValue,
-    RequestBody, ResolvedEnvironment,
+    AuthenticationValue, Body, Environment, EnvironmentResolutionError, HttpRequest,
+    MultipartValue, RequestBody, ResolvedEnvironment,
+    environment::{EffectiveVariableDeclaration, effective_variable_declarations},
 };
+
+/// A stable, human-oriented location where a request references a variable.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum VariableUsage {
+    /// The HTTP method.
+    Method,
+    /// The request URL.
+    Url,
+    /// A header name or value.
+    Header { name: String },
+    /// A query-parameter name or value.
+    QueryParameter { name: String },
+    /// A path-parameter name or value.
+    PathParameter { name: String },
+    /// A raw request body.
+    Body,
+    /// A form-urlencoded field name or value.
+    FormUrlEncoded { name: String },
+    /// A multipart part name, value, or content type.
+    Multipart { name: String },
+    /// A file-body path or content type.
+    File,
+    /// An authentication property, including values nested below it.
+    Authentication { name: String },
+}
+
+/// Metadata about one variable referenced by a request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestVariableInfo {
+    /// Interpolation variable name.
+    pub name: String,
+    /// Whether the selected effective environment declares an enabled variable with this name.
+    pub defined: bool,
+    /// Whether that effective declaration is a secret.
+    pub secret: bool,
+    /// Deterministically ordered, deduplicated request locations.
+    pub usages: Vec<VariableUsage>,
+}
+
+/// Discovers request variable references without resolving their values.
+///
+/// A selected environment is inspected through the same validated inheritance chain used by
+/// normal resolution. Disabled declarations shadow inherited declarations but are not defined.
+/// No variable values (including secrets) are read or interpolated.
+pub fn discover_request_variables(
+    request: &HttpRequest,
+    environments: &[Environment],
+    selected: Option<&str>,
+) -> Result<Vec<RequestVariableInfo>, EnvironmentResolutionError> {
+    let declarations = effective_variable_declarations(environments, selected)?;
+    let mut usages_by_name = BTreeMap::<String, BTreeSet<VariableUsage>>::new();
+    let mut request = request.clone();
+    transform_request_strings(&mut request, |value, usage| {
+        for name in interpolation_references(value)? {
+            usages_by_name
+                .entry(name)
+                .or_default()
+                .insert(usage.clone());
+        }
+        Ok(())
+    })?;
+
+    Ok(usages_by_name
+        .into_iter()
+        .map(|(name, usages)| {
+            let declaration = declarations.get(&name).copied();
+            let defined = matches!(
+                declaration,
+                Some(EffectiveVariableDeclaration::Plain | EffectiveVariableDeclaration::Secret)
+            );
+            RequestVariableInfo {
+                name,
+                defined,
+                secret: matches!(declaration, Some(EffectiveVariableDeclaration::Secret)),
+                usages: usages.into_iter().collect(),
+            }
+        })
+        .collect())
+}
 
 /// Clones a request and interpolates every currently supported request-value field.
 pub fn resolve_request(
@@ -9,111 +91,144 @@ pub fn resolve_request(
     environment: &ResolvedEnvironment,
 ) -> Result<HttpRequest, EnvironmentResolutionError> {
     let mut request = request.clone();
-    interpolate_optional(&mut request.method, environment)?;
-    interpolate_optional(&mut request.url, environment)?;
-    for header in &mut request.headers {
-        header.name = environment.interpolate(&header.name)?;
-        header.value = environment.interpolate(&header.value)?;
-    }
-    for parameter in request
-        .query_parameters
-        .iter_mut()
-        .chain(&mut request.path_parameters)
-    {
-        parameter.name = environment.interpolate(&parameter.name)?;
-        parameter.value = environment.interpolate(&parameter.value)?;
-    }
-    if let Some(body) = &mut request.body {
-        resolve_body(body, environment)?;
-    }
-    if let Some(authentication) = &mut request.authentication {
-        for value in authentication.properties.values_mut() {
-            resolve_authentication_value(value, environment)?;
-        }
-    }
+    transform_request_strings(&mut request, |value, _usage| {
+        *value = environment.interpolate(value)?;
+        Ok(())
+    })?;
     Ok(request)
 }
 
-fn interpolate_optional(
-    value: &mut Option<String>,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
-    if let Some(value) = value {
-        *value = environment.interpolate(value)?;
+fn transform_request_strings<E>(
+    request: &mut HttpRequest,
+    mut transform: impl FnMut(&mut String, &VariableUsage) -> Result<(), E>,
+) -> Result<(), E> {
+    if let Some(method) = &mut request.method {
+        transform(method, &VariableUsage::Method)?;
+    }
+    if let Some(url) = &mut request.url {
+        transform(url, &VariableUsage::Url)?;
+    }
+    for header in &mut request.headers {
+        let usage = VariableUsage::Header {
+            name: header.name.clone(),
+        };
+        transform(&mut header.name, &usage)?;
+        transform(&mut header.value, &usage)?;
+    }
+    for parameter in &mut request.query_parameters {
+        let usage = VariableUsage::QueryParameter {
+            name: parameter.name.clone(),
+        };
+        transform(&mut parameter.name, &usage)?;
+        transform(&mut parameter.value, &usage)?;
+    }
+    for parameter in &mut request.path_parameters {
+        let usage = VariableUsage::PathParameter {
+            name: parameter.name.clone(),
+        };
+        transform(&mut parameter.name, &usage)?;
+        transform(&mut parameter.value, &usage)?;
+    }
+    if let Some(body) = &mut request.body {
+        transform_body(body, &mut transform)?;
+    }
+    if let Some(authentication) = &mut request.authentication {
+        for (name, value) in &mut authentication.properties {
+            let usage = VariableUsage::Authentication { name: name.clone() };
+            transform_authentication_value(value, &usage, &mut transform)?;
+        }
     }
     Ok(())
 }
 
-fn resolve_body(
+fn transform_body<E>(
     body: &mut RequestBody,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
+    transform: &mut impl FnMut(&mut String, &VariableUsage) -> Result<(), E>,
+) -> Result<(), E> {
     match body {
-        RequestBody::Single(body) => resolve_body_value(body, environment),
+        RequestBody::Single(body) => transform_body_value(body, transform),
         RequestBody::Variants(variants) => {
             for variant in variants {
-                resolve_body_value(&mut variant.body, environment)?;
+                transform_body_value(&mut variant.body, transform)?;
             }
             Ok(())
         }
     }
 }
 
-fn resolve_body_value(
+fn transform_body_value<E>(
     body: &mut Body,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
+    transform: &mut impl FnMut(&mut String, &VariableUsage) -> Result<(), E>,
+) -> Result<(), E> {
     match body {
-        Body::Raw(body) => body.data = environment.interpolate(&body.data)?,
+        Body::Raw(body) => transform(&mut body.data, &VariableUsage::Body)?,
         Body::FormUrlEncoded(fields) => {
             for field in fields {
-                field.name = environment.interpolate(&field.name)?;
-                field.value = environment.interpolate(&field.value)?;
+                let usage = VariableUsage::FormUrlEncoded {
+                    name: field.name.clone(),
+                };
+                transform(&mut field.name, &usage)?;
+                transform(&mut field.value, &usage)?;
             }
         }
         Body::Multipart(parts) => {
             for part in parts {
-                part.name = environment.interpolate(&part.name)?;
+                let usage = VariableUsage::Multipart {
+                    name: part.name.clone(),
+                };
+                transform(&mut part.name, &usage)?;
                 match &mut part.value {
-                    MultipartValue::Single(value) => *value = environment.interpolate(value)?,
+                    MultipartValue::Single(value) => transform(value, &usage)?,
                     MultipartValue::Multiple(values) => {
                         for value in values {
-                            *value = environment.interpolate(value)?;
+                            transform(value, &usage)?;
                         }
                     }
                 }
-                interpolate_optional(&mut part.content_type, environment)?;
+                if let Some(content_type) = &mut part.content_type {
+                    transform(content_type, &usage)?;
+                }
             }
         }
         Body::File(files) => {
             for file in files {
-                file.file_path = environment.interpolate(&file.file_path)?;
-                file.content_type = environment.interpolate(&file.content_type)?;
+                transform(&mut file.file_path, &VariableUsage::File)?;
+                transform(&mut file.content_type, &VariableUsage::File)?;
             }
         }
     }
     Ok(())
 }
 
-fn resolve_authentication_value(
+fn transform_authentication_value<E>(
     value: &mut AuthenticationValue,
-    environment: &ResolvedEnvironment,
-) -> Result<(), EnvironmentResolutionError> {
+    usage: &VariableUsage,
+    transform: &mut impl FnMut(&mut String, &VariableUsage) -> Result<(), E>,
+) -> Result<(), E> {
     match value {
         AuthenticationValue::String(value) | AuthenticationValue::Number(value) => {
-            *value = environment.interpolate(value)?;
+            transform(value, usage)?
         }
         AuthenticationValue::Sequence(values) => {
             for value in values {
-                resolve_authentication_value(value, environment)?;
+                transform_authentication_value(value, usage, transform)?;
             }
         }
         AuthenticationValue::Object(values) => {
             for value in values.values_mut() {
-                resolve_authentication_value(value, environment)?;
+                transform_authentication_value(value, usage, transform)?;
             }
         }
         AuthenticationValue::Boolean(_) | AuthenticationValue::Null => {}
     }
     Ok(())
+}
+
+fn interpolation_references(input: &str) -> Result<Vec<String>, EnvironmentResolutionError> {
+    let mut references = Vec::new();
+    crate::environment::interpolate(input, |name| {
+        references.push(name.to_owned());
+        Ok(String::new())
+    })?;
+    Ok(references)
 }

@@ -243,6 +243,122 @@ fn gets_request_resolved_with_selected_environment() {
 }
 
 #[test]
+fn discovers_request_variables_as_versioned_deterministic_json() {
+    let command = || {
+        probe()
+            .args(["request", "variables"])
+            .arg(fixture("phase4-environments.yml"))
+            .arg("items/0")
+            .args(["--environment", "development", "--json"])
+            .output()
+            .expect("variables command should run")
+    };
+    let first = command();
+    let second = command();
+
+    assert!(first.status.success());
+    assert!(first.stderr.is_empty());
+    assert_eq!(first.stdout, second.stdout);
+    let value: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(
+        value["variables"],
+        serde_json::json!([
+            {
+                "name": "baseUrl",
+                "defined": true,
+                "secret": false,
+                "usages": [{ "location": "url" }]
+            },
+            {
+                "name": "tenant",
+                "defined": true,
+                "secret": false,
+                "usages": [
+                    { "location": "url" },
+                    { "location": "query_parameter", "name": "tenant" },
+                    { "location": "body" }
+                ]
+            },
+            {
+                "name": "token",
+                "defined": true,
+                "secret": false,
+                "usages": [
+                    { "location": "header", "name": "Authorization" },
+                    { "location": "authentication", "name": "token" }
+                ]
+            }
+        ])
+    );
+}
+
+#[test]
+fn discovers_missing_and_secret_variables_without_resolving_values() {
+    for (selector, name, defined, secret) in [
+        ("items/1", "missing", false, false),
+        ("items/2", "secretToken", true, true),
+    ] {
+        let output = probe()
+            .args(["request", "variables"])
+            .arg(fixture("phase4-environments.yml"))
+            .arg(selector)
+            .args(["--environment", "development", "--json"])
+            .output()
+            .expect("variables command should not resolve values");
+        assert!(output.status.success(), "{selector}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let variable = value["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|variable| variable["name"] == name)
+            .unwrap();
+        assert_eq!(variable["defined"], defined);
+        assert_eq!(variable["secret"], secret);
+    }
+
+    let missing_environment = probe()
+        .args(["request", "variables"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/0")
+        .args(["--environment", "missing", "--json"])
+        .output()
+        .expect("variables command should validate its selected environment");
+    assert_eq!(missing_environment.status.code(), Some(5));
+    let value: Value = serde_json::from_slice(&missing_environment.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "environment_not_found");
+}
+
+#[test]
+fn renders_request_variables_for_humans_and_rejects_runtime_values() {
+    let output = probe()
+        .args(["request", "variables"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/2")
+        .args(["--environment", "development"])
+        .output()
+        .expect("variables command should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "NAME\tDEFINED\tSECRET\tUSED IN\nbaseUrl\ttrue\tfalse\turl\nsecretToken\ttrue\ttrue\theader: Authorization\n"
+    );
+
+    let rejected = probe()
+        .args(["request", "variables"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/2")
+        .args(["--var", "secretToken=must-not-appear", "--json"])
+        .output()
+        .expect("variables command should reject runtime values");
+    assert_eq!(rejected.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&rejected.stdout).contains("must-not-appear"));
+}
+
+#[test]
 fn reports_environment_resolution_errors() {
     for (selector, environment, category) in [
         ("items/0", "production", "environment_not_found"),

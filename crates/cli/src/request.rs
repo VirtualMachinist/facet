@@ -1,6 +1,9 @@
 use std::{borrow::Cow, io::Read, path::PathBuf};
 
-use probe_core::{HttpRequest, RequestUpdate, resolve_environment_with_overrides, resolve_request};
+use probe_core::{
+    HttpRequest, RequestUpdate, RequestVariableInfo, VariableUsage, discover_request_variables,
+    resolve_environment_with_overrides, resolve_request,
+};
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use serde_json::json;
 
@@ -50,6 +53,101 @@ pub(crate) fn get(
         human: request_human(selector, environment, &request),
         json: request_json(selector, environment, &request),
     })
+}
+
+pub(crate) fn variables(
+    input: &WorkspaceInput,
+    selector: &str,
+    environment: Option<&str>,
+    stdin: &mut impl Read,
+) -> Result<CommandOutput, CliError> {
+    let loaded = load(input, stdin)?;
+    let key = loaded
+        .request_key(selector)
+        .ok_or_else(|| CliError::request_not_found(selector))?;
+    let workspace = loaded.workspace();
+    let request = workspace
+        .request(key)
+        .expect("repository request key must resolve");
+    let variables = discover_request_variables(request, workspace.environments(), environment)
+        .map_err(CliError::configuration)?;
+    Ok(variable_output(&variables))
+}
+
+fn variable_output(variables: &[RequestVariableInfo]) -> CommandOutput {
+    let mut lines = vec!["NAME\tDEFINED\tSECRET\tUSED IN".to_owned()];
+    let json_variables = variables
+        .iter()
+        .map(|variable| {
+            let usages = variable
+                .usages
+                .iter()
+                .map(variable_usage_json)
+                .collect::<Vec<_>>();
+            lines.push(format!(
+                "{}\t{}\t{}\t{}",
+                variable.name,
+                variable.defined,
+                variable.secret,
+                variable
+                    .usages
+                    .iter()
+                    .map(variable_usage_human)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            json!({
+                "name": variable.name,
+                "defined": variable.defined,
+                "secret": variable.secret,
+                "usages": usages,
+            })
+        })
+        .collect::<Vec<_>>();
+    CommandOutput {
+        human: format!("{}\n", lines.join("\n")),
+        json: json!({ "variables": json_variables }),
+    }
+}
+
+fn variable_usage_human(usage: &VariableUsage) -> String {
+    match usage {
+        VariableUsage::Method => "method".to_owned(),
+        VariableUsage::Url => "url".to_owned(),
+        VariableUsage::Header { name } => format!("header: {name}"),
+        VariableUsage::QueryParameter { name } => format!("query parameter: {name}"),
+        VariableUsage::PathParameter { name } => format!("path parameter: {name}"),
+        VariableUsage::Body => "body".to_owned(),
+        VariableUsage::FormUrlEncoded { name } => format!("form field: {name}"),
+        VariableUsage::Multipart { name } => format!("multipart: {name}"),
+        VariableUsage::File => "file".to_owned(),
+        VariableUsage::Authentication { name } => format!("authentication: {name}"),
+    }
+}
+
+fn variable_usage_json(usage: &VariableUsage) -> serde_json::Value {
+    match usage {
+        VariableUsage::Method => json!({ "location": "method" }),
+        VariableUsage::Url => json!({ "location": "url" }),
+        VariableUsage::Header { name } => json!({ "location": "header", "name": name }),
+        VariableUsage::QueryParameter { name } => {
+            json!({ "location": "query_parameter", "name": name })
+        }
+        VariableUsage::PathParameter { name } => {
+            json!({ "location": "path_parameter", "name": name })
+        }
+        VariableUsage::Body => json!({ "location": "body" }),
+        VariableUsage::FormUrlEncoded { name } => {
+            json!({ "location": "form_urlencoded", "name": name })
+        }
+        VariableUsage::Multipart { name } => {
+            json!({ "location": "multipart", "name": name })
+        }
+        VariableUsage::File => json!({ "location": "file" }),
+        VariableUsage::Authentication { name } => {
+            json!({ "location": "authentication", "name": name })
+        }
+    }
 }
 
 pub(crate) fn update(

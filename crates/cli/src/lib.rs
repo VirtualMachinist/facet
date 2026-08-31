@@ -117,6 +117,7 @@ pub const fn help() -> &'static str {
         "  collection validate <path>          Validate an OpenCollection workspace\n",
         "  request list <path>                 List HTTP requests\n",
         "  request get <path> <selector>       Inspect an HTTP request\n",
+        "  request variables <path> <selector> Discover variables referenced by a request\n",
         "  request run <path> <selector>       Execute an HTTP request\n",
         "  request set <path> <selector>       Set and persist HTTP request fields\n",
         "  request create|rename|delete|move|reorder   Edit request structure\n",
@@ -171,6 +172,7 @@ const REQUEST_HELP: &str = concat!(
     "Commands:\n",
     "  list <path|->                 List requests and repository selectors\n",
     "  get <path|-> <selector> [--environment <name>]  Inspect one request\n",
+    "  variables <path|-> <selector> [--environment <name>]  Discover referenced variables\n",
     "  run <path|-> <selector> [--environment <name>] [--var <NAME=VALUE>]... [--output <file>]\n",
     "  set <path> <selector> [--name <name>] [--method <method>] [--url <url>]\n",
     "  create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>]\n",
@@ -314,6 +316,11 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             selector,
             environment,
         } => request::get(&input, &selector, environment.as_deref(), stdin),
+        Command::Variables {
+            input,
+            selector,
+            environment,
+        } => request::variables(&input, &selector, environment.as_deref(), stdin),
         Command::Run {
             input,
             selector,

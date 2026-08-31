@@ -52,6 +52,11 @@ pub(crate) enum Command {
         selector: String,
         environment: Option<String>,
     },
+    Variables {
+        input: WorkspaceInput,
+        selector: String,
+        environment: Option<String>,
+    },
     Run {
         input: WorkspaceInput,
         selector: String,
@@ -194,6 +199,14 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
         [group, action, path, selector] if group == "request" && action == "get" => {
             options.allow(ENVIRONMENT)?;
             Ok(Command::Get {
+                input: input(path),
+                selector: selector.clone(),
+                environment: options.environment,
+            })
+        }
+        [group, action, path, selector] if group == "request" && action == "variables" => {
+            options.allow(ENVIRONMENT)?;
+            Ok(Command::Variables {
                 input: input(path),
                 selector: selector.clone(),
                 environment: options.environment,
