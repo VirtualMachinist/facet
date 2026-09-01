@@ -48,6 +48,7 @@ impl ProbeApp {
         }
         self.rebuild_visible_tree_rows();
         self.reveal_active_tab();
+        self.scroll_selected_tree_item_into_view();
     }
 
     pub(super) fn capture_session(&mut self) {

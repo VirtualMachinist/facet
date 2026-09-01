@@ -1167,7 +1167,7 @@ fn workspace_switcher_includes_new_collection(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn large_sidebar_virtualizes_rows_and_reveals_the_selected_request(cx: &mut TestAppContext) {
+fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -1182,11 +1182,17 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_selected_request(cx: &mut Test
         .last()
         .expect("request should exist")
         .key();
+    let last_selector = workspace
+        .request_selector(last)
+        .expect("request should have a selector")
+        .to_owned();
     window
         .update(cx, |view, _, cx| {
             view.session_store = None;
             view.set_workspace(fixture, workspace);
-            view.select_request(last, cx);
+            view.session.open_tabs = vec![last_selector.clone()];
+            view.session.active_tab = Some(last_selector);
+            view.restore_shell_state(cx);
             cx.notify();
         })
         .expect("test window should be open");
