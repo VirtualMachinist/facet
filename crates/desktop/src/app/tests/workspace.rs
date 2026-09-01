@@ -1261,7 +1261,7 @@ fn sidebar_search_filters_tree_and_expands_collapsed_match_folders(cx: &mut Test
     let folder_only = window
         .update(cx, |view, _, _| visible_tree_names(view))
         .expect("test window should remain open");
-    assert_eq!(folder_only, ["Folder"]);
+    assert_eq!(folder_only, ["Folder", "Nested"]);
 }
 
 #[gpui::test]

@@ -44,68 +44,80 @@ pub(crate) fn matching_tree_items(workspace: &Workspace, query: &str) -> TreeSea
     );
     let mut utf32_buf = Vec::new();
     let mut ancestors = Vec::new();
-    collect_matches(
+    let mut search_path = String::new();
+    SearchContext {
         workspace,
+        atom: &atom,
+        matcher: &mut matcher,
+        utf32_buf: &mut utf32_buf,
+        hits: &mut hits,
+    }
+    .collect_matches(
         workspace.root_items(),
-        &atom,
-        &mut matcher,
-        &mut utf32_buf,
         &mut ancestors,
-        &mut hits,
+        &mut search_path,
+        false,
     );
     hits
 }
 
-fn collect_matches(
-    workspace: &Workspace,
-    items: &[WorkspaceItemRef],
-    atom: &Atom,
-    matcher: &mut Matcher,
-    utf32_buf: &mut Vec<char>,
-    ancestors: &mut Vec<FolderKey>,
-    hits: &mut TreeSearchMatches,
-) {
-    for item in items {
-        let matched = item_matches(workspace, *item, atom, matcher, utf32_buf);
-        match *item {
-            WorkspaceItemRef::Request(key) => {
-                if matched {
-                    hits.requests.insert(key);
-                    hits.folders.extend(ancestors.iter().copied());
-                }
-            }
-            WorkspaceItemRef::Folder(key) => {
-                if matched {
-                    hits.folders.insert(key);
-                    hits.folders.extend(ancestors.iter().copied());
-                }
-                if let Some(folder) = workspace.folder(key) {
-                    ancestors.push(key);
-                    collect_matches(
-                        workspace,
-                        &folder.children,
-                        atom,
-                        matcher,
-                        utf32_buf,
-                        ancestors,
-                        hits,
-                    );
-                    ancestors.pop();
-                }
-            }
-        }
-    }
+struct SearchContext<'a> {
+    workspace: &'a Workspace,
+    atom: &'a Atom,
+    matcher: &'a mut Matcher,
+    utf32_buf: &'a mut Vec<char>,
+    hits: &'a mut TreeSearchMatches,
 }
 
-fn item_matches(
-    workspace: &Workspace,
-    item: WorkspaceItemRef,
-    atom: &Atom,
-    matcher: &mut Matcher,
-    utf32_buf: &mut Vec<char>,
-) -> bool {
-    let haystack = Utf32Str::new(item_name(workspace, item), utf32_buf);
-    atom.score(haystack, matcher).is_some()
+impl SearchContext<'_> {
+    fn collect_matches(
+        &mut self,
+        items: &[WorkspaceItemRef],
+        ancestors: &mut Vec<FolderKey>,
+        search_path: &mut String,
+        include_descendants: bool,
+    ) {
+        for item in items {
+            let path_len = search_path.len();
+            let matched = !include_descendants && self.item_matches(*item, search_path);
+            match *item {
+                WorkspaceItemRef::Request(key) => {
+                    if matched || include_descendants {
+                        self.hits.requests.insert(key);
+                        self.hits.folders.extend(ancestors.iter().copied());
+                    }
+                }
+                WorkspaceItemRef::Folder(key) => {
+                    let include_folder = matched || include_descendants;
+                    if include_folder {
+                        self.hits.folders.insert(key);
+                        self.hits.folders.extend(ancestors.iter().copied());
+                    }
+                    if let Some(folder) = self.workspace.folder(key) {
+                        ancestors.push(key);
+                        self.collect_matches(
+                            &folder.children,
+                            ancestors,
+                            search_path,
+                            include_folder,
+                        );
+                        ancestors.pop();
+                    }
+                }
+            }
+            search_path.truncate(path_len);
+        }
+    }
+
+    fn item_matches(&mut self, item: WorkspaceItemRef, search_path: &mut String) -> bool {
+        if !search_path.is_empty() {
+            search_path.push_str(" / ");
+        }
+        search_path.push_str(item_name(self.workspace, item));
+
+        let haystack = Utf32Str::new(search_path, self.utf32_buf);
+        self.atom.score(haystack, self.matcher).is_some()
+    }
 }
 
 fn item_name(workspace: &Workspace, item: WorkspaceItemRef) -> &str {
@@ -203,10 +215,24 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_folder_match_keeps_ancestors_but_not_unmatched_children() {
+    fn fuzzy_path_match_finds_request_by_parent_folder_and_request_name() {
+        let workspace = workspace();
+        let names = names(&workspace, &matching_tree_items(&workspace, "users create"));
+        assert_eq!(names, ["Users", "Admin", "Create user"]);
+    }
+
+    #[test]
+    fn path_matching_does_not_leak_ancestor_names_to_siblings() {
+        let workspace = workspace();
+        let names = names(&workspace, &matching_tree_items(&workspace, "users health"));
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_folder_match_includes_descendants_and_ancestors() {
         let workspace = workspace();
         let names = names(&workspace, &matching_tree_items(&workspace, "admn"));
-        assert_eq!(names, ["Users", "Admin"]);
+        assert_eq!(names, ["Users", "Admin", "Create user"]);
     }
 
     #[test]
