@@ -12,6 +12,7 @@ impl ProbeApp {
             self.response_viewer.ensure_available_tab(key);
             self.start_base64_encoding(key, cx);
             self.reveal_active_tab();
+            self.scroll_selected_tree_item_into_view();
             if self
                 .loaded_workspace
                 .as_mut()
