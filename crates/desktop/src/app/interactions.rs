@@ -45,8 +45,9 @@ impl ProbeApp {
             return;
         }
         self.tree_search = query;
+        self.refresh_tree_search_matches();
         let expanded = self.expand_folders_for_tree_search();
-        self.rebuild_visible_tree_rows();
+        self.rebuild_visible_tree_rows_after_visibility_change();
         if expanded {
             self.persist_session(cx);
         }
@@ -58,10 +59,9 @@ impl ProbeApp {
         if query.is_empty() {
             return false;
         }
-        let Some(loaded) = &self.loaded_workspace else {
+        let Some(hits) = &self.tree_search_matches else {
             return false;
         };
-        let hits = matching_tree_items(loaded.workspace(), query);
         let mut expanded = false;
         for folder in hits.folders() {
             if !self.shell.folder_is_expanded(folder) {
@@ -73,24 +73,37 @@ impl ProbeApp {
     }
 
     pub(super) fn rebuild_visible_tree_rows(&mut self) {
+        self.refresh_tree_search_matches();
+        self.rebuild_visible_tree_rows_after_visibility_change();
+    }
+
+    fn refresh_tree_search_matches(&mut self) {
+        let Some(loaded) = &self.loaded_workspace else {
+            self.tree_search_matches = None;
+            return;
+        };
+        let workspace = loaded.workspace();
+        let query = self.tree_search.trim();
+        self.tree_search_matches = if query.is_empty() {
+            None
+        } else {
+            Some(matching_tree_items(workspace, query))
+        };
+    }
+
+    pub(super) fn rebuild_visible_tree_rows_after_visibility_change(&mut self) {
         let Some(loaded) = &self.loaded_workspace else {
             self.visible_tree_rows.clear();
             return;
         };
         let workspace = loaded.workspace();
-        let query = self.tree_search.trim();
-        let filter = if query.is_empty() {
-            None
-        } else {
-            Some(matching_tree_items(workspace, query))
-        };
         let mut rows = Vec::with_capacity(workspace.request_count());
         flatten_visible_tree_rows(
             workspace,
             workspace.root_items(),
             0,
             &self.shell,
-            filter.as_ref(),
+            self.tree_search_matches.as_ref(),
             &mut rows,
         );
         self.visible_tree_rows = rows;

@@ -350,7 +350,7 @@ impl ProbeApp {
                             let _ = view.update(cx, |view, cx| {
                                 view.select_tree_item(WorkspaceItemRef::Folder(key), cx);
                                 view.shell.toggle_folder(key);
-                                view.rebuild_visible_tree_rows();
+                                view.rebuild_visible_tree_rows_after_visibility_change();
                                 view.persist_session(cx);
                                 cx.notify();
                             });

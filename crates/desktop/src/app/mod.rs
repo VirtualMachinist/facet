@@ -109,7 +109,7 @@ use crate::{
     },
     theme::Theme,
     toast::{ToastCenter, ToastId, ToastIntent, toast_stack_motion},
-    tree_search::matching_tree_items,
+    tree_search::{TreeSearchMatches, matching_tree_items},
 };
 
 const APPLICATION_ID: &str = "dev.probe.desktop";
@@ -288,6 +288,7 @@ pub(crate) struct ProbeApp {
     transient: TransientSurfaces,
     visible_tree_rows: Vec<TreeRow>,
     tree_search: String,
+    tree_search_matches: Option<TreeSearchMatches>,
     selected_tree_item: Option<WorkspaceItemRef>,
     tree_drag_source: Option<WorkspaceItemRef>,
     tree_drop_target: Option<TreeDropIntent>,
@@ -397,6 +398,7 @@ impl ProbeApp {
             transient: TransientSurfaces::new(cx),
             visible_tree_rows: Vec::new(),
             tree_search: String::new(),
+            tree_search_matches: None,
             selected_tree_item: None,
             tree_drag_source: None,
             tree_drop_target: None,

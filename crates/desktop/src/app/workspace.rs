@@ -669,6 +669,7 @@ impl ProbeApp {
         self.dismiss_transient_surfaces();
         self.clear_tree_drag();
         self.tree_search.clear();
+        self.tree_search_matches = None;
         self.request_editor.clear();
     }
 

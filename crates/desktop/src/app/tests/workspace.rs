@@ -1239,7 +1239,7 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut Test
 }
 
 #[gpui::test]
-fn sidebar_search_filters_tree_and_expands_collapsed_match_folders(cx: &mut TestAppContext) {
+fn sidebar_reveal_and_search_expand_only_matching_request_folders(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -1251,6 +1251,9 @@ fn sidebar_search_filters_tree_and_expands_collapsed_match_folders(cx: &mut Test
     let folder = workspace
         .folder_key("items/1")
         .expect("folder should exist");
+    let nested = workspace
+        .request_key("items/1/items/0")
+        .expect("nested request should exist");
     window
         .update(cx, |view, _, cx| {
             view.session_store = None;
@@ -1271,6 +1274,37 @@ fn sidebar_search_filters_tree_and_expands_collapsed_match_folders(cx: &mut Test
         .update(cx, |view, _, _| visible_tree_names(view))
         .expect("test window should remain open");
     assert_eq!(collapsed_names, ["Alpha", "Folder"]);
+
+    window
+        .update(cx, |view, _, cx| {
+            view.select_request(nested, cx);
+        })
+        .expect("test window should remain open");
+    let expanded_names = window
+        .update(cx, |view, _, _| visible_tree_names(view))
+        .expect("test window should remain open");
+    assert_eq!(expanded_names, ["Alpha", "Folder", "Nested"]);
+
+    window
+        .update(cx, |view, _, cx| {
+            view.shell.collapse_folder(folder);
+            view.set_tree_search("alpha".to_owned(), cx);
+            view.select_request(nested, cx);
+        })
+        .expect("test window should remain open");
+    let (filtered_names, folder_expanded) = window
+        .update(cx, |view, _, _| {
+            (
+                visible_tree_names(view),
+                view.shell.folder_is_expanded(folder),
+            )
+        })
+        .expect("test window should remain open");
+    assert_eq!(filtered_names, ["Alpha"]);
+    assert!(
+        !folder_expanded,
+        "revealing a filtered-out request should preserve collapsed folders"
+    );
 
     window
         .update(cx, |view, _, cx| {

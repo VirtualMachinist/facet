@@ -12,7 +12,7 @@ impl ProbeApp {
             self.response_viewer.ensure_available_tab(key);
             self.start_base64_encoding(key, cx);
             self.reveal_active_tab();
-            self.scroll_selected_tree_item_into_view();
+            self.reveal_request_in_sidebar(key);
             if self
                 .loaded_workspace
                 .as_mut()
@@ -482,6 +482,38 @@ impl ProbeApp {
         }
     }
 
+    pub(super) fn reveal_request_in_sidebar(&mut self, key: RequestKey) {
+        let Some(loaded) = &self.loaded_workspace else {
+            return;
+        };
+        let workspace = loaded.workspace();
+        let item = WorkspaceItemRef::Request(key);
+        let query = self.tree_search.trim();
+        if !query.is_empty()
+            && !self
+                .tree_search_matches
+                .as_ref()
+                .is_some_and(|matches| matches.contains(item))
+        {
+            return;
+        }
+        let Some(ancestors) = workspace.request_ancestor_folders(key) else {
+            return;
+        };
+        let ancestors = ancestors.to_vec();
+        let mut expanded = false;
+        for folder in ancestors {
+            if !self.shell.folder_is_expanded(folder) {
+                self.shell.expand_folder(folder);
+                expanded = true;
+            }
+        }
+        if expanded {
+            self.rebuild_visible_tree_rows_after_visibility_change();
+        }
+        self.scroll_selected_tree_item_into_view();
+    }
+
     pub(super) fn select_tree_offset(&mut self, offset: isize, cx: &mut Context<Self>) {
         if self.visible_tree_rows.is_empty() {
             return;
@@ -513,7 +545,7 @@ impl ProbeApp {
             Some(WorkspaceItemRef::Request(key)) => self.select_request(key, cx),
             Some(WorkspaceItemRef::Folder(key)) => {
                 self.shell.toggle_folder(key);
-                self.rebuild_visible_tree_rows();
+                self.rebuild_visible_tree_rows_after_visibility_change();
                 self.persist_session(cx);
                 cx.notify();
             }
@@ -528,7 +560,7 @@ impl ProbeApp {
         match selected {
             WorkspaceItemRef::Folder(key) if self.shell.folder_is_expanded(key) => {
                 self.shell.collapse_folder(key);
-                self.rebuild_visible_tree_rows();
+                self.rebuild_visible_tree_rows_after_visibility_change();
                 self.persist_session(cx);
                 cx.notify();
             }
@@ -550,7 +582,7 @@ impl ProbeApp {
         };
         if !self.shell.folder_is_expanded(key) {
             self.shell.toggle_folder(key);
-            self.rebuild_visible_tree_rows();
+            self.rebuild_visible_tree_rows_after_visibility_change();
             self.persist_session(cx);
             cx.notify();
         }
