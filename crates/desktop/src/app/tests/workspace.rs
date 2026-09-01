@@ -1177,6 +1177,11 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut Test
         .expect("fixture should exist");
     let workspace =
         probe_opencollection::load_workspace(&fixture).expect("large fixture should load");
+    let first = workspace
+        .requests()
+        .first()
+        .expect("request should exist")
+        .key();
     let last = workspace
         .requests()
         .last()
@@ -1186,11 +1191,15 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut Test
         .request_selector(last)
         .expect("request should have a selector")
         .to_owned();
+    let first_selector = workspace
+        .request_selector(first)
+        .expect("request should have a selector")
+        .to_owned();
     window
         .update(cx, |view, _, cx| {
             view.session_store = None;
             view.set_workspace(fixture, workspace);
-            view.session.open_tabs = vec![last_selector.clone()];
+            view.session.open_tabs = vec![first_selector, last_selector.clone()];
             view.session.active_tab = Some(last_selector);
             view.restore_shell_state(cx);
             cx.notify();
@@ -1215,24 +1224,28 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut Test
                 view.selected_tree_item,
                 Some(WorkspaceItemRef::Request(last))
             );
-            let expected_index = view
-                .visible_tree_rows
-                .iter()
-                .position(|row| row.item == WorkspaceItemRef::Request(last))
-                .expect("active request should be visible in the tree");
-            let scroll = view.tree_scroll.0.borrow();
-            let sizes = scroll
-                .last_item_size
-                .expect("sidebar list should have completed layout");
-            let row_count = view.visible_tree_rows.len() + 1;
-            let row_height = sizes.contents.height / row_count as f32;
-            let scroll_top = -scroll.base_handle.offset().y;
-            let item_top = row_height * expected_index as f32;
-            let item_bottom = item_top + row_height;
             assert!(
-                item_top >= scroll_top - px(1.0)
-                    && item_bottom <= scroll_top + sizes.item.height + px(1.0),
+                tree_item_is_in_view(view, WorkspaceItemRef::Request(last)),
                 "active request should be inside the sidebar viewport"
+            );
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, _, cx| view.close_tab_now(last, cx))
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(view.shell.active_tab(), Some(first));
+            assert_eq!(
+                view.selected_tree_item,
+                Some(WorkspaceItemRef::Request(first))
+            );
+            assert!(
+                tree_item_is_in_view(view, WorkspaceItemRef::Request(first)),
+                "closing the active tab should reveal its selected neighbor"
             );
         })
         .expect("test window should remain open");

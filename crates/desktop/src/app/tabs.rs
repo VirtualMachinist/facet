@@ -2,7 +2,11 @@ use super::*;
 
 impl ProbeApp {
     pub(super) fn close_tab_now(&mut self, key: RequestKey, cx: &mut Context<Self>) {
+        let previous_active = self.shell.active_tab();
         self.shell.close_tab(key);
+        if self.shell.active_tab() != previous_active {
+            self.select_and_reveal_active_request_in_sidebar();
+        }
         self.reveal_active_tab();
         self.persist_session(cx);
         cx.notify();
@@ -19,6 +23,7 @@ impl ProbeApp {
             }
         }
         self.shell.open_request(keep);
+        self.select_and_reveal_active_request_in_sidebar();
         self.reveal_active_tab();
         self.persist_session(cx);
         cx.notify();
@@ -291,6 +296,14 @@ impl ProbeApp {
     pub(super) fn reveal_active_tab(&mut self) {
         self.scroll_active_tab_into_view();
         self.pending_tab_reveal = true;
+    }
+
+    pub(super) fn select_and_reveal_active_request_in_sidebar(&mut self) {
+        let Some(key) = self.shell.active_tab() else {
+            return;
+        };
+        self.selected_tree_item = Some(WorkspaceItemRef::Request(key));
+        self.reveal_request_in_sidebar(key);
     }
 
     pub(super) fn scroll_active_tab_into_view(&self) {

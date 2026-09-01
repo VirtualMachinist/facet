@@ -462,7 +462,12 @@ impl ProbeApp {
         }
         self.rebuild_visible_tree_rows();
         if should_select_result {
-            self.scroll_selected_tree_item_into_view();
+            match self.selected_tree_item {
+                Some(WorkspaceItemRef::Request(key)) => self.reveal_request_in_sidebar(key),
+                Some(WorkspaceItemRef::Folder(_)) | None => {
+                    self.scroll_selected_tree_item_into_view();
+                }
+            }
         }
         self.reveal_active_tab();
         self.persist_session(cx);

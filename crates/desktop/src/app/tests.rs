@@ -416,6 +416,26 @@ fn visible_tree_names(view: &ProbeApp) -> Vec<String> {
         .collect()
 }
 
+fn tree_item_is_in_view(view: &ProbeApp, item: WorkspaceItemRef) -> bool {
+    let Some(index) = view
+        .visible_tree_rows
+        .iter()
+        .position(|row| row.item == item)
+    else {
+        return false;
+    };
+    let scroll = view.tree_scroll.0.borrow();
+    let Some(sizes) = scroll.last_item_size else {
+        return false;
+    };
+    let row_count = view.visible_tree_rows.len() + 1;
+    let row_height = sizes.contents.height / row_count as f32;
+    let scroll_top = -scroll.base_handle.offset().y;
+    let item_top = row_height * index as f32;
+    let item_bottom = item_top + row_height;
+    item_top >= scroll_top - px(1.0) && item_bottom <= scroll_top + sizes.item.height + px(1.0)
+}
+
 #[test]
 fn import_diagnostics_aggregate_repeated_issues() {
     let diagnostics = (0..889)

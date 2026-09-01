@@ -31,17 +31,22 @@ fn middle_clicking_a_request_tab_closes_it(cx: &mut TestAppContext) {
     visual.run_until_parked();
     cx.run_until_parked();
 
-    let (tabs, active) = window
+    let (tabs, active, selected) = window
         .update(cx, |view, _, _| {
-            (view.shell.tabs().to_vec(), view.shell.active_tab())
+            (
+                view.shell.tabs().to_vec(),
+                view.shell.active_tab(),
+                view.selected_tree_item,
+            )
         })
         .expect("test window should remain open");
     assert_eq!(tabs, vec![first]);
     assert_eq!(active, Some(first));
+    assert_eq!(selected, Some(WorkspaceItemRef::Request(first)));
 }
 
 #[gpui::test]
-fn request_tab_context_menu_closes_other_tabs(cx: &mut TestAppContext) {
+fn request_tab_context_menu_closes_other_tabs_and_selects_its_target(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -68,7 +73,7 @@ fn request_tab_context_menu_closes_other_tabs(cx: &mut TestAppContext) {
         .expect("active request tab should render");
     window
         .update(cx, |view, _, cx| {
-            view.open_tab_context_menu(second, tab.center(), cx);
+            view.open_tab_context_menu(first, tab.center(), cx);
         })
         .expect("test window should remain open");
     cx.run_until_parked();
@@ -80,22 +85,27 @@ fn request_tab_context_menu_closes_other_tabs(cx: &mut TestAppContext) {
                 .map(|menu| menu.target)
         })
         .expect("test window should remain open");
-    assert_eq!(menu_target, Some(second));
+    assert_eq!(menu_target, Some(first));
 
     window
         .update(cx, |view, window, cx| {
-            view.request_close_other_tabs(second, window, cx);
+            view.request_close_other_tabs(first, window, cx);
         })
         .expect("test window should remain open");
     cx.run_until_parked();
 
-    let (tabs, active) = window
+    let (tabs, active, selected) = window
         .update(cx, |view, _, _| {
-            (view.shell.tabs().to_vec(), view.shell.active_tab())
+            (
+                view.shell.tabs().to_vec(),
+                view.shell.active_tab(),
+                view.selected_tree_item,
+            )
         })
         .expect("test window should remain open");
-    assert_eq!(tabs, vec![second]);
-    assert_eq!(active, Some(second));
+    assert_eq!(tabs, vec![first]);
+    assert_eq!(active, Some(first));
+    assert_eq!(selected, Some(WorkspaceItemRef::Request(first)));
 }
 
 #[gpui::test]

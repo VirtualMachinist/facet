@@ -41,16 +41,13 @@ impl ProbeApp {
         }
         if let Some(key) = active_tab {
             self.shell.open_request(key);
-            self.selected_tree_item = Some(WorkspaceItemRef::Request(key));
         }
         for key in collapsed_folders {
             self.shell.collapse_folder(key);
         }
         self.rebuild_visible_tree_rows();
         self.reveal_active_tab();
-        if let Some(key) = active_tab {
-            self.reveal_request_in_sidebar(key);
-        }
+        self.select_and_reveal_active_request_in_sidebar();
     }
 
     pub(super) fn capture_session(&mut self) {
