@@ -688,6 +688,7 @@ impl ProbeApp {
                 .flex_col()
                 .child(
                     div()
+                        .flex_none()
                         .px(px(theme.metrics.spacing_2))
                         .pt(px(theme.metrics.spacing_1))
                         .pb(px(theme.metrics.spacing_2))
@@ -729,6 +730,7 @@ impl ProbeApp {
             if !self.session.recent_collections.is_empty() {
                 tree = tree.child(
                     div()
+                        .flex_none()
                         .px(px(theme.metrics.spacing_2))
                         .pt(px(theme.metrics.spacing_2))
                         .pb(px(theme.metrics.spacing_1))
@@ -747,6 +749,7 @@ impl ProbeApp {
                     let row = Button::new(("recent-collection", index))
                         .focusable(false)
                         .tab_stop(false)
+                        .flex_none()
                         .py(px(theme.metrics.spacing_2))
                         .px(px(theme.metrics.spacing_2))
                         .flex()
