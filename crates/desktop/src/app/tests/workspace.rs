@@ -1300,7 +1300,7 @@ fn large_sidebar_virtualizes_rows_and_reveals_the_restored_request(cx: &mut Test
 }
 
 #[gpui::test]
-fn sidebar_reveal_and_search_expand_only_matching_request_folders(cx: &mut TestAppContext) {
+fn sidebar_folder_selection_and_search_reveal_behavior(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
         ProbeApp::new(window, cx)
@@ -1315,10 +1315,14 @@ fn sidebar_reveal_and_search_expand_only_matching_request_folders(cx: &mut TestA
     let nested = workspace
         .request_key("items/1/items/0")
         .expect("nested request should exist");
+    let root = workspace
+        .request_key("items/0")
+        .expect("root request should exist");
     window
         .update(cx, |view, _, cx| {
             view.session_store = None;
             view.set_workspace(fixture, workspace);
+            view.select_request(root, cx);
             view.shell.collapse_folder(folder);
             view.rebuild_visible_tree_rows();
             cx.notify();
@@ -1331,6 +1335,53 @@ fn sidebar_reveal_and_search_expand_only_matching_request_folders(cx: &mut TestA
         .debug_bounds("tree-search")
         .expect("sidebar search input should render");
 
+    let folder_row = visual
+        .debug_bounds("tree-row-items/1")
+        .expect("collapsed folder row should render");
+    visual.simulate_click(folder_row.center(), Modifiers::default());
+    visual.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(
+                view.selected_tree_item,
+                Some(WorkspaceItemRef::Folder(folder))
+            );
+            assert!(
+                view.shell.folder_is_expanded(folder),
+                "selecting a collapsed folder must expand it"
+            );
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, _, cx| view.select_request(root, cx))
+        .expect("test window should remain open");
+    visual.run_until_parked();
+    let folder_row = visual
+        .debug_bounds("tree-row-items/1")
+        .expect("expanded folder row should render");
+    visual.simulate_click(folder_row.center(), Modifiers::default());
+    visual.run_until_parked();
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(
+                view.selected_tree_item,
+                Some(WorkspaceItemRef::Folder(folder))
+            );
+            assert!(
+                view.shell.folder_is_expanded(folder),
+                "selecting an expanded folder must not collapse it"
+            );
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, _, cx| {
+            view.shell.collapse_folder(folder);
+            view.rebuild_visible_tree_rows();
+            cx.notify();
+        })
+        .expect("test window should be open");
     let collapsed_names = window
         .update(cx, |view, _, _| visible_tree_names(view))
         .expect("test window should remain open");

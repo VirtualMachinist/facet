@@ -348,11 +348,14 @@ impl ProbeApp {
                         .accessibility_label(format!("Folder {label}"))
                         .on_click(move |_, _, cx| {
                             let _ = view.update(cx, |view, cx| {
+                                let was_selected = view.selected_tree_item == Some(item);
                                 view.select_tree_item(WorkspaceItemRef::Folder(key), cx);
-                                view.shell.toggle_folder(key);
-                                view.rebuild_visible_tree_rows_after_visibility_change();
-                                view.persist_session(cx);
-                                cx.notify();
+                                if !expanded || was_selected {
+                                    view.shell.toggle_folder(key);
+                                    view.rebuild_visible_tree_rows_after_visibility_change();
+                                    view.persist_session(cx);
+                                    cx.notify();
+                                }
                             });
                         })
                         .when(can_edit, |row| {
