@@ -464,7 +464,9 @@ impl ProbeApp {
                     .border_color(theme.colors.borders.subtle)
                     .debug_selector(|| "workspace-switcher-trigger".into())
                     .hover(move |trigger| trigger.bg(theme.colors.surfaces.sidebar))
-                    .focus(move |trigger| trigger.border_color(theme.colors.borders.focused))
+                    .focus_visible(move |trigger| {
+                        trigger.border_color(theme.colors.borders.focused)
+                    })
                     .styles(move |styles| {
                         styles.selected(move |trigger| trigger.bg(theme.colors.surfaces.sidebar))
                     })

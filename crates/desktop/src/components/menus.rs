@@ -80,7 +80,7 @@ pub(crate) fn app_menu_trigger(
         .text_size(px(theme.typography.body_size))
         .text_color(theme.colors.text.primary)
         .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-        .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_1().border_color(theme.colors.borders.focused))
         .styles(move |styles| {
             styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
         })
@@ -110,7 +110,7 @@ fn menu_row_button(
         .text_color(style.text_color)
         .cursor_pointer()
         .hover(move |button| button.bg(theme.colors.surfaces.sidebar))
-        .focus(move |button| button.border_1().border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_1().border_color(theme.colors.borders.focused))
         .styles(move |styles| {
             styles.selected(move |button| button.bg(theme.colors.surfaces.sidebar))
         })
@@ -492,7 +492,7 @@ pub(crate) fn pane_layout_toggle(
             .when(!pressed, |toggle| {
                 toggle.hover(move |toggle| toggle.bg(theme.colors.selection.inactive_background))
             })
-            .focus(move |toggle| {
+            .focus_visible(move |toggle| {
                 toggle.shadow(focus_ring_shadow(
                     theme.colors.borders.focused.into(),
                     theme.colors.text.inverse.into(),

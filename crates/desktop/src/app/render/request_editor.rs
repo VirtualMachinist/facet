@@ -114,7 +114,7 @@ impl ProbeApp {
                     .border_color(theme.colors.borders.standard)
                     .bg(theme.colors.surfaces.raised)
                     .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-                    .focus(move |button| button.border_color(theme.colors.borders.focused))
+                    .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
                     .styles(move |styles| {
                         styles.disabled(move |button| {
                             button

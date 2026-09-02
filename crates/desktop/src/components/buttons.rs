@@ -66,7 +66,7 @@ pub(crate) fn text_button(
         .text_size(px(theme.typography.caption_size))
         .text_color(theme.colors.text.secondary)
         .hover(move |button| button.text_color(theme.colors.actions.accent))
-        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
         .child(label.into())
 }
@@ -137,7 +137,7 @@ fn action_button(
                         .border_color(theme.colors.actions.hover)
                 })
             })
-            .focus(move |button| {
+            .focus_visible(move |button| {
                 button.shadow(focus_ring_shadow(
                     theme.colors.actions.accent.into(),
                     theme.colors.text.inverse.into(),
@@ -167,7 +167,7 @@ fn action_button(
             .when(!disabled, |button| {
                 button.hover(move |button| button.bg(theme.colors.surfaces.window))
             })
-            .focus(move |button| {
+            .focus_visible(move |button| {
                 button
                     .border_color(theme.colors.borders.focused)
                     .shadow(focus_ring_shadow(
@@ -204,7 +204,7 @@ fn action_button(
                         .border_color(theme.colors.borders.standard)
                 })
             })
-            .focus(move |button| {
+            .focus_visible(move |button| {
                 button
                     .border_color(theme.colors.borders.strong)
                     .shadow(focus_ring_shadow(
@@ -249,7 +249,7 @@ fn action_button(
                         button.bg(hover).border_color(theme.colors.status.error)
                     })
                 })
-                .focus(move |button| {
+                .focus_visible(move |button| {
                     button
                         .border_color(theme.colors.status.error)
                         .shadow(focus_ring_shadow(
@@ -375,7 +375,7 @@ pub(crate) fn dialog_choice_button(
         .border_color(theme.colors.borders.standard)
         .cursor_pointer()
         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-        .focus(move |button| {
+        .focus_visible(move |button| {
             button
                 .border_color(theme.colors.borders.strong)
                 .shadow(focus_ring_shadow(

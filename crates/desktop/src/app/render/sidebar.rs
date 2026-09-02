@@ -791,7 +791,7 @@ impl ProbeApp {
                         .border_color(transparent_black())
                         .cursor_pointer()
                         .hover(move |row| row.bg(theme.colors.surfaces.window))
-                        .focus(move |row| row.border_color(theme.colors.borders.focused))
+                        .focus_visible(move |row| row.border_color(theme.colors.borders.focused))
                         .on_click(move |_, window, cx| {
                             let path = open_path.clone();
                             let _ = open_view.update(cx, |view, cx| {
@@ -837,7 +837,7 @@ impl ProbeApp {
                                 )
                                 .opacity(0.35)
                                 .group_hover(remove_group, |button| button.opacity(1.0))
-                                .focus(move |button| {
+                                .focus_visible(move |button| {
                                     button
                                         .opacity(1.0)
                                         .border_color(theme.colors.borders.focused)

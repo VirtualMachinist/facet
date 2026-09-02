@@ -512,7 +512,7 @@ impl<T: Clone + Eq + 'static> RenderOnce for ProbeDropdown<T> {
             .when(!self.disabled, |trigger| {
                 trigger.hover(move |trigger| trigger.bg(theme.colors.selection.inactive_background))
             })
-            .focus(move |trigger| trigger.border_color(theme.colors.borders.focused))
+            .focus_visible(move |trigger| trigger.border_color(theme.colors.borders.focused))
             .disabled(self.disabled)
             .on_click({
                 let controller = controller.clone();

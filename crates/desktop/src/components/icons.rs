@@ -253,7 +253,7 @@ fn icon_button_base(
         .when(enabled, |button| {
             button
                 .hover(move |button| button.bg(active_background))
-                .focus(move |button| button.bg(active_background))
+                .focus_visible(move |button| button.bg(active_background))
                 .styles(move |styles| styles.selected(move |button| button.bg(active_background)))
         })
 }

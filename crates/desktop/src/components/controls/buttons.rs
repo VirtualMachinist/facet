@@ -42,7 +42,7 @@ fn editor_button_base(
                 button.bg(theme.colors.selection.inactive_background)
             }
         })
-        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
 }
 
@@ -152,7 +152,7 @@ fn tab_button_base(
         .aria_selected(selected)
         .aria_position_in_set(position)
         .aria_size_of_set(size)
-        .focus(move |tab| tab.border_color(theme.colors.borders.focused))
+        .focus_visible(move |tab| tab.border_color(theme.colors.borders.focused))
         .cursor_pointer()
         .on_click(on_click)
 }
@@ -210,7 +210,7 @@ pub(crate) fn icon_button(
         .border_color(transparent_black())
         .cursor_pointer()
         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
         .child(icon)
 }
@@ -240,7 +240,7 @@ pub(crate) fn compact_icon_button(
                 .border_color(transparent_black())
                 .cursor_pointer()
                 .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-                .focus(move |button| button.border_color(theme.colors.borders.focused))
+                .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
                 .on_click(on_click)
                 .child(icon),
         )

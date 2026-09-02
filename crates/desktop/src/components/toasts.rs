@@ -110,7 +110,7 @@ pub(crate) fn toast(
                         .rounded(px(theme.metrics.radius_small))
                         .text_color(theme.colors.text.secondary)
                         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-                        .focus(move |button| {
+                        .focus_visible(move |button| {
                             button.shadow(super::buttons::focus_ring_shadow(
                                 theme.colors.borders.focused.into(),
                                 theme.colors.surfaces.overlay.into(),

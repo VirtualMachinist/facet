@@ -311,7 +311,7 @@ fn search_card_button(
         .border_color(transparent_black())
         .cursor_pointer()
         .hover(move |button| button.bg(theme.colors.selection.inactive_background))
-        .focus(move |button| button.border_color(theme.colors.borders.focused))
+        .focus_visible(move |button| button.border_color(theme.colors.borders.focused))
         .on_click(on_click)
         .child(icon)
 }
