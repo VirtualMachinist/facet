@@ -16,12 +16,19 @@ fn bundled_structure_edits_save_reload_and_preserve_unknown_fields() {
         })
         .unwrap();
     assert_eq!(created.selector.as_deref(), Some("items/1/items/0"));
-    loaded
+    let renamed = loaded
         .apply_structure(StructureOperation::RenameRequest {
             selector: "items/1/items/0".to_owned(),
             name: "Renamed".to_owned(),
         })
         .unwrap();
+    assert_eq!(
+        renamed
+            .selector_remaps
+            .get("items/1/items/0")
+            .map(String::as_str),
+        Some("items/1/items/0")
+    );
     let moved = loaded
         .apply_structure(StructureOperation::MoveRequest {
             selector: "items/1/items/0".to_owned(),

@@ -393,7 +393,8 @@ fn bundled_selector_remaps(
     let mut remaps = BTreeMap::new();
     for (selector, _) in old_items {
         let mut path = parse_selector(selector)?;
-        if let Some(source_path) = &source_path
+        if removes_source
+            && let Some(source_path) = &source_path
             && path.starts_with(source_path)
         {
             if !moved_source {

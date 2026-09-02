@@ -1,6 +1,54 @@
 use super::*;
 
 #[gpui::test]
+fn structural_rename_keeps_open_tab_and_dirty_draft(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = writable_structure_fixture("rename-open-tab");
+    let workspace = probe_opencollection::load_workspace(&fixture).unwrap();
+    let request = workspace.request_key("items/0").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.session_store = None;
+            view.set_workspace(fixture.clone(), workspace);
+            view.select_request(request, cx);
+            view.edit_request(
+                request,
+                |request| request.url = Some("https://local.example/dirty".to_owned()),
+                cx,
+            );
+            view.apply_structure(
+                probe_opencollection::StructureOperation::RenameRequest {
+                    selector: "items/0".to_owned(),
+                    name: "Renamed Alpha".to_owned(),
+                },
+                window,
+                cx,
+            );
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert!(view.structure_task.is_none(), "{:?}", toast_debug(view));
+            let loaded = view.loaded_workspace.as_ref().unwrap();
+            let renamed = loaded.request_key("items/0").unwrap();
+            let request = loaded.workspace().request(renamed).unwrap();
+            assert_eq!(request.metadata.name.as_deref(), Some("Renamed Alpha"));
+            assert_eq!(request.url.as_deref(), Some("https://local.example/dirty"));
+            assert!(view.persistence.is_dirty(renamed, request));
+            assert_eq!(view.shell.active_tab(), Some(renamed));
+            assert_eq!(view.shell.tabs(), &[renamed]);
+        })
+        .unwrap();
+
+    fs::remove_file(fixture).unwrap();
+}
+
+#[gpui::test]
 fn structural_move_remaps_tabs_and_preserves_dirty_drafts(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
