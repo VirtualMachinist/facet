@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     path::{Path, PathBuf},
@@ -15,7 +15,7 @@ use gpui::{
     Point, Render, ScrollHandle, ScrollStrategy, StatefulInteractiveElement as _, Styled as _,
     Task, TitlebarOptions, UniformListScrollHandle, Window, WindowBounds, WindowControlArea,
     WindowOptions, deferred, div, point, prelude::FluentBuilder as _, px, relative, size,
-    uniform_list,
+    transparent_black, uniform_list,
 };
 #[cfg(target_os = "macos")]
 use gpui::{Menu, MenuItem, OsAction, SystemMenuType};

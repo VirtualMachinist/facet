@@ -1059,6 +1059,124 @@ fn recent_collection_in_sidebar_loads_the_workspace(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn recent_collection_can_be_removed_from_the_sidebar(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let fixture = bundled_fixture();
+    let next = PathBuf::from("/tmp/next-collection.yml");
+    window
+        .update(cx, |view, _, cx| {
+            view.session_store = None;
+            view.session.recent_collections = vec![fixture.clone(), next.clone()];
+            cx.notify();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let remove = visual
+        .debug_bounds("recent-collection-remove-0")
+        .expect("recent collection remove button should be rendered");
+    visual.simulate_click(remove.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            assert_eq!(view.session.recent_collections, vec![next]);
+            assert!(view.loaded_workspace.is_none());
+        })
+        .expect("test window should remain open");
+
+    window
+        .update(cx, |view, window, _| {
+            let next_focus = view
+                .transient
+                .recent_collection_focus_handles
+                .borrow()
+                .get(&PathBuf::from("/tmp/next-collection.yml"))
+                .cloned()
+                .expect("next recent collection should have a focus handle");
+            assert!(next_focus.is_focused(window));
+        })
+        .expect("next recent collection should receive focus");
+}
+
+#[gpui::test]
+fn removing_the_last_recent_collection_restores_sidebar_focus(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    window
+        .update(cx, |view, _, cx| {
+            view.session_store = None;
+            view.session.recent_collections = vec![bundled_fixture()];
+            cx.notify();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let remove = visual
+        .debug_bounds("recent-collection-remove-0")
+        .expect("recent collection remove button should be rendered");
+    visual.simulate_click(remove.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    window
+        .update(cx, |view, window, _| {
+            assert!(view.session.recent_collections.is_empty());
+            assert!(
+                view.transient
+                    .sidebar_import_trigger_focus
+                    .is_focused(window)
+            );
+        })
+        .expect("sidebar import trigger should receive focus");
+}
+
+#[gpui::test]
+fn recent_collection_focus_handles_are_pruned(cx: &mut TestAppContext) {
+    cx.update(Theme::init);
+    let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {
+        ProbeApp::new(window, cx)
+    });
+    let stale = bundled_fixture();
+    let current = PathBuf::from("/tmp/current-collection.yml");
+    window
+        .update(cx, |view, _, cx| {
+            view.session.recent_collections = vec![stale.clone()];
+            cx.notify();
+        })
+        .expect("test window should be open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, cx| {
+            assert!(
+                view.transient
+                    .recent_collection_focus_handles
+                    .borrow()
+                    .contains_key(&stale)
+            );
+            view.session.recent_collections = vec![current.clone()];
+            cx.notify();
+        })
+        .expect("test window should remain open");
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _, _| {
+            let focus_handles = view.transient.recent_collection_focus_handles.borrow();
+            assert!(!focus_handles.contains_key(&stale));
+            assert!(focus_handles.contains_key(&current));
+        })
+        .expect("stale focus handles should be pruned");
+}
+
+#[gpui::test]
 fn empty_sidebar_new_collection_creates_and_loads_a_workspace(cx: &mut TestAppContext) {
     cx.update(Theme::init);
     let window = cx.open_window(size(px(900.0), px(640.0)), |window, cx| {

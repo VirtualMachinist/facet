@@ -68,6 +68,11 @@ impl SessionState {
         self.collapsed_folders.clear();
     }
 
+    pub(crate) fn remove_recent_collection(&mut self, path: &Path) {
+        self.recent_collections.retain(|recent| recent != path);
+        self.selected_environments.remove(path);
+    }
+
     pub(crate) fn selected_environment_for(&self, path: &Path) -> Option<&str> {
         self.selected_environments.get(path).map(String::as_str)
     }
@@ -225,6 +230,19 @@ mod tests {
 
         assert_eq!(state.recent_collections.len(), 10);
         assert_eq!(state.recent_collections[0], Path::new("/tmp/collection-5"));
+    }
+
+    #[test]
+    fn removing_a_recent_collection_also_forgets_its_environment_selection() {
+        let mut state = SessionState::default();
+        let path = PathBuf::from("/tmp/collection");
+        state.activate_collection(path.clone());
+        state.remember_selected_environment(path.clone(), Some("development".to_owned()));
+
+        state.remove_recent_collection(&path);
+
+        assert!(state.recent_collections.is_empty());
+        assert_eq!(state.selected_environment_for(&path), None);
     }
 
     #[test]

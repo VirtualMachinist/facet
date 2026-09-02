@@ -516,6 +516,7 @@ impl ProbeApp {
         let sidebar_import_postman_view = cx.weak_entity();
         let sidebar_import_yaak_view = cx.weak_entity();
         let sidebar_import_trigger_focus = self.transient.sidebar_import_trigger_focus.clone();
+        let recent_collection_empty_focus = self.transient.sidebar_import_trigger_focus.clone();
         let sidebar_import_popup_focus = self.transient.sidebar_import_popup_focus.clone();
         let can_edit = self.loaded_workspace.is_some() && self.structure_task.is_none();
         let add_menu_state_view = cx.weak_entity();
@@ -727,6 +728,20 @@ impl ProbeApp {
                         ))
                         .child(sidebar_import_menu),
                 );
+            let recent_row_focus_handles = {
+                let mut focus_handles = self.transient.recent_collection_focus_handles.borrow_mut();
+                focus_handles.retain(|path, _| self.session.recent_collections.contains(path));
+                self.session
+                    .recent_collections
+                    .iter()
+                    .map(|path| {
+                        focus_handles
+                            .entry(path.clone())
+                            .or_insert_with(|| cx.focus_handle())
+                            .clone()
+                    })
+                    .collect::<Vec<_>>()
+            };
             if !self.session.recent_collections.is_empty() {
                 tree = tree.child(
                     div()
@@ -739,30 +754,47 @@ impl ProbeApp {
                 );
                 for (index, path) in self.session.recent_collections.iter().enumerate() {
                     let open_path = path.clone();
+                    let remove_path = path.clone();
+                    let empty_focus = recent_collection_empty_focus.clone();
+                    let row_focus = recent_row_focus_handles[index].clone();
+                    let next_focus = recent_row_focus_handles
+                        .get(index + 1)
+                        .or_else(|| {
+                            index
+                                .checked_sub(1)
+                                .and_then(|index| recent_row_focus_handles.get(index))
+                        })
+                        .cloned();
                     let label = path
                         .file_name()
                         .and_then(|name| name.to_str())
                         .unwrap_or("Collection")
                         .to_owned();
+                    let remove_label = label.clone();
                     let detail = path.display().to_string();
-                    let view = cx.weak_entity();
-                    let row = Button::new(("recent-collection", index))
-                        .focusable(false)
-                        .tab_stop(false)
-                        .flex_none()
+                    let remove_group = format!("recent-collection-remove-{index}");
+                    let open_view = cx.weak_entity();
+                    let remove_view = cx.weak_entity();
+                    let open_row = Button::new(("recent-collection-open", index))
+                        .track_focus(&row_focus)
+                        .w_full()
                         .py(px(theme.metrics.spacing_2))
                         .px(px(theme.metrics.spacing_2))
+                        .pr(px(theme.metrics.control_height + theme.metrics.spacing_2))
                         .flex()
                         .flex_col()
                         .items_start()
                         .gap(px(theme.metrics.spacing_1))
                         .overflow_hidden()
                         .rounded(px(theme.metrics.radius_small))
+                        .border_1()
+                        .border_color(transparent_black())
                         .cursor_pointer()
                         .hover(move |row| row.bg(theme.colors.surfaces.window))
+                        .focus(move |row| row.border_color(theme.colors.borders.focused))
                         .on_click(move |_, window, cx| {
                             let path = open_path.clone();
-                            let _ = view.update(cx, |view, cx| {
+                            let _ = open_view.update(cx, |view, cx| {
                                 if !view.loading {
                                     view.request_load_workspace(path, None, window, cx);
                                 }
@@ -774,6 +806,44 @@ impl ProbeApp {
                                 .text_size(px(theme.typography.caption_size))
                                 .text_color(theme.colors.text.muted),
                         );
+                    let row = div().flex_none().relative().w_full().child(open_row).child(
+                        div()
+                            .absolute()
+                            .occlude()
+                            .top(relative(0.5))
+                            .mt(px(-theme.metrics.control_height / 2.0))
+                            .right(px(theme.metrics.spacing_1))
+                            .group(remove_group.clone())
+                            .child(
+                                components::remove_row_button(
+                                    theme,
+                                    ("recent-collection-remove", index),
+                                    format!("Remove {remove_label} from recent collections"),
+                                    move |_, window, cx| {
+                                        let _ = remove_view.update(cx, |view, cx| {
+                                            view.session.remove_recent_collection(&remove_path);
+                                            view.transient
+                                                .recent_collection_focus_handles
+                                                .borrow_mut()
+                                                .remove(&remove_path);
+                                            view.persist_session(cx);
+                                            cx.notify();
+                                        });
+                                        next_focus
+                                            .as_ref()
+                                            .unwrap_or(&empty_focus)
+                                            .focus(window, cx);
+                                    },
+                                )
+                                .opacity(0.35)
+                                .group_hover(remove_group, |button| button.opacity(1.0))
+                                .focus(move |button| {
+                                    button
+                                        .opacity(1.0)
+                                        .border_color(theme.colors.borders.focused)
+                                }),
+                            ),
+                    );
                     #[cfg(test)]
                     let row = row.debug_selector(move || format!("recent-collection-{index}"));
                     tree = tree.child(row);
