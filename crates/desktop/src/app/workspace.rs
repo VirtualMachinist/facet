@@ -547,6 +547,17 @@ impl ProbeApp {
                 }
             }
             (
+                ApplicationDialog::SelectCollectionFile { candidates },
+                ApplicationDialogAction::SelectCollectionFile(index),
+            ) => {
+                if let Some(path) = candidates.get(index) {
+                    self.request_load_workspace(path.clone(), None, window, cx);
+                } else {
+                    self.focus_handle.focus(window, cx);
+                    cx.notify();
+                }
+            }
+            (
                 ApplicationDialog::ConfirmPartialYaakImport {
                     preview,
                     workspace_id,
@@ -560,6 +571,7 @@ impl ProbeApp {
             ) => self.convert_postman_import(*preview, true, window, cx),
             (
                 ApplicationDialog::SelectYaakWorkspace { .. }
+                | ApplicationDialog::SelectCollectionFile { .. }
                 | ApplicationDialog::ConfirmPartialYaakImport { .. }
                 | ApplicationDialog::ConfirmPartialPostmanImport { .. },
                 ApplicationDialogAction::Cancel,

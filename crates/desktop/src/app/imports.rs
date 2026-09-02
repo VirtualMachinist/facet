@@ -1,9 +1,56 @@
 use super::*;
 
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum CollectionPathResolution {
+    Open(PathBuf),
+    Choose(Vec<PathBuf>),
+}
+
+pub(super) fn resolve_collection_path(path: PathBuf) -> Result<CollectionPathResolution, String> {
+    if path.is_file() {
+        return Ok(CollectionPathResolution::Open(path));
+    }
+    if !path.is_dir() {
+        return Err(format!("{} is not a file or folder", path.display()));
+    }
+
+    if load_workspace(&path).is_ok() {
+        return Ok(CollectionPathResolution::Open(path));
+    }
+
+    let entries = fs::read_dir(&path)
+        .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+    let mut candidates = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate.is_file() && is_yaml_file(candidate))
+        .filter(|candidate| {
+            load_workspace(candidate).is_ok_and(|workspace| !workspace.uses_path_locators())
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+
+    match candidates.len() {
+        0 => Err(format!(
+            "No OpenCollection workspace was found in {}. Select an unbundled collection folder or a folder containing a bundled .yml or .yaml collection.",
+            path.display()
+        )),
+        1 => Ok(CollectionPathResolution::Open(candidates.remove(0))),
+        _ => Ok(CollectionPathResolution::Choose(candidates)),
+    }
+}
+
+fn is_yaml_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some(extension) if extension.eq_ignore_ascii_case("yml") || extension.eq_ignore_ascii_case("yaml")
+    )
+}
+
 impl ProbeApp {
     pub(super) fn choose_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
+            files: cfg!(target_os = "macos"),
             directories: true,
             multiple: false,
             prompt: Some("Open Collection".into()),
@@ -30,8 +77,23 @@ impl ProbeApp {
                 let Some(path) = paths.into_iter().next() else {
                     return;
                 };
-                let _ = view.update_in(cx, |view, window, cx| {
-                    view.request_load_workspace(path, None, window, cx);
+                let result = cx
+                    .background_spawn(async move { resolve_collection_path(path) })
+                    .await;
+                let _ = view.update_in(cx, |view, window, cx| match result {
+                    Ok(CollectionPathResolution::Open(path)) => {
+                        view.request_load_workspace(path, None, window, cx);
+                    }
+                    Ok(CollectionPathResolution::Choose(candidates)) => {
+                        view.show_application_dialog(
+                            ApplicationDialog::SelectCollectionFile { candidates },
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        view.show_toast(ToastIntent::Error, error, cx);
+                    }
                 });
             })
             .detach();

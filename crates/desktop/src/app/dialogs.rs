@@ -74,6 +74,9 @@ pub(crate) enum ApplicationDialog {
         preview: YaakImportPreview,
         workspaces: Vec<YaakWorkspaceSummary>,
     },
+    SelectCollectionFile {
+        candidates: Vec<PathBuf>,
+    },
     ConfirmPartialYaakImport {
         preview: YaakImportPreview,
         workspace_id: String,
@@ -154,6 +157,7 @@ impl ApplicationDialog {
                 Cow::Borrowed("Collection changes conflict with local edits")
             }
             Self::SelectYaakWorkspace { .. } => Cow::Borrowed("Select a Yaak workspace"),
+            Self::SelectCollectionFile { .. } => Cow::Borrowed("Select a collection"),
             Self::ConfirmPartialYaakImport { .. } => {
                 Cow::Borrowed("Some Yaak data cannot be represented")
             }
@@ -181,12 +185,16 @@ impl ApplicationDialog {
             Self::SelectYaakWorkspace { .. } => {
                 "Choose the workspace to import into a new Probe collection."
             }
+            Self::SelectCollectionFile { .. } => {
+                "This folder contains multiple bundled OpenCollection files. Choose one to open."
+            }
         }
     }
 
     pub(crate) const fn width(&self) -> f32 {
         match self {
             Self::SelectYaakWorkspace { .. }
+            | Self::SelectCollectionFile { .. }
             | Self::ConfirmPartialYaakImport { .. }
             | Self::ConfirmPartialPostmanImport { .. } => components::WIDE_DIALOG_WIDTH,
             _ => components::COMPACT_DIALOG_WIDTH,
@@ -200,6 +208,7 @@ impl ApplicationDialog {
             Self::Delete { .. } | Self::DeleteEnvironment { .. } => Some(DELETE_DIALOG_ACTIONS),
             Self::FilesystemConflict { .. } => Some(FILESYSTEM_CONFLICT_DIALOG_ACTIONS),
             Self::SelectYaakWorkspace { .. } => None,
+            Self::SelectCollectionFile { .. } => None,
             Self::ConfirmPartialYaakImport { .. } | Self::ConfirmPartialPostmanImport { .. } => {
                 Some(PARTIAL_IMPORT_DIALOG_ACTIONS)
             }
@@ -247,6 +256,7 @@ pub(crate) enum ApplicationDialogAction {
     UseDisk,
     KeepLocal,
     SelectWorkspace(usize),
+    SelectCollectionFile(usize),
     ImportSupportedData,
 }
 

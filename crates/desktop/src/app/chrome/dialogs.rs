@@ -102,6 +102,40 @@ impl ProbeApp {
                     window,
                     cx,
                 ));
+        } else if let ApplicationDialog::SelectCollectionFile { candidates } = dialog {
+            let mut choices = div()
+                .id("application-dialog-collections")
+                .mt(px(theme.metrics.spacing_3))
+                .max_h(px(320.0))
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(px(theme.metrics.spacing_2));
+            for (index, candidate) in candidates.iter().enumerate() {
+                let choice_view = cx.weak_entity();
+                choices = choices.child(components::dialog_choice_button(
+                    theme,
+                    format!("application-dialog-collection-{index}"),
+                    candidate.display().to_string(),
+                    move |_, window, cx| {
+                        let _ = choice_view.update(cx, |view, cx| {
+                            view.handle_application_dialog_action(
+                                ApplicationDialogAction::SelectCollectionFile(index),
+                                window,
+                                cx,
+                            );
+                        });
+                    },
+                ));
+            }
+            content = content
+                .child(choices)
+                .child(Self::render_application_dialog_actions(
+                    theme,
+                    &[CANCEL_DIALOG_ACTION],
+                    window,
+                    cx,
+                ));
         }
 
         components::dialog_layer(

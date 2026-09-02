@@ -18,6 +18,7 @@ use probe_postman::{COLLECTION_VARIABLES_ENVIRONMENT, inspect_postman_source};
 use probe_yaak::{ImportDiagnostic, ImportDiagnosticSeverity};
 use tokio::sync::oneshot;
 
+use super::imports::{CollectionPathResolution, resolve_collection_path};
 use super::{
     ApplicationDialog, ApplicationDialogAction, CloseImportSubmenu, DesktopMenu,
     IMPORT_DIAGNOSTIC_GROUP_LIMIT, ImportSource, OpenFileMenu, OpenImportSubmenu, PendingClose,
@@ -122,6 +123,46 @@ fn large_fixture() -> PathBuf {
 fn nested_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/opencollection/phase16-bundled.yml")
+}
+
+#[test]
+fn collection_folder_resolution_prefers_an_unbundled_workspace_root() {
+    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/opencollection/phase16-unbundled");
+
+    assert_eq!(
+        resolve_collection_path(directory.clone()),
+        Ok(CollectionPathResolution::Open(directory))
+    );
+}
+
+#[test]
+fn collection_folder_resolution_finds_and_orders_bundled_yaml_files() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "probe-desktop-collection-resolution-{}-{unique}",
+        std::process::id()
+    ));
+    fs::create_dir(&directory).unwrap();
+    let first = directory.join("a.yaml");
+    let second = directory.join("b.yml");
+    fs::copy(bundled_fixture(), &second).unwrap();
+    fs::copy(large_fixture(), &first).unwrap();
+    fs::write(
+        directory.join("not-a-collection.yml"),
+        "name: not a collection\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolve_collection_path(directory.clone()),
+        Ok(CollectionPathResolution::Choose(vec![first, second]))
+    );
+
+    fs::remove_dir_all(directory).unwrap();
 }
 
 fn postman_fixture(name: &str) -> PathBuf {
