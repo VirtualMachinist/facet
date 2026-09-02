@@ -40,8 +40,25 @@ impl ResolvedEnvironment {
         self.variables.get(name).map(String::as_str)
     }
 
-    /// Interpolates `{{variable}}` references in a string.
+    /// Interpolates `{{variable}}` references in a request value.
+    ///
+    /// References with no usable plain-variable value are preserved literally so
+    /// callers can intentionally send template syntax. Unavailable secrets still
+    /// produce an error rather than being sent in place of their value.
     pub fn interpolate(&self, input: &str) -> Result<String, EnvironmentResolutionError> {
+        interpolate(input, |name| {
+            if self.secrets_without_values.contains(name) {
+                Err(EnvironmentResolutionError::SecretVariableUnavailable(
+                    name.to_owned(),
+                ))
+            } else {
+                Ok(self.variables.get(name).cloned())
+            }
+        })
+    }
+
+    /// Interpolates `{{variable}}` references and rejects any unavailable value.
+    pub fn interpolate_strict(&self, input: &str) -> Result<String, EnvironmentResolutionError> {
         interpolate(input, |name| {
             if self.secrets_without_values.contains(name) {
                 Err(EnvironmentResolutionError::SecretVariableUnavailable(
@@ -51,6 +68,7 @@ impl ResolvedEnvironment {
                 self.variables
                     .get(name)
                     .cloned()
+                    .map(Some)
                     .ok_or_else(|| EnvironmentResolutionError::MissingVariable(name.to_owned()))
             }
         })
@@ -503,7 +521,7 @@ fn resolve_variable(
     };
     stack.push(name.to_owned());
     let value = interpolate(value, |reference| {
-        resolve_variable(reference, raw, resolved, stack)
+        resolve_variable(reference, raw, resolved, stack).map(Some)
     })?;
     stack.pop();
     resolved.insert(name.to_owned(), value.clone());
@@ -515,7 +533,7 @@ pub(crate) fn interpolate<F>(
     mut lookup: F,
 ) -> Result<String, EnvironmentResolutionError>
 where
-    F: FnMut(&str) -> Result<String, EnvironmentResolutionError>,
+    F: FnMut(&str) -> Result<Option<String>, EnvironmentResolutionError>,
 {
     let mut output = String::with_capacity(input.len());
     let mut remaining = input;
@@ -529,7 +547,10 @@ where
         if name.is_empty() || name.contains("{{") {
             return Err(EnvironmentResolutionError::MalformedInterpolation);
         }
-        output.push_str(&lookup(name)?);
+        match lookup(name)? {
+            Some(value) => output.push_str(&value),
+            None => output.push_str(&remaining[start..start + 2 + end + 2]),
+        }
         remaining = &expression[end + 2..];
     }
     output.push_str(remaining);

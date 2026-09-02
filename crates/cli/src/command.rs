@@ -17,6 +17,7 @@ const EXTENDS: u16 = 1 << 8;
 const WORKSPACE: u16 = 1 << 9;
 const ALLOW_PARTIAL: u16 = 1 << 10;
 const VAR: u16 = 1 << 11;
+const STRICT_VARIABLES: u16 = 1 << 12;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -51,6 +52,7 @@ pub(crate) enum Command {
         input: WorkspaceInput,
         selector: String,
         environment: Option<String>,
+        strict_variables: bool,
     },
     Variables {
         input: WorkspaceInput,
@@ -63,6 +65,7 @@ pub(crate) enum Command {
         environment: Option<String>,
         variables: Vec<(String, String)>,
         output: Option<PathBuf>,
+        strict_variables: bool,
     },
     Set {
         input: WorkspaceInput,
@@ -112,6 +115,7 @@ struct Options {
     workspace: Option<String>,
     allow_partial: bool,
     variables: Vec<(String, String)>,
+    strict_variables: bool,
 }
 
 impl Options {
@@ -128,6 +132,7 @@ impl Options {
             | option_bit(self.workspace.is_some(), WORKSPACE)
             | option_bit(self.allow_partial, ALLOW_PARTIAL)
             | option_bit(!self.variables.is_empty(), VAR)
+            | option_bit(self.strict_variables, STRICT_VARIABLES)
     }
 
     fn allow(&self, allowed: u16) -> Result<(), CliError> {
@@ -197,11 +202,12 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             Ok(Command::ListFolders { input: input(path) })
         }
         [group, action, path, selector] if group == "request" && action == "get" => {
-            options.allow(ENVIRONMENT)?;
+            options.allow(ENVIRONMENT | STRICT_VARIABLES)?;
             Ok(Command::Get {
                 input: input(path),
                 selector: selector.clone(),
                 environment: options.environment,
+                strict_variables: options.strict_variables,
             })
         }
         [group, action, path, selector] if group == "request" && action == "variables" => {
@@ -213,13 +219,14 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             })
         }
         [group, action, path, selector] if group == "request" && action == "run" => {
-            options.allow(ENVIRONMENT | OUTPUT | VAR)?;
+            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES)?;
             Ok(Command::Run {
                 input: input(path),
                 selector: selector.clone(),
                 environment: options.environment,
                 variables: options.variables,
                 output: options.output,
+                strict_variables: options.strict_variables,
             })
         }
         [group, action, path, selector] if group == "request" && action == "set" => {
@@ -418,6 +425,7 @@ fn extract_options(args: &mut Vec<String>) -> Result<Options, CliError> {
         workspace: extract_string_option(args, "--workspace")?,
         allow_partial: extract_flag(args, "--allow-partial")?,
         variables: extract_variables(args)?,
+        strict_variables: extract_flag(args, "--strict-variables")?,
     })
 }
 

@@ -11,9 +11,9 @@ probe collection import postman <source.json> <destination> [--allow-partial] [-
 probe collection import yaak <source> <destination> [--workspace <id>] [--allow-partial] [--json]
 probe collection validate <path> [--json]
 probe request list <path> [--json]
-probe request get <path> <selector> [--environment <name>] [--json]
+probe request get <path> <selector> [--environment <name>] [--strict-variables] [--json]
 probe request variables <path> <selector> [--environment <name>] [--json]
-probe request run <path> <selector> [--environment <name>] [--var <name=value>]... [--output <file>] [--json]
+probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--json]
 probe request rename <path> <selector> --name <name> [--json]
@@ -65,6 +65,11 @@ applies parent environments from `extends`, and interpolates variables in suppor
 request fields. Without it, `request get` returns the request as stored, including
 unresolved `{{variable}}` expressions. That flag is not a write operation; use
 `environment set` and `environment unset` to persist variable values.
+
+By default, variables without an available value remain literal in `request get` and
+`request run`, so `{{name}}` can intentionally be sent. Add `--strict-variables` to
+either command to reject undefined or disabled variables with the stable
+`missing_variable` error instead. Unavailable secret variables always fail.
 
 `request variables` reports the interpolation variables referenced by a request and
 their request locations. With `--environment`, it also reports whether each variable

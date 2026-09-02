@@ -45,6 +45,7 @@ pub use request::{
 };
 pub use request_resolution::{
     RequestVariableInfo, VariableUsage, discover_request_variables, resolve_request,
+    resolve_request_strict,
 };
 pub use workspace::{
     FolderKey, RequestKey, Workspace, WorkspaceEditError, WorkspaceFolder, WorkspaceItemRef,

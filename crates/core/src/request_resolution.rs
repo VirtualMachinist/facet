@@ -90,9 +90,25 @@ pub fn resolve_request(
     request: &HttpRequest,
     environment: &ResolvedEnvironment,
 ) -> Result<HttpRequest, EnvironmentResolutionError> {
+    resolve_request_with(request, |value| environment.interpolate(value))
+}
+
+/// Clones a request and interpolates every supported request-value field, rejecting
+/// references that do not have an available value.
+pub fn resolve_request_strict(
+    request: &HttpRequest,
+    environment: &ResolvedEnvironment,
+) -> Result<HttpRequest, EnvironmentResolutionError> {
+    resolve_request_with(request, |value| environment.interpolate_strict(value))
+}
+
+fn resolve_request_with(
+    request: &HttpRequest,
+    interpolate: impl Fn(&str) -> Result<String, EnvironmentResolutionError>,
+) -> Result<HttpRequest, EnvironmentResolutionError> {
     let mut request = request.clone();
     transform_request_strings(&mut request, |value, _usage| {
-        *value = environment.interpolate(value)?;
+        *value = interpolate(value)?;
         Ok(())
     })?;
     Ok(request)
@@ -228,7 +244,7 @@ fn interpolation_references(input: &str) -> Result<Vec<String>, EnvironmentResol
     let mut references = Vec::new();
     crate::environment::interpolate(input, |name| {
         references.push(name.to_owned());
-        Ok(String::new())
+        Ok(Some(String::new()))
     })?;
     Ok(references)
 }

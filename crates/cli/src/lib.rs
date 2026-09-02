@@ -135,6 +135,7 @@ pub const fn help() -> &'static str {
         "      --extends <name>       Parent environment for environment create\n",
         "      --output <file>        Write the response body to a file\n",
         "      --var <NAME=VALUE>     Override a variable for this request execution; may be repeated\n",
+        "      --strict-variables      Reject request variables without an available value\n",
         "      --name <name>          Set a request, folder, collection, environment, or variable name\n",
         "      --method <method>      Set an HTTP method\n",
         "      --url <url>            Set a request URL\n",
@@ -171,9 +172,9 @@ const REQUEST_HELP: &str = concat!(
     "\n",
     "Commands:\n",
     "  list <path|->                 List requests and repository selectors\n",
-    "  get <path|-> <selector> [--environment <name>]  Inspect one request\n",
+    "  get <path|-> <selector> [--environment <name>] [--strict-variables]  Inspect one request\n",
     "  variables <path|-> <selector> [--environment <name>]  Discover referenced variables\n",
-    "  run <path|-> <selector> [--environment <name>] [--var <NAME=VALUE>]... [--output <file>]\n",
+    "  run <path|-> <selector> [--environment <name>] [--strict-variables] [--var <NAME=VALUE>]... [--output <file>]\n",
     "  set <path> <selector> [--name <name>] [--method <method>] [--url <url>]\n",
     "  create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>]\n",
     "  rename <path> <selector> --name <name>\n",
@@ -183,6 +184,7 @@ const REQUEST_HELP: &str = concat!(
     "\n",
     "Options:\n",
     "      --var <NAME=VALUE>  Override a variable for this request execution. May be specified multiple times.\n",
+    "      --strict-variables   Reject request variables without an available value.\n",
 );
 
 const FOLDER_HELP: &str = concat!(
@@ -315,7 +317,14 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             input,
             selector,
             environment,
-        } => request::get(&input, &selector, environment.as_deref(), stdin),
+            strict_variables,
+        } => request::get(
+            &input,
+            &selector,
+            environment.as_deref(),
+            strict_variables,
+            stdin,
+        ),
         Command::Variables {
             input,
             selector,
@@ -327,12 +336,14 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             environment,
             variables,
             output,
+            strict_variables,
         } => request::run(
             &input,
             &selector,
             environment.as_deref(),
             &variables,
             output.as_ref(),
+            strict_variables,
             stdin,
         ),
         Command::Set {

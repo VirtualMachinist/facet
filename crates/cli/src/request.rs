@@ -2,7 +2,7 @@ use std::{borrow::Cow, io::Read, path::PathBuf};
 
 use probe_core::{
     HttpRequest, RequestUpdate, RequestVariableInfo, VariableUsage, discover_request_variables,
-    resolve_environment_with_overrides, resolve_request,
+    resolve_environment_with_overrides, resolve_request, resolve_request_strict,
 };
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use serde_json::json;
@@ -45,10 +45,11 @@ pub(crate) fn get(
     input: &WorkspaceInput,
     selector: &str,
     environment: Option<&str>,
+    strict_variables: bool,
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(&loaded, selector, environment, &[])?;
+    let request = selected_request(&loaded, selector, environment, &[], strict_variables)?;
     Ok(CommandOutput {
         human: request_human(selector, environment, &request),
         json: request_json(selector, environment, &request),
@@ -182,10 +183,11 @@ pub(crate) fn run(
     environment: Option<&str>,
     variables: &[(String, String)],
     output: Option<&PathBuf>,
+    strict_variables: bool,
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(&loaded, selector, environment, variables)?;
+    let request = selected_request(&loaded, selector, environment, variables, strict_variables)?;
     let options = ExecutionOptions {
         base_directory: input.base_directory(),
         ..ExecutionOptions::default()
@@ -216,11 +218,12 @@ fn selected_request<'a>(
     selector: &str,
     environment: Option<&str>,
     variables: &[(String, String)],
+    strict_variables: bool,
 ) -> Result<Cow<'a, HttpRequest>, CliError> {
     let key = loaded
         .request_key(selector)
         .ok_or_else(|| CliError::request_not_found(selector))?;
-    if environment.is_some() || !variables.is_empty() {
+    if environment.is_some() || !variables.is_empty() || strict_variables {
         let workspace = loaded.workspace();
         let environment =
             resolve_environment_with_overrides(workspace.environments(), environment, variables)
@@ -228,9 +231,13 @@ fn selected_request<'a>(
         let request = workspace
             .request(key)
             .expect("repository request key must resolve");
-        resolve_request(request, &environment)
-            .map(Cow::Owned)
-            .map_err(CliError::configuration)
+        if strict_variables {
+            resolve_request_strict(request, &environment)
+        } else {
+            resolve_request(request, &environment)
+        }
+        .map(Cow::Owned)
+        .map_err(CliError::configuration)
     } else {
         Ok(Cow::Borrowed(
             loaded

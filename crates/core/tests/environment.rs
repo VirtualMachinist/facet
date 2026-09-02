@@ -257,7 +257,7 @@ fn resolves_supported_request_fields_without_mutating_the_source() {
 }
 
 #[test]
-fn reports_missing_disabled_and_secret_variables() {
+fn preserves_undefined_variables_and_rejects_unavailable_secrets() {
     let disabled = EnvironmentVariable::Plain(Variable {
         name: Some("disabled".to_owned()),
         value: Some(VariableValueSet::Single(VariableValue::String(
@@ -274,11 +274,19 @@ fn reports_missing_disabled_and_secret_variables() {
     let resolved = resolve_environment(&environments, "development").unwrap();
 
     assert_eq!(
-        resolved.interpolate("{{missing}}").unwrap_err(),
+        resolved.interpolate("{{missing}}"),
+        Ok("{{missing}}".to_owned())
+    );
+    assert_eq!(
+        resolved.interpolate("prefix {{ disabled }} suffix"),
+        Ok("prefix {{ disabled }} suffix".to_owned())
+    );
+    assert_eq!(
+        resolved.interpolate_strict("{{missing}}").unwrap_err(),
         EnvironmentResolutionError::MissingVariable("missing".to_owned())
     );
     assert_eq!(
-        resolved.interpolate("{{disabled}}").unwrap_err(),
+        resolved.interpolate_strict("{{disabled}}").unwrap_err(),
         EnvironmentResolutionError::MissingVariable("disabled".to_owned())
     );
     assert_eq!(

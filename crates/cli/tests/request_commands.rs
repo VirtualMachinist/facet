@@ -362,7 +362,6 @@ fn renders_request_variables_for_humans_and_rejects_runtime_values() {
 fn reports_environment_resolution_errors() {
     for (selector, environment, category) in [
         ("items/0", "production", "environment_not_found"),
-        ("items/1", "development", "missing_variable"),
         ("items/2", "development", "secret_variable_unavailable"),
     ] {
         let output = probe()
@@ -376,6 +375,54 @@ fn reports_environment_resolution_errors() {
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["error"]["category"], category);
     }
+}
+
+#[test]
+fn get_preserves_undefined_request_variables() {
+    let output = probe()
+        .args(["request", "get"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/1")
+        .args(["--environment", "development", "--json"])
+        .output()
+        .expect("get command should run");
+
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["url"], "https://dev.example.com/{{missing}}");
+}
+
+#[test]
+fn strict_variables_rejects_undefined_request_variables() {
+    for action in ["get", "run"] {
+        let output = probe()
+            .args(["request", action])
+            .arg(fixture("phase4-environments.yml"))
+            .arg("items/1")
+            .args([
+                "--environment",
+                "development",
+                "--strict-variables",
+                "--json",
+            ])
+            .output()
+            .expect("strict request command should run");
+
+        assert_eq!(output.status.code(), Some(5), "{action}");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["category"], "missing_variable");
+    }
+
+    let output = probe()
+        .args(["request", "get"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/1")
+        .args(["--strict-variables", "--json"])
+        .output()
+        .expect("strict request command without an environment should run");
+    assert_eq!(output.status.code(), Some(5));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "missing_variable");
 }
 
 #[test]
@@ -585,18 +632,28 @@ fn omits_large_response_body_from_stdout() {
 }
 
 #[test]
-fn run_preflights_environment_resolution_before_http() {
+fn run_sends_undefined_request_variables() {
+    let (server_url, server) = serve_once(Vec::new(), "text/plain");
+    let workspace = temporary_path("undefined-variable.yml");
+    let source = fs::read_to_string(fixture("phase4-environments.yml")).unwrap();
+    fs::write(&workspace, source.replace("https://{{host}}", &server_url)).unwrap();
     let output = probe()
         .args(["request", "run"])
-        .arg(fixture("phase4-environments.yml"))
+        .arg(&workspace)
         .arg("items/1")
         .args(["--environment", "development", "--json"])
         .output()
         .expect("run command should run");
 
-    assert_eq!(output.status.code(), Some(5));
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["error"]["category"], "missing_variable");
+    assert!(output.status.success());
+    assert!(
+        server
+            .join()
+            .unwrap()
+            .head
+            .starts_with("GET /%7B%7Bmissing%7D%7D HTTP/1.1\r\n")
+    );
+    fs::remove_file(workspace).unwrap();
 }
 
 #[test]
