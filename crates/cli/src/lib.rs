@@ -147,7 +147,14 @@ pub const fn help() -> &'static str {
         "      --json                Emit versioned deterministic JSON\n",
         "  -q, --quiet               Suppress successful command output\n",
         "  -h, --help                Print help\n",
+        "  -V, --version             Print version\n",
     )
+}
+
+/// Returns the probe CLI version, sourced from the Cargo workspace version.
+#[must_use]
+pub const fn version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 const COLLECTION_HELP: &str = concat!(
@@ -278,6 +285,16 @@ where
             _ => help(),
         };
         return RunOutput::success(help.to_owned());
+    }
+    if args == ["-V"] || args == ["--version"] {
+        let output = CommandOutput {
+            human: format!("probe {}\n", version()),
+            json: json!({
+                "name": "probe",
+                "version": version()
+            }),
+        };
+        return RunOutput::success(output.render(json_output, quiet));
     }
 
     match parse_command(args).and_then(|command| execute(command, stdin)) {
