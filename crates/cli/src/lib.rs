@@ -285,7 +285,14 @@ where
         return RunOutput::success(help.to_owned());
     }
     if args == ["-V"] || args == ["--version"] {
-        return RunOutput::success(format!("probe {}\n", version()));
+        let output = CommandOutput {
+            human: format!("probe {}\n", version()),
+            json: json!({
+                "name": "probe",
+                "version": version()
+            }),
+        };
+        return RunOutput::success(output.render(json_output, quiet));
     }
 
     match parse_command(args).and_then(|command| execute(command, stdin)) {
