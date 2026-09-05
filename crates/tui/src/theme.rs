@@ -38,6 +38,16 @@ impl Appearance {
             Self::Dark => "Graphite Honey",
         }
     }
+
+    /// Parses `--appearance` values. Graphite is the dark default;
+    /// Porcelain is the light appearance.
+    pub fn from_flag(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "graphite" | "dark" | "graphite-honey" => Some(Self::Dark),
+            "porcelain" | "light" | "porcelain-honey" => Some(Self::Light),
+            _ => None,
+        }
+    }
 }
 
 /// One role's foreground/background pair.
@@ -515,6 +525,8 @@ pub enum PaletteToken {
     StatusInformational,
     StatusError,
     StatusWarning,
+    SelectionInactiveBg,
+    SelectionInactiveFg,
 }
 
 impl PaletteToken {
@@ -546,6 +558,8 @@ impl PaletteToken {
             Self::StatusInformational => palette.status_informational,
             Self::StatusError => palette.status_error,
             Self::StatusWarning => palette.status_warning,
+            Self::SelectionInactiveBg => palette.selection_inactive_bg,
+            Self::SelectionInactiveFg => palette.selection_inactive_fg,
         }
     }
 
@@ -570,6 +584,8 @@ impl PaletteToken {
             Self::StatusInformational => Role256::StatusInformational,
             Self::StatusError => Role256::StatusError,
             Self::WindowFg => Role256::TextPrimary,
+            Self::SelectionInactiveBg => Role256::Overlay,
+            Self::SelectionInactiveFg => Role256::TextPrimary,
         }
     }
 
@@ -594,6 +610,8 @@ impl PaletteToken {
             Self::StatusInformational => Role16::StatusInformational,
             Self::StatusError => Role16::StatusError,
             Self::WindowFg => Role16::TextPrimary,
+            Self::SelectionInactiveBg => Role16::Border,
+            Self::SelectionInactiveFg => Role16::TextPrimary,
         }
     }
 }
@@ -612,6 +630,11 @@ pub struct Styles {
     pub muted: Style,
     pub method: Style,
     pub url: Style,
+    pub sidebar: Style,
+    pub editor: Style,
+    pub stone_pill: Style,
+    pub placeholder: Style,
+    pub accent_text: Style,
 }
 
 impl Styles {
@@ -650,9 +673,19 @@ impl Styles {
             .fg(text_inverse)
             .bg(accent)
             .add_modifier(Modifier::BOLD);
-        let muted = base.fg(muted);
+        let muted_style = base.fg(muted);
         let method = base.add_modifier(Modifier::BOLD);
         let url = base.fg(resolve(theme, PaletteToken::TextSecondary));
+        let sidebar_bg = resolve(theme, PaletteToken::SidebarBg);
+        let editor_bg = resolve(theme, PaletteToken::EditorBg);
+        let sidebar = Style::new().fg(text_primary).bg(sidebar_bg);
+        let editor = Style::new().fg(text_primary).bg(editor_bg);
+        let stone_pill = Style::new()
+            .fg(resolve(theme, PaletteToken::SelectionInactiveFg))
+            .bg(resolve(theme, PaletteToken::SelectionInactiveBg))
+            .add_modifier(Modifier::BOLD);
+        let placeholder = base.fg(resolve(theme, PaletteToken::TextPlaceholder));
+        let accent_text = base.fg(accent).add_modifier(Modifier::BOLD);
 
         let _ = palette;
         Self {
@@ -665,9 +698,14 @@ impl Styles {
             status_success,
             status_error,
             selected_row,
-            muted,
+            muted: muted_style,
             method,
             url,
+            sidebar,
+            editor,
+            stone_pill,
+            placeholder,
+            accent_text,
         }
     }
 }
@@ -749,6 +787,33 @@ mod tests {
         let delete = indexed(dark.appearance(), Role256::MethodDelete);
         assert_ne!(get, post);
         assert_ne!(post, delete);
+    }
+
+    #[test]
+    fn appearance_flag_parses_aliases() {
+        assert_eq!(Appearance::from_flag("graphite"), Some(Appearance::Dark));
+        assert_eq!(Appearance::from_flag("Dark"), Some(Appearance::Dark));
+        assert_eq!(
+            Appearance::from_flag("porcelain-honey"),
+            Some(Appearance::Light)
+        );
+        assert_eq!(Appearance::from_flag("light"), Some(Appearance::Light));
+        assert_eq!(Appearance::from_flag("neon"), None);
+    }
+
+    #[test]
+    fn stone_pill_is_not_honey_fill() {
+        let dark = Theme::new(Appearance::Dark);
+        let styles = Styles::for_theme(dark);
+        assert_ne!(
+            styles.stone_pill.bg, styles.selected_row.bg,
+            "section tabs must not use the tree's honey fill"
+        );
+        assert_eq!(
+            styles.selected_row.fg,
+            Some(dark.palette().text_inverse),
+            "dark selected row / Send is carbon on gold"
+        );
     }
 
     #[test]

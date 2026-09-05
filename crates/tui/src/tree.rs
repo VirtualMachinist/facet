@@ -1,17 +1,26 @@
-//! Flattened workspace view for the TUI sidebar.
+//! Sidebar tree with collapse + search state.
 //!
-//! Walks `Workspace` in source order and emits a flat list of visible
-//! rows. Selection is O(1) by row index and resolves back to a
-//! session-only `RequestKey`/`FolderKey`. The runtime keys are session
-//! only (per the architecture contract) and never serialized.
+//! `TreeView` holds the session-only collapse set, the search query, and
+//! produces the visible rows in source order. Workspace keys remain
+//! session-only per the architecture contract.
 
-use probe_core::{FolderKey, RequestKey, Workspace, WorkspaceItemRef};
+use std::collections::BTreeSet;
 
-/// One row in the flattened sidebar.
+use probe_core::{FolderKey, RequestKey, Workspace, WorkspaceFolder, WorkspaceItemRef};
+
+/// One row in the visible tree.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Row {
-    Folder { key: FolderKey, depth: u8 },
-    Request { key: RequestKey, depth: u8 },
+    Folder {
+        key: FolderKey,
+        depth: u8,
+        /// Recursive request count, used for the `▸ Folder (3)` badge.
+        request_count: u32,
+    },
+    Request {
+        key: RequestKey,
+        depth: u8,
+    },
 }
 
 impl Row {
@@ -22,82 +31,288 @@ impl Row {
     }
 }
 
-/// Iterator over a workspace's source-order children, recursively.
-pub struct Flattened<'w> {
-    workspace: &'w Workspace,
-    /// Top-level children iterator (consumed before any descent).
-    root: Option<std::slice::Iter<'w, WorkspaceItemRef>>,
-    /// Folder descent stack; the top frame is the active folder whose
-    /// children we are currently walking.
-    stack: Vec<StackFrame<'w>>,
+/// Sidebar state. Visible rows rebuild whenever the workspace, collapse
+/// set, or search query changes.
+pub struct TreeView {
+    workspace: Option<Workspace>,
+    collapsed: BTreeSet<FolderKey>,
+    search: String,
+    visible: Vec<Row>,
+    selection: usize,
 }
 
-struct StackFrame<'w> {
-    children: std::slice::Iter<'w, WorkspaceItemRef>,
-    next_depth: u8,
-}
-
-impl<'w> Flattened<'w> {
-    pub fn new(workspace: &'w Workspace) -> Self {
+impl Default for TreeView {
+    fn default() -> Self {
         Self {
-            workspace,
-            root: Some(workspace.root_items().iter()),
-            stack: Vec::new(),
+            workspace: None,
+            collapsed: BTreeSet::new(),
+            search: String::new(),
+            visible: Vec::new(),
+            selection: 0,
         }
     }
 }
 
-impl<'w> Iterator for Flattened<'w> {
-    type Item = Row;
+impl TreeView {
+    /// Resets state to a fresh workspace, fully expanded.
+    pub fn reset(&mut self, workspace: Workspace) {
+        self.workspace = Some(workspace);
+        self.collapsed.clear();
+        self.search.clear();
+        self.rebuild();
+        self.selection = self.first_request_index().unwrap_or(0);
+    }
 
-    fn next(&mut self) -> Option<Row> {
-        loop {
-            // Inside a folder: keep walking its children, descending into
-            // any nested folders we encounter.
-            if let Some(frame) = self.stack.last_mut() {
-                if let Some(child) = frame.children.next() {
-                    return Some(emit(
-                        self.workspace,
-                        *child,
-                        frame.next_depth,
-                        &mut self.stack,
-                    ));
-                }
-                self.stack.pop();
-                continue;
+    /// Updates the workspace in place (after persistence writes).
+    pub fn set_workspace(&mut self, workspace: Workspace) {
+        self.workspace = Some(workspace);
+        self.rebuild();
+    }
+
+    /// Returns the workspace if one is loaded.
+    #[cfg(test)]
+    pub fn workspace(&self) -> Option<&Workspace> {
+        self.workspace.as_ref()
+    }
+
+    /// True if the search query is non-empty.
+    pub fn has_search(&self) -> bool {
+        !self.search.is_empty()
+    }
+
+    /// Current search query.
+    pub fn search(&self) -> &str {
+        &self.search
+    }
+
+    /// Replaces the search query, rebuilding visible rows.
+    #[cfg(test)]
+    pub fn set_search(&mut self, query: impl Into<String>) {
+        self.search = query.into();
+        self.rebuild();
+    }
+
+    /// Pushes a character to the search query (no-op when no workspace).
+    pub fn push_search(&mut self, ch: char) {
+        if self.workspace.is_some() {
+            self.search.push(ch);
+            self.rebuild();
+        }
+    }
+
+    /// Pops the last search character.
+    pub fn pop_search(&mut self) {
+        if self.search.pop().is_some() {
+            self.rebuild();
+        }
+    }
+
+    /// Clears the search query and restores the unfiltered tree.
+    pub fn clear_search(&mut self) {
+        if !self.search.is_empty() {
+            let current = self.selected_request_key();
+            self.search.clear();
+            self.rebuild();
+            if let Some(key) = current
+                && let Some(index) = self.index_of_request(key)
+            {
+                self.selection = index;
             }
+        }
+    }
 
-            // Top level: drain the root children, pushing folders onto
-            // the stack so their descendants are walked next.
-            let item = match &mut self.root {
-                Some(iter) => iter.next().copied(),
-                None => return None,
-            }?;
-            return Some(emit(self.workspace, item, 0, &mut self.stack));
+    /// Toggles the collapsed state of `key` and keeps that folder selected.
+    pub fn toggle_collapsed(&mut self, key: FolderKey) {
+        if !self.collapsed.remove(&key) {
+            self.collapsed.insert(key);
+        }
+        self.rebuild();
+        if let Some(index) = self.visible.iter().position(|row| match row {
+            Row::Folder { key: candidate, .. } => *candidate == key,
+            Row::Request { .. } => false,
+        }) {
+            self.selection = index;
+        }
+    }
+
+    /// True when `key` is collapsed.
+    pub fn is_collapsed(&self, key: FolderKey) -> bool {
+        self.collapsed.contains(&key)
+    }
+
+    /// Currently visible rows in source order.
+    pub fn visible_rows(&self) -> &[Row] {
+        &self.visible
+    }
+
+    /// Current selection index into `visible_rows`.
+    pub fn selection(&self) -> usize {
+        self.selection
+    }
+
+    /// Currently selected row, if any.
+    #[cfg(test)]
+    pub fn selected_row(&self) -> Option<Row> {
+        self.visible.get(self.selection).copied()
+    }
+
+    /// Moves the selection by `delta`, clamped to the visible range.
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.visible.is_empty() {
+            return;
+        }
+        let len = self.visible.len() as isize;
+        let current = self.selection as isize;
+        let next = (current + delta).clamp(0, len - 1);
+        self.selection = next as usize;
+    }
+
+    /// Returns the request at the current selection, if any.
+    pub fn selected_request_key(&self) -> Option<RequestKey> {
+        self.visible.get(self.selection).and_then(|row| match row {
+            Row::Request { key, .. } => Some(*key),
+            Row::Folder { .. } => None,
+        })
+    }
+
+    /// Returns the folder at the current selection, if any.
+    pub fn selected_folder_key(&self) -> Option<FolderKey> {
+        self.visible.get(self.selection).and_then(|row| match row {
+            Row::Folder { key, .. } => Some(*key),
+            Row::Request { .. } => None,
+        })
+    }
+
+    fn first_request_index(&self) -> Option<usize> {
+        self.visible
+            .iter()
+            .position(|row| matches!(row, Row::Request { .. }))
+    }
+
+    fn index_of_request(&self, key: RequestKey) -> Option<usize> {
+        self.visible.iter().position(|row| match row {
+            Row::Request { key: candidate, .. } => *candidate == key,
+            Row::Folder { .. } => false,
+        })
+    }
+
+    fn rebuild(&mut self) {
+        let Some(workspace) = self.workspace.as_ref() else {
+            self.visible.clear();
+            self.selection = 0;
+            return;
+        };
+        let query = self.search.trim().to_ascii_lowercase();
+        let filter_active = !query.is_empty();
+        let mut out: Vec<Row> = Vec::new();
+        for item in workspace.root_items() {
+            walk(
+                *item,
+                0,
+                workspace,
+                &self.collapsed,
+                &query,
+                filter_active,
+                &mut out,
+            );
+        }
+        self.visible = out;
+        if self.visible.is_empty() {
+            self.selection = 0;
+        } else if self.selection >= self.visible.len() {
+            self.selection = self.visible.len() - 1;
         }
     }
 }
 
-fn emit<'w>(
-    workspace: &'w Workspace,
+fn walk(
     item: WorkspaceItemRef,
     depth: u8,
-    stack: &mut Vec<StackFrame<'w>>,
-) -> Row {
+    workspace: &Workspace,
+    collapsed: &BTreeSet<FolderKey>,
+    query: &str,
+    filter_active: bool,
+    out: &mut Vec<Row>,
+) {
     match item {
         WorkspaceItemRef::Folder(key) => {
-            let folder = workspace
-                .folder(key)
-                .expect("workspace folder key must resolve");
-            let next_depth = depth.saturating_add(1);
-            stack.push(StackFrame {
-                children: folder.children.iter(),
-                next_depth,
-            });
-            Row::Folder { key, depth }
+            let Some(folder) = workspace.folder(key) else {
+                return;
+            };
+            let request_count = count_requests(folder, workspace);
+            let name_match = !filter_active || folder_name_matches(folder, query);
+            let start = out.len();
+            // Search auto-expands so matches under a collapsed folder still appear.
+            let descend = filter_active || !collapsed.contains(&key);
+            if descend {
+                for child in &folder.children {
+                    walk(
+                        *child,
+                        depth.saturating_add(1),
+                        workspace,
+                        collapsed,
+                        query,
+                        filter_active,
+                        out,
+                    );
+                }
+            }
+            let child_emitted = out.len() > start;
+            if !filter_active || name_match || child_emitted {
+                out.insert(
+                    start,
+                    Row::Folder {
+                        key,
+                        depth,
+                        request_count,
+                    },
+                );
+            }
         }
-        WorkspaceItemRef::Request(key) => Row::Request { key, depth },
+        WorkspaceItemRef::Request(key) => {
+            let Some(request) = workspace.request(key) else {
+                return;
+            };
+            let name = request
+                .metadata
+                .name
+                .as_deref()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let url = request.url.as_deref().unwrap_or("").to_ascii_lowercase();
+            if !filter_active || name.contains(query) || url.contains(query) {
+                out.push(Row::Request { key, depth });
+            }
+        }
     }
+}
+
+fn folder_name_matches(folder: &WorkspaceFolder, query: &str) -> bool {
+    folder
+        .metadata
+        .name
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains(query)
+}
+
+fn count_requests(folder: &WorkspaceFolder, workspace: &Workspace) -> u32 {
+    let mut total = 0u32;
+    let mut stack: Vec<&WorkspaceFolder> = vec![folder];
+    while let Some(active) = stack.pop() {
+        for child in &active.children {
+            match *child {
+                WorkspaceItemRef::Folder(key) => {
+                    if let Some(nested) = workspace.folder(key) {
+                        stack.push(nested);
+                    }
+                }
+                WorkspaceItemRef::Request(_) => total += 1,
+            }
+        }
+    }
+    total
 }
 
 #[cfg(test)]
@@ -133,8 +348,19 @@ mod tests {
         })
     }
 
+    fn request_with_url(name: &str, url: &str) -> CollectionItem {
+        CollectionItem::HttpRequest(HttpRequest {
+            metadata: ItemMetadata {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            url: Some(url.to_string()),
+            ..Default::default()
+        })
+    }
+
     #[test]
-    fn flattens_in_source_order() {
+    fn expand_all_lists_every_request() {
         let workspace = Workspace::from_collection(collection(vec![
             request("alpha"),
             folder(
@@ -146,13 +372,128 @@ mod tests {
             ),
             request("gamma"),
         ]));
-        let rows: Vec<_> = Flattened::new(&workspace).collect();
-        assert_eq!(rows.len(), 6);
-        assert!(matches!(rows[0], Row::Request { depth: 0, .. }));
-        assert!(matches!(rows[1], Row::Folder { depth: 0, .. }));
-        assert!(matches!(rows[2], Row::Request { depth: 1, .. }));
-        assert!(matches!(rows[3], Row::Folder { depth: 1, .. }));
-        assert!(matches!(rows[4], Row::Request { depth: 2, .. }));
-        assert!(matches!(rows[5], Row::Request { depth: 0, .. }));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        let visible: Vec<_> = view
+            .visible_rows()
+            .iter()
+            .map(|row| match row {
+                Row::Folder { depth, .. } => format!("F d={depth}"),
+                Row::Request { depth, .. } => format!("R d={depth}"),
+            })
+            .collect();
+        assert_eq!(
+            visible,
+            vec![
+                "R d=0".to_string(),
+                "F d=0".to_string(),
+                "R d=1".to_string(),
+                "F d=1".to_string(),
+                "R d=2".to_string(),
+                "R d=0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn collapse_hides_descendants() {
+        let workspace = Workspace::from_collection(collection(vec![folder(
+            "beta",
+            vec![
+                request("beta-1"),
+                folder("nested", vec![request("nested-1")]),
+            ],
+        )]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        let folder_key = match view.visible_rows()[0] {
+            Row::Folder { key, .. } => key,
+            _ => panic!("first row should be the folder"),
+        };
+        view.toggle_collapsed(folder_key);
+        let visible = view.visible_rows();
+        assert_eq!(visible.len(), 1, "collapsed folder hides its descendants");
+        assert!(view.is_collapsed(folder_key));
+        assert!(matches!(view.selected_row(), Some(Row::Folder { .. })));
+    }
+
+    #[test]
+    fn search_filters_visible_rows() {
+        let workspace = Workspace::from_collection(collection(vec![
+            request_with_url("List pets", "https://api.example.com/pets"),
+            request_with_url("Health", "https://api.example.com/health"),
+        ]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        view.set_search("pet");
+        let names: Vec<_> = view
+            .visible_rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Request { key, .. } => {
+                    let request = view.workspace().unwrap().request(*key).unwrap();
+                    Some(request.metadata.name.clone().unwrap_or_default())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["List pets".to_string()]);
+    }
+
+    #[test]
+    fn search_finds_under_folder_with_match() {
+        let workspace = Workspace::from_collection(collection(vec![folder(
+            "Pets",
+            vec![request_with_url("List", "https://api.example.com/pets")],
+        )]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        view.set_search("PET");
+        assert_eq!(
+            view.visible_rows().len(),
+            2,
+            "folder and its child stay visible"
+        );
+    }
+
+    #[test]
+    fn search_opens_collapsed_folder() {
+        let workspace = Workspace::from_collection(collection(vec![folder(
+            "Pets",
+            vec![request_with_url("List", "https://api.example.com/pets")],
+        )]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        let folder_key = match view.visible_rows()[0] {
+            Row::Folder { key, .. } => key,
+            _ => panic!("folder"),
+        };
+        view.toggle_collapsed(folder_key);
+        assert_eq!(view.visible_rows().len(), 1);
+        view.set_search("list");
+        assert_eq!(view.visible_rows().len(), 2);
+    }
+
+    #[test]
+    fn folder_request_count_is_recursive() {
+        let workspace = Workspace::from_collection(collection(vec![folder(
+            "beta",
+            vec![
+                request("a"),
+                request("b"),
+                folder("nested", vec![request("c"), request("d"), request("e")]),
+            ],
+        )]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        let counts: Vec<_> = view
+            .visible_rows()
+            .iter()
+            .filter_map(|row| match row {
+                Row::Folder { request_count, .. } => Some(*request_count),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(counts, vec![5, 3]);
     }
 }
