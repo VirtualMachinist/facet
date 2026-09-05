@@ -6,6 +6,7 @@ members = [
     "crates/http",
     "crates/opencollection",
     "crates/postman",
+    "crates/tui",
     "crates/yaak",
 ]
 resolver = "2"
