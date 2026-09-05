@@ -1,11 +1,21 @@
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-use probe_tui::App;
+use probe_tui::{App, Appearance, Depth, Theme};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
-    let workspace_path = args.next().map(PathBuf::from);
+    let cli = match parse_args(env::args().skip(1)) {
+        Ok(cli) => cli,
+        Err(message) => {
+            if message == "help" {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("probe-tui: {message}");
+            print_help();
+            return ExitCode::from(2);
+        }
+    };
 
     let mut terminal = match setup_terminal() {
         Ok(terminal) => terminal,
@@ -28,8 +38,10 @@ fn main() -> ExitCode {
     };
 
     let exit_code = runtime.block_on(async {
-        let app = App::load(workspace_path.as_deref()).await;
-        let mut app = app;
+        let mut app = App::load(cli.path.as_deref()).await;
+        if let Some(appearance) = cli.appearance {
+            app.apply_theme(Theme::new(appearance).with_depth(Depth::from_env()));
+        }
         let result = app.run(&mut terminal).await;
         if let Err(error) = result {
             eprintln!("probe-tui: {error}");
@@ -43,6 +55,56 @@ fn main() -> ExitCode {
         eprintln!("probe-tui: failed to restore terminal: {error}");
     }
     exit_code
+}
+
+struct Cli {
+    appearance: Option<Appearance>,
+    path: Option<PathBuf>,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
+    let mut appearance = None;
+    let mut path = None;
+    let mut iter = args.into_iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--help" || arg == "-h" {
+            return Err("help".to_string());
+        }
+        if arg == "--appearance" {
+            let value = iter.next().ok_or_else(|| {
+                " --appearance requires graphite or porcelain"
+                    .trim()
+                    .to_string()
+            })?;
+            appearance = Some(
+                Appearance::from_flag(&value)
+                    .ok_or_else(|| format!("unknown appearance '{value}'"))?,
+            );
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--appearance=") {
+            appearance = Some(
+                Appearance::from_flag(value)
+                    .ok_or_else(|| format!("unknown appearance '{value}'"))?,
+            );
+            continue;
+        }
+        if path.is_none() && !arg.starts_with('-') {
+            path = Some(PathBuf::from(arg));
+            continue;
+        }
+        return Err(format!("unexpected argument: {arg}"));
+    }
+    Ok(Cli { appearance, path })
+}
+
+fn print_help() {
+    eprintln!(
+        "Usage: probe-tui [--appearance graphite|porcelain] [collection.yml]\n\
+         \n\
+         Graphite Honey is the default. Porcelain Honey is the light appearance.\n\
+         Keys: j/k move · Enter send · i edit · / search · e env · t theme · q quit"
+    );
 }
 
 fn setup_terminal() -> io::Result<Terminal<CrosstermBackend<io::Stdout>>> {
