@@ -24,24 +24,23 @@
   <a href="#what-you-get">What you get</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#status">Status</a> ·
+  <a href="IMPLEMENTATION_PLAN.md">Roadmap</a> ·
   <a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
-  Built by <a href="https://hedronite.com">Hedronite</a>'s <a href="https://x.com/Hedronite">VirtualMachinist</a>.
-  Core engine by <a href="https://github.com/crizant/probe">Probe</a>. Not affiliated with Probe or crizant.<br>
+  Built by <a href="https://hedronite.com">Hedronite</a>'s <a href="https://github.com/VirtualMachinist">VirtualMachinist</a>.
+  Fork of <a href="https://github.com/crizant/probe">Probe</a>.
   <em>The Facet mark is the graphite honey hex lattice.</em>
 </p>
 
 ---
 
-Facet is a fast, native API client that keeps your collections in plain OpenCollection YAML files. It is Hedronite's terminal-optimized fork of [Probe](https://github.com/crizant/probe). The core engine and CLI contracts are identical, but Facet adds a Ratatui interface and **Lattice**, a local SQLite store that remembers every run.
+Facet is a fast, native, local-first API client. Collections stay OpenCollection YAML on disk; Git stays the sync layer. **Lattice** remembers what surrounds them — runs, bodies, timings, sessions — in local SQLite. A Ratatui TUI and an agent-friendly CLI sit on the same core.
 
-It exists for **developers and agents who want a persistent terminal workflow**: deterministic JSON outputs, content-addressed blobs, and a run history that survives the session. If you love Probe's filesystem-first approach but need to query your request history with SQL or pipe responses into agent workflows, this is the way in.
+It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-Facet is not a competing standard and not a rewrite. It is Probe's own core, vendored into a workspace and driven by terminal-first adapters. We are members of the Probe community, and we send core fixes upstream.
-
-**0.5.7** release · **100%** OpenCollection YAML compatible · **1** Ratatui TUI · **SQLite** default engine
+**0.5.7** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
 
 ## Quick start
 
@@ -106,7 +105,7 @@ Facet rebuilds the terminal and history layers. The core domain and HTTP executi
 
 ## How it works
 
-One rule drives the whole design: **if it's core business logic, it goes upstream. If it's terminal UI or run history, it's Facet.** Nothing the user touches gets rewritten in Facet if Probe already models it.
+One rule drives the design: **YAML holds the collection; Lattice holds the history.** Terminal UI and run memory are Facet; shared core stays cherry-pickable.
 
 - The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML; Git stays the sync layer. Lattice never holds the collection itself.
 - **Lattice** uses SQLite beside the YAML (`.facet/lattice.db`) plus a machine store for secrets, sessions, and a cross-workspace run index.
@@ -143,15 +142,13 @@ Facet is the working tree at 0.5.7; track `main`. The Lattice schema is versione
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md) for the rules the tree already follows. Two of them matter most: core logic belongs in Probe, and Facet-only crates are strictly separated.
-
-When something we fix turns out to be a Probe bug rather than a terminal-ism, it goes upstream. Being a good citizen of the Probe community is part of the job.
+Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md). Roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Development practices for this tree: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Credits and license
 
-Facet is built and maintained by [Hedronite](https://hedronite.com). The core engine is [Probe](https://github.com/crizant/probe) by crizant.
+Facet is built and maintained by [Hedronite](https://hedronite.com). Upstream lineage: [Probe](https://github.com/crizant/probe).
 
 - **Facet-original crates** (`facet`, `lattice`, `facet-tui`): MIT License, Copyright 2026 Hedronite.
 - **Upstream-derived crates and files**: Apache License 2.0 (Probe).
 
-See [LICENSE](LICENSE) and [NOTICE](NOTICE) for the fork relationship and full terms. The Facet mark is Hedronite's.
+See [LICENSE](LICENSE) and [NOTICE](NOTICE). The Facet mark is Hedronite's.
