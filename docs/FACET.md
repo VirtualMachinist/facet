@@ -14,7 +14,7 @@ unchanged.
 | Stays in Facet | Goes upstream first |
 | --- | --- |
 | `crates/lattice` (run history, blobs, `--sql`, gc) | Agent CLI ergonomics, JSON envelope fixes |
-| `crates/facet` (the `facet` binary) | Performance work in `probe-core` |
+| `crates/facet` (the `facet` binary), `crates/facet-record` (shared recording path) | Performance work in `probe-core` |
 | `crates/facet-tui` (ratatui interface) | Bug fixes in any upstream crate |
 
 Rules:
@@ -36,8 +36,8 @@ Decided by Evan on 2026-09-06 (Surface 7, closed):
   `crates/opencollection`, `crates/postman`, `crates/yaak`, and the docs they
   came with. They are never relicensed, so Probe PRs from this tree stay legal.
   Files modified from upstream carry a change notice (Section 4(b)).
-- **Facet-original crates are MIT:** `crates/facet`, `crates/lattice`,
-  `crates/facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
+- **Facet-original crates are MIT:** `crates/facet`, `crates/facet-record`,
+  `crates/lattice`, `crates/facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
   in its own `Cargo.toml`. `crates/facet-tui` adapts palette values from the
   upstream desktop theme; that derivation is noted in `NOTICE`.
 - **Copyright:** `Copyright 2026 Hedronite` for the Facet-original work.
@@ -100,6 +100,9 @@ readable. A body the transport did not retain (over Probe's 16 MiB in-memory
 bound with no spool file) records its length only; `retention` is `none`.
 
 ### What is recorded
+
+The recording path is one function, `facet_record::record`, shared by the
+`facet` CLI and `facet tui` so both adapters write identical rows.
 
 For each `facet request run`: start time, duration, selector, environment,
 method, resolved URL, status (NULL on transport failure) or error text,
