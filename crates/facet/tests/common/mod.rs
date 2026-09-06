@@ -67,6 +67,41 @@ impl Sandbox {
         );
         serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
     }
+
+    /// Runs `facet … --json` and returns the exit code plus parsed stdout (errors
+    /// are JSON on stdout, not stderr).
+    pub(crate) fn run_error_json(&self, arguments: &[&str]) -> (u8, Value) {
+        let output = self
+            .facet()
+            .args(arguments)
+            .arg("--json")
+            .output()
+            .expect("facet should run");
+        let exit_code = output.status.code().unwrap_or(255) as u8;
+        let value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "stdout should be JSON (exit {exit_code}): {error}\nstdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (exit_code, value)
+    }
+
+    /// Rewrites `started_at` for one run in the workspace store (test helper).
+    pub(crate) fn backdate_run(&self, run_id: &str, started_at_ms: i64) {
+        let db = std::path::absolute(self.root().join(".facet/lattice.db"))
+            .expect("workspace store path");
+        assert!(db.is_file(), "missing {}", db.display());
+        let conn = rusqlite::Connection::open(&db).expect("open workspace store");
+        let updated = conn
+            .execute(
+                "UPDATE runs SET started_at = ?1 WHERE id = ?2",
+                rusqlite::params![started_at_ms, run_id],
+            )
+            .expect("backdate run");
+        assert_eq!(updated, 1, "backdate one run in {}", db.display());
+    }
 }
 
 pub(crate) fn fixture(path: &str) -> PathBuf {
@@ -112,6 +147,17 @@ pub(crate) fn serve_once(body: Vec<u8>, content_type: &str) -> (String, JoinHand
         request[header_end..header_end + content_length].to_vec()
     });
     (format!("http://{address}"), handle)
+}
+
+/// Error envelopes carry volatile `message` text; category and exitCode are the contract.
+pub(crate) fn normalize_error(value: Value) -> Value {
+    let mut normalized = normalize(value);
+    if let Value::Object(root) = &mut normalized {
+        if let Some(Value::Object(error)) = root.get_mut("error") {
+            error.insert("message".to_owned(), json!("<message>"));
+        }
+    }
+    normalized
 }
 
 /// Replaces values that legitimately differ between runs (ids, times,

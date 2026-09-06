@@ -1,0 +1,8 @@
+{
+  "error": {
+    "category": "sql_read_only",
+    "exitCode": 2,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}

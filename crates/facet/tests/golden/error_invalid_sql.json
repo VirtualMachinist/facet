@@ -1,0 +1,8 @@
+{
+  "error": {
+    "category": "invalid_sql",
+    "exitCode": 2,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}

@@ -1,0 +1,15 @@
+{
+  "blob": {
+    "body": {
+      "content": "{\"source\":\"cli\"}",
+      "encoding": "utf8",
+      "omissionReason": null,
+      "omitted": false,
+      "outputPath": null
+    },
+    "contentType": null,
+    "hash": "<sha256>",
+    "sizeBytes": 16
+  },
+  "schemaVersion": 1
+}
