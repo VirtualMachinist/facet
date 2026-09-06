@@ -2,7 +2,7 @@
 name = "lattice"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 rust-version.workspace = true
 description = "Facet run-history store: SQLite beside the OpenCollection YAML"
 
