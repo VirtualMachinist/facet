@@ -13,6 +13,13 @@
 //! written by libsql read back by rusqlite) is verified out-of-band with the
 //! `sqlite3` CLI — see `agents/backend/notes/`.
 //!
+//! Verified still true 2026-09-06 (libsql 0.9.30): `Builder::build()` alone
+//! defers init and looks fine, but the moment libsql uses a connection
+//! (`connect` + `execute`) after rusqlite opened the same file, libsql's
+//! threading-safety assert fires (`SQLITE_MISUSE` 21) at
+//! `libsql-0.9.30/src/local/database.rs:323`. So the libsql-only design
+//! stays. Do not be fooled by a `build()`-only check; exercise the connection.
+//!
 //! Run on the build host (apiary), not lathe:
 //!
 //! ```text
