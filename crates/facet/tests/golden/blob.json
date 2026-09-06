@@ -1,0 +1,15 @@
+{
+  "blob": {
+    "body": {
+      "content": "{\"users\":[]}",
+      "encoding": "utf8",
+      "omissionReason": null,
+      "omitted": false,
+      "outputPath": null
+    },
+    "contentType": "application/json",
+    "hash": "<sha256>",
+    "sizeBytes": 12
+  },
+  "schemaVersion": 1
+}

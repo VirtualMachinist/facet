@@ -1,0 +1,68 @@
+{
+  "runs": [
+    {
+      "actor": "human",
+      "durationMs": "<int>",
+      "environment": "local",
+      "error": null,
+      "id": "<ulid>",
+      "method": "POST",
+      "request": {
+        "body": {
+          "content": "{\"source\":\"cli\"}",
+          "encoding": "utf8",
+          "hash": null,
+          "omissionReason": null,
+          "omitted": false,
+          "retention": "inline",
+          "sizeBytes": 16
+        },
+        "headers": [
+          {
+            "disabled": false,
+            "name": "X-Probe",
+            "value": "phase-five"
+          }
+        ]
+      },
+      "requestHash": "<sha256>",
+      "requestPath": "items/0",
+      "response": {
+        "body": {
+          "content": "{\"users\":[]}",
+          "encoding": "utf8",
+          "hash": null,
+          "omissionReason": null,
+          "omitted": false,
+          "retention": "inline",
+          "sizeBytes": 12
+        },
+        "contentType": "application/json",
+        "headers": [
+          {
+            "name": "connection",
+            "value": "close"
+          },
+          {
+            "name": "content-length",
+            "value": "12"
+          },
+          {
+            "name": "content-type",
+            "value": "application/json"
+          }
+        ]
+      },
+      "sessionId": null,
+      "startedAt": "<int>",
+      "status": 200,
+      "tags": [],
+      "url": "<url>"
+    }
+  ],
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}

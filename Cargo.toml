@@ -3,10 +3,26 @@ members = [
     "crates/cli",
     "crates/core",
     "crates/desktop",
+    "crates/facet",
     "crates/http",
+    "crates/lattice",
     "crates/opencollection",
     "crates/postman",
-    "crates/tui",
+    "crates/facet-tui",
+    "crates/yaak",
+]
+# Facet builds: probe-desktop stays a member (upstream merges stay clean) but is
+# excluded from the default set so `cargo build`/`cargo test` skip GPUI.
+# Use `cargo build --workspace` to include it.
+default-members = [
+    "crates/cli",
+    "crates/core",
+    "crates/facet",
+    "crates/http",
+    "crates/lattice",
+    "crates/opencollection",
+    "crates/postman",
+    "crates/facet-tui",
     "crates/yaak",
 ]
 resolver = "2"

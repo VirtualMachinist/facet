@@ -1,0 +1,21 @@
+{
+  "columns": [
+    "request_path",
+    "status",
+    "actor",
+    "tags"
+  ],
+  "rows": [
+    [
+      "items/0",
+      200,
+      "human",
+      "[\"smoke\"]"
+    ]
+  ],
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}
