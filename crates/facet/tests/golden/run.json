@@ -1,0 +1,47 @@
+{
+  "lattice": {
+    "indexed": true,
+    "recorded": true,
+    "requestHash": "<sha256>",
+    "responseBody": {
+      "hash": null,
+      "retention": "inline",
+      "sizeBytes": 12
+    },
+    "runId": "<ulid>",
+    "workspaceId": "<ulid>"
+  },
+  "request": {
+    "method": "POST",
+    "url": "<url>"
+  },
+  "response": {
+    "body": {
+      "content": "{\"users\":[]}",
+      "encoding": "utf8",
+      "omissionReason": null,
+      "omitted": false,
+      "outputPath": null
+    },
+    "durationMs": "<int>",
+    "headers": [
+      {
+        "name": "connection",
+        "value": "close"
+      },
+      {
+        "name": "content-length",
+        "value": "12"
+      },
+      {
+        "name": "content-type",
+        "value": "application/json"
+      }
+    ],
+    "reason": "OK",
+    "sizeBytes": 12,
+    "status": 200,
+    "url": "<url>"
+  },
+  "schemaVersion": 1
+}

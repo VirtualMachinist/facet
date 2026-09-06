@@ -1,0 +1,22 @@
+[package]
+name = "lattice"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Facet run-history store: SQLite beside the OpenCollection YAML"
+
+[dependencies]
+directories = "6"
+rand = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+toml = "1"
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
+
+[lints]
+workspace = true
