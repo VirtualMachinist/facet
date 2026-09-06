@@ -60,12 +60,26 @@ pub enum RequestFocus {
     Editor,
 }
 
-/// Editor mode — the URL/header/body/text inputs accept inserts when
-/// `Insert`; navigation keys are inert while editing.
+/// App-wide vim mode (Surface 2, option A). `Normal` is the verb state —
+/// navigation, pane keys, and the flat arrow/enter fallback all live here.
+/// `Insert` is the only place text fields accept input. `Command` is the
+/// `:` command line. The footer shows a three-letter indicator
+/// (NOR/INS/CMD), helix-style.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EditorMode {
+pub enum Mode {
     Normal,
     Insert,
+    Command,
+}
+
+impl Mode {
+    pub fn indicator(self) -> &'static str {
+        match self {
+            Mode::Normal => "NOR",
+            Mode::Insert => "INS",
+            Mode::Command => "CMD",
+        }
+    }
 }
 
 /// Section tab the user is currently inside. Matches the desktop labels
@@ -412,7 +426,11 @@ pub struct App {
     request_focus: RequestFocus,
     theme_state: Theme,
     section: Section,
-    editor_mode: EditorMode,
+    mode: Mode,
+    /// `:` command-line buffer (Command mode).
+    command: String,
+    /// `?` help overlay.
+    help_open: bool,
     editor: Editor,
     editor_snapshot: EditorSnapshot,
     editor_dirty: bool,
@@ -459,7 +477,9 @@ impl App {
             request_focus: RequestFocus::Url,
             theme_state: Theme::detect_default(),
             section: Section::Path,
-            editor_mode: EditorMode::Normal,
+            mode: Mode::Normal,
+            command: String::new(),
+            help_open: false,
             editor: Editor::default(),
             editor_snapshot: EditorSnapshot::default(),
             editor_dirty: false,
@@ -646,6 +666,13 @@ impl App {
         self.status = RunStatus::Running;
     }
 
+    /// Opens the `?` help overlay for headless harnesses. Not part of the
+    /// product API.
+    #[doc(hidden)]
+    pub fn preview_help(&mut self) {
+        self.help_open = true;
+    }
+
     /// Returns `Ok(true)` when the event was consumed and a redraw is wanted.
     async fn handle_event(&mut self, event: crossterm::event::Event) -> Result<bool, TuiError> {
         use crossterm::event::{Event, KeyEvent, KeyEventKind};
@@ -668,8 +695,13 @@ impl App {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> Result<bool, TuiError> {
-        if self.editor_mode == EditorMode::Insert {
-            return self.handle_insert_key(code, modifiers);
+        match self.mode {
+            Mode::Insert => return self.handle_insert_key(code, modifiers),
+            Mode::Command => return self.handle_command_key(code),
+            Mode::Normal => {}
+        }
+        if self.help_open {
+            return self.handle_help_key(code);
         }
         if self.env_dropdown_open {
             return self.handle_env_dropdown_key(code);
@@ -690,6 +722,15 @@ impl App {
             }
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.should_quit = true;
+                Ok(true)
+            }
+            (KeyCode::Char(':'), _) => {
+                self.mode = Mode::Command;
+                self.command.clear();
+                Ok(true)
+            }
+            (KeyCode::Char('?'), _) => {
+                self.help_open = true;
                 Ok(true)
             }
             (KeyCode::Char('t'), _) => {
@@ -761,7 +802,7 @@ impl App {
             }
             (KeyCode::Char('i'), _) if self.focus == Focus::Request => {
                 self.ensure_kv_row();
-                self.editor_mode = EditorMode::Insert;
+                self.mode = Mode::Insert;
                 Ok(true)
             }
             (KeyCode::Char('m'), _) if self.focus == Focus::Request => {
@@ -866,14 +907,14 @@ impl App {
     ) -> Result<bool, TuiError> {
         match code {
             KeyCode::Esc => {
-                self.editor_mode = EditorMode::Normal;
+                self.mode = Mode::Normal;
                 Ok(true)
             }
             KeyCode::Enter => {
                 if let Err(error) = self.save_current() {
                     self.status = RunStatus::Failed(format!("save: {error}"));
                 }
-                self.editor_mode = EditorMode::Normal;
+                self.mode = Mode::Normal;
                 Ok(true)
             }
             KeyCode::Backspace => {
@@ -885,6 +926,99 @@ impl App {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    /// `:` command line. Esc cancels, Enter executes, printable chars edit.
+    fn handle_command_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.command.clear();
+                Ok(true)
+            }
+            KeyCode::Enter => {
+                self.execute_command();
+                Ok(true)
+            }
+            KeyCode::Backspace => {
+                self.command.pop();
+                Ok(true)
+            }
+            KeyCode::Char(ch) => {
+                self.command.push(ch);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Executes the `:` buffer and returns to Normal mode. Command set is
+    /// vim grammar, not aliases: `w`/`q`/`wq`, `theme`, `env`.
+    fn execute_command(&mut self) {
+        let input = self.command.trim().to_string();
+        self.command.clear();
+        self.mode = Mode::Normal;
+        let (name, arg) = match input.split_once(char::is_whitespace) {
+            Some((name, rest)) => (name, rest.trim()),
+            None => (input.as_str(), ""),
+        };
+        match name {
+            "q" | "quit" => self.should_quit = true,
+            "w" | "write" => {
+                if let Err(error) = self.save_current() {
+                    self.status = RunStatus::Failed(format!("save: {error}"));
+                }
+            }
+            "wq" => {
+                if let Err(error) = self.save_current() {
+                    self.status = RunStatus::Failed(format!("save: {error}"));
+                }
+                self.should_quit = true;
+            }
+            "theme" | "appearance" => match arg {
+                "graphite" | "dark" => {
+                    self.theme_state =
+                        Theme::new(Appearance::Dark).with_depth(self.theme_state.depth());
+                }
+                "porcelain" | "light" => {
+                    self.theme_state =
+                        Theme::new(Appearance::Light).with_depth(self.theme_state.depth());
+                }
+                _ => {
+                    self.status = RunStatus::Failed("usage: :theme graphite|porcelain".to_string());
+                }
+            },
+            "env" | "environment" => {
+                if arg.is_empty() {
+                    self.status = RunStatus::Failed("usage: :env <name>|none".to_string());
+                } else if arg.eq_ignore_ascii_case("none") {
+                    self.active_environment = None;
+                } else if let Some(index) = self
+                    .environments
+                    .iter()
+                    .position(|entry| entry.name.eq_ignore_ascii_case(arg))
+                {
+                    self.active_environment = Some(index);
+                } else {
+                    self.status = RunStatus::Failed(format!("no environment named {arg}"));
+                }
+            }
+            "" => {}
+            _ => {
+                self.status = RunStatus::Failed(format!("unknown command :{name}"));
+            }
+        }
+    }
+
+    /// `?` help overlay: any of Esc/q/?/Enter closes it.
+    fn handle_help_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
+                self.help_open = false;
+                Ok(true)
+            }
+            _ => Ok(true),
         }
     }
 
@@ -1230,8 +1364,17 @@ impl App {
     }
 
     /// Current editor mode.
-    pub fn editor_mode(&self) -> EditorMode {
-        self.editor_mode
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The `:` command-line buffer, shown in the footer in Command mode.
+    pub fn command_line(&self) -> &str {
+        &self.command
+    }
+
+    pub fn help_open(&self) -> bool {
+        self.help_open
     }
 
     /// Which request-pane field is active.
@@ -1591,6 +1734,94 @@ mod tests {
             ..json.clone()
         };
         assert_eq!(broken.pretty_body(), "{not json");
+    }
+
+    #[tokio::test]
+    async fn command_line_runs_vim_verbs() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.mode(), Mode::Normal);
+
+        // `:` enters Command mode; typing accumulates; Enter executes.
+        app.handle_key(KeyCode::Char(':'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Command);
+        for ch in "theme porcelain".chars() {
+            app.handle_command_key(KeyCode::Char(ch)).unwrap();
+        }
+        assert_eq!(app.command_line(), "theme porcelain");
+        app.handle_command_key(KeyCode::Enter).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+
+        // :env with an unknown name fails loudly; :env none clears.
+        app.command = "env nosuch".to_string();
+        app.execute_command();
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("nosuch"))
+        );
+        app.command = "env none".to_string();
+        app.execute_command();
+        assert!(app.active_environment.is_none());
+
+        // Unknown command is an error, not a quit.
+        app.command = "frobnicate".to_string();
+        app.execute_command();
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("unknown command"))
+        );
+        assert!(!app.should_quit);
+
+        // :q quits.
+        app.command = "q".to_string();
+        app.execute_command();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn command_mode_esc_cancels_without_running() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.handle_key(KeyCode::Char(':'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_command_key(KeyCode::Char('q')).unwrap();
+        app.handle_command_key(KeyCode::Esc).unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.command_line(), "");
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn help_overlay_opens_and_closes() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert!(!app.help_open());
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.help_open());
+        // Keys are swallowed while help is open (no verbs fire).
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.help_open());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.help_open());
+    }
+
+    #[tokio::test]
+    async fn insert_mode_is_the_only_text_mode() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.focus = Focus::Request;
+        app.handle_key(KeyCode::Char('i'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Insert);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
     }
 
     #[tokio::test]
