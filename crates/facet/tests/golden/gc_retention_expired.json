@@ -1,0 +1,13 @@
+{
+  "applied": false,
+  "bytesReclaimable": 0,
+  "orphans": [],
+  "registryOrphans": 0,
+  "retention": "1d",
+  "runsExpired": 1,
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}

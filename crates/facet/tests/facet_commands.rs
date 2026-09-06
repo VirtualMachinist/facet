@@ -127,23 +127,21 @@ fn history_sql_is_golden_and_read_only() {
     );
     assert_golden("history_sql.json", &normalize(result));
 
-    let write = sandbox
-        .facet()
-        .args(["history", root, "--sql", "DELETE FROM runs", "--json"])
-        .output()
-        .unwrap();
-    assert_eq!(write.status.code(), Some(2));
-    let error: Value = serde_json::from_slice(&write.stdout).unwrap();
-    assert_eq!(error["error"]["category"], "sql_read_only");
+    let (write_code, write_error) = sandbox.run_error_json(&[
+        "history",
+        root,
+        "--sql",
+        "DELETE FROM runs",
+    ]);
+    assert_eq!(write_code, 2);
+    assert_eq!(write_error["error"]["category"], "sql_read_only");
+    assert_golden("error_sql_read_only.json", &normalize_error(write_error));
 
-    let bad = sandbox
-        .facet()
-        .args(["history", root, "--sql", "SELEC nope", "--json"])
-        .output()
-        .unwrap();
-    assert_eq!(bad.status.code(), Some(2));
-    let error: Value = serde_json::from_slice(&bad.stdout).unwrap();
-    assert_eq!(error["error"]["category"], "invalid_sql");
+    let (bad_code, bad_error) =
+        sandbox.run_error_json(&["history", root, "--sql", "SELEC nope"]);
+    assert_eq!(bad_code, 2);
+    assert_eq!(bad_error["error"]["category"], "invalid_sql");
+    assert_golden("error_invalid_sql.json", &normalize_error(bad_error));
 
     let still_there = sandbox.run_json(&["history", root, "--sql", "SELECT count(*) FROM runs"]);
     assert_eq!(still_there["rows"][0][0], 1);
@@ -212,18 +210,41 @@ fn blob_json_is_golden_and_raw_mode_streams_bytes() {
 }
 
 #[test]
+fn request_body_reader_rule_at_cli() {
+    let sandbox = Sandbox::new();
+    record_one_run(&sandbox, &["--inline-body-max", "0"]);
+    let root = sandbox.root().to_str().unwrap();
+
+    let history = sandbox.run_json(&["history", root]);
+    let req_hash = history["runs"][0]["request"]["body"]["hash"]
+        .as_str()
+        .expect("request body hash when blobbed");
+    assert_eq!(req_hash.len(), 64);
+    assert!(sandbox.root().join(".facet/blobs").join(req_hash).is_file());
+
+    let blob = sandbox.run_json(&["blob", req_hash, root]);
+    assert_eq!(blob["blob"]["sizeBytes"], 16);
+    assert_eq!(blob["blob"]["body"]["content"], r#"{"source":"cli"}"#);
+    assert_golden("blob_request.json", &normalize(blob));
+
+    let with_bodies = sandbox.run_json(&["history", root, "--bodies"]);
+    let req = &with_bodies["runs"][0]["request"]["body"];
+    assert_eq!(req["retention"], "blob");
+    assert_eq!(req["hash"], req_hash);
+    assert_eq!(req["omitted"], true);
+    assert_eq!(req["omissionReason"], "blob");
+    assert!(req["content"].is_null());
+}
+
+#[test]
 fn blob_not_found_uses_exit_code_4() {
     let sandbox = Sandbox::new();
     record_one_run(&sandbox, &[]);
     let missing = "0".repeat(64);
-    let output = sandbox
-        .facet()
-        .args(["blob", &missing, sandbox.root().to_str().unwrap(), "--json"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(4));
-    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let (code, error) = sandbox.run_error_json(&["blob", &missing, sandbox.root().to_str().unwrap()]);
+    assert_eq!(code, 4);
     assert_eq!(error["error"]["category"], "blob_not_found");
+    assert_golden("error_blob_not_found.json", &normalize_error(error));
 }
 
 #[test]
@@ -254,6 +275,50 @@ fn gc_is_a_dry_run_unless_yes() {
     let clean = sandbox.run_json(&["gc", root]);
     assert_eq!(clean["orphans"], json!([]));
     assert_golden("gc.json", &normalize(clean));
+}
+
+#[test]
+fn gc_expires_runs_by_retention_at_cli() {
+    let sandbox = Sandbox::new();
+    let first = record_one_run(&sandbox, &["--inline-body-max", "0"]);
+    let run_id = first["lattice"]["runId"]
+        .as_str()
+        .expect("recorded run id");
+    sandbox.backdate_run(run_id, lattice::now_ms() - 3 * 86_400_000);
+    record_one_run(&sandbox, &["--inline-body-max", "0"]);
+    let root = sandbox.root().to_str().unwrap();
+
+    let stamps = sandbox.run_json(&[
+        "history",
+        root,
+        "--sql",
+        "SELECT started_at FROM runs ORDER BY started_at ASC",
+    ]);
+    assert_eq!(stamps["rows"].as_array().unwrap().len(), 2);
+    let gap = stamps["rows"][1][0].as_i64().unwrap() - stamps["rows"][0][0].as_i64().unwrap();
+    assert!(gap > 86_400_000, "backdated run should be more than a day older");
+
+    let dry = sandbox.run_json(&["gc", root, "--history-retention", "1d"]);
+    assert_eq!(dry["applied"], false);
+    assert_eq!(dry["retention"], "1d");
+    assert_eq!(dry["runsExpired"], 1);
+    // Identical bodies share blob files; the fresh run keeps them referenced.
+    assert_eq!(dry["orphans"].as_array().unwrap().len(), 0);
+    assert_golden("gc_retention_expired.json", &normalize(dry));
+
+    let applied = sandbox.run_json(&["gc", root, "--history-retention", "1d", "--yes"]);
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["runsExpired"], 1);
+
+    let history = sandbox.run_json(&["history", root]);
+    assert_eq!(history["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        fs::read_dir(sandbox.root().join(".facet/blobs"))
+            .unwrap()
+            .count(),
+        2,
+        "fresh run keeps req and res blobs"
+    );
 }
 
 #[test]
