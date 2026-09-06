@@ -1002,19 +1002,19 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
 fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
     const KEYS: [(&str, &str); 14] = [
         ("j/k · arrows", "move (tree, rows, response scroll)"),
-        ("Enter", "folder toggle · open · send"),
-        ("i", "insert (URL or section) · Esc back"),
+        ("Enter", "folder toggle · open · send · :send"),
+        ("i / a", "insert (URL or section) · Esc back"),
         ("/", "search · Enter apply · Esc clear"),
         ("e", "environment dropdown · :env <name>"),
         ("[ ]", "section / response tabs"),
         ("h/l · Space", "collapse folder · name/value"),
         ("m / b", "method · body kind"),
         ("n / d", "add / delete a row"),
-        ("t / a", "toggle / force appearance"),
+        ("Ctrl-W h/j/k/l", "focus pane · Ctrl-W w cycles"),
         ("Ctrl-S", "save to disk · :w"),
-        (":", "command line (:w :q :wq :theme :env)"),
-        ("?", "this help"),
-        ("q · Esc", "quit · cancel run"),
+        (":", "command line (:w :q :send :theme :env)"),
+        ("?", "this help · :help"),
+        ("q", "quit · Esc cancels run/overlay"),
     ];
     let width = 60u16.min(area.width);
     let height = (KEYS.len() as u16 + 4).min(area.height);
