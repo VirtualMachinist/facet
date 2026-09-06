@@ -149,6 +149,78 @@ fn bodies_land_inline_or_as_blobs_by_threshold() {
 }
 
 #[test]
+fn request_bodies_are_hash_only_regardless_of_size() {
+    // Surface 1, v2: request bodies always live in a blob file keyed by
+    // req_body_hash, never inline — even a 4-byte body at a 1 MiB threshold.
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
+    let recorded = store
+        .record_run(&NewRun {
+            req_body: BodyInput::Bytes(b"tiny"),
+            ..run("a.yml", b"response")
+        })
+        .unwrap();
+    assert_eq!(recorded.req_body.retention(), "blob");
+    assert_eq!(recorded.req_body.len, Some(4));
+    let hash = recorded.req_body.hash.clone().unwrap();
+    assert_eq!(hash, sha256_hex(b"tiny"));
+    assert!(store.blobs_dir().join(&hash).is_file());
+    assert_eq!(store.request_body(&recorded).unwrap().unwrap(), b"tiny");
+    // The inline column is gone: a direct SELECT must not find req_body.
+    let cols = store
+        .query("SELECT count(*) FROM pragma_table_info('runs') WHERE name = 'req_body'")
+        .unwrap();
+    assert_eq!(cols.rows[0][0], SqlValue::Integer(0));
+}
+
+#[test]
+fn v1_to_v2_migration_hydrates_inline_request_bodies() {
+    // Build a v1 store by hand: schema 0001, an inline req_body row with no
+    // req_body_hash. Reopening must hydrate that body to a blob file, set the
+    // hash, and drop the req_body column — no body lost.
+    let dir = tempfile::tempdir().unwrap();
+    let facet = dir.path().join(".facet");
+    fs::create_dir_all(&facet).unwrap();
+    let db = facet.join("lattice.db");
+    let v1 = include_str!("../migrations/workspace/0001_init.sql");
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(v1)
+        .unwrap();
+    {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, started_at, request_path, request_hash, method, url, actor, \
+             req_body_len, req_body, res_body_len) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "01JAV1MIGR0000000001",
+                now_ms(),
+                "a.yml",
+                "deadbeef",
+                "GET",
+                "http://x",
+                "human",
+                5_i64,
+                b"hello",
+                0_i64,
+            ],
+        )
+        .unwrap();
+    }
+
+    // Reopen through the store: hydration + 0002 migration run on open.
+    let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
+    assert_eq!(store.schema_version().unwrap(), lattice::WORKSPACE_SCHEMA_VERSION);
+    let row = store.run("01JAV1MIGR0000000001").unwrap().unwrap();
+    assert_eq!(row.req_body.retention(), "blob");
+    let hash = row.req_body.hash.clone().unwrap();
+    assert_eq!(hash, sha256_hex(b"hello"));
+    assert!(store.blobs_dir().join(&hash).is_file());
+    assert_eq!(store.request_body(&row).unwrap().unwrap(), b"hello");
+}
+
+#[test]
 fn reader_rule_never_branches_on_length() {
     let dir = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
@@ -378,6 +450,18 @@ fn machine_store_indexes_runs_by_workspace() {
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0].id, store.workspace_id());
     assert_eq!(workspaces[0].name.as_deref(), Some("Pets"));
+
+    // Surface 1, v2: run_index carries duration_ms and actor.
+    let conn = rusqlite::Connection::open(dir.path().join("machine.db")).unwrap();
+    let (duration_ms, actor): (Option<i64>, Option<String>) = conn
+        .query_row(
+            "SELECT duration_ms, actor FROM run_index WHERE run_id = ?1",
+            rusqlite::params![recorded.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(duration_ms, Some(12));
+    assert_eq!(actor.as_deref(), Some("human"));
 }
 
 

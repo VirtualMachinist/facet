@@ -75,16 +75,16 @@ fn history_json_is_golden_and_carries_no_bodies_by_default() {
     assert!(row["response"]["body"].get("content").is_none());
     assert_golden("history.json", &normalize(history));
 
-    // Payloads are explicit pulls.
+    // Payloads are explicit pulls. Response bodies under the inline
+    // threshold hydrate via --bodies; request bodies are hash-only (v2), so
+    // --bodies shows the hash and omits the content (hydrate via `facet blob`).
     let with_bodies = sandbox.run_json(&["history", sandbox.root().to_str().unwrap(), "--bodies"]);
     assert_eq!(
         with_bodies["runs"][0]["response"]["body"]["content"],
         r#"{"users":[]}"#
     );
-    assert_eq!(
-        with_bodies["runs"][0]["request"]["body"]["content"],
-        r#"{"source":"cli"}"#
-    );
+    assert_eq!(with_bodies["runs"][0]["request"]["body"]["retention"], "blob");
+    assert!(with_bodies["runs"][0]["request"]["body"]["content"].is_null());
     assert_golden("history_bodies.json", &normalize(with_bodies));
 
     // Filters.

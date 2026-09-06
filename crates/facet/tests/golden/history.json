@@ -9,8 +9,8 @@
       "method": "POST",
       "request": {
         "body": {
-          "hash": null,
-          "retention": "inline",
+          "hash": "<sha256>",
+          "retention": "blob",
           "sizeBytes": 16
         },
         "headers": [

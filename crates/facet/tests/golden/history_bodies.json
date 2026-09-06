@@ -9,12 +9,12 @@
       "method": "POST",
       "request": {
         "body": {
-          "content": "{\"source\":\"cli\"}",
-          "encoding": "utf8",
-          "hash": null,
-          "omissionReason": null,
-          "omitted": false,
-          "retention": "inline",
+          "content": null,
+          "encoding": null,
+          "hash": "<sha256>",
+          "omissionReason": "blob",
+          "omitted": true,
+          "retention": "blob",
           "sizeBytes": 16
         },
         "headers": [

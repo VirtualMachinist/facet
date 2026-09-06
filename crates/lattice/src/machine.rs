@@ -16,7 +16,10 @@ use crate::secrets::{
     SecretConfig, StoredSecret, backend_of, delete_secret_with, get_secret_with, put_secret_with,
 };
 
-const MACHINE_MIGRATIONS: &[&str] = &[include_str!("../migrations/machine/0001_init.sql")];
+const MACHINE_MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/machine/0001_init.sql"),
+    include_str!("../migrations/machine/0002_run_index_cols.sql"),
+];
 
 /// Machine data directory: `FACET_DATA_DIR` or the platform data dir for `facet`.
 #[must_use]
@@ -109,9 +112,17 @@ impl MachineStore {
     /// Writes the cross-workspace pointer row for a run.
     pub fn index_run(&self, run: &RunRow, workspace_id: &str) -> Result<(), LatticeError> {
         self.conn.execute(
-            "INSERT OR REPLACE INTO run_index (run_id, workspace_id, started_at, request_path, status) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![run.id, workspace_id, run.started_at, run.request_path, run.status],
+            "INSERT OR REPLACE INTO run_index (run_id, workspace_id, started_at, request_path, status, duration_ms, actor) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                run.id,
+                workspace_id,
+                run.started_at,
+                run.request_path,
+                run.status,
+                run.duration_ms,
+                run.actor,
+            ],
         )?;
         Ok(())
     }
