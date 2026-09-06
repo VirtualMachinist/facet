@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29"
+facet-record = { path = "../facet-record" }
 facet-tui = { path = "../facet-tui" }
 lattice = { path = "../lattice" }
 probe-cli = { path = "../cli" }

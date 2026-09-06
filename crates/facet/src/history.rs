@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::{
     CommandOutput, FacetError, args,
     presentation::{format_utc, human_size, stored_body_json},
-    workspace::{ConfigOverrides, locate_root, open_store},
+    workspace::{ConfigOverrides, locate_root, open_store, overrides_from_parsed},
 };
 
 const DEFAULT_LIMIT: usize = 50;
@@ -152,7 +152,7 @@ pub(crate) fn blob(args: &[String]) -> Result<CommandOutput, FacetError> {
 pub(crate) fn gc(args: &[String]) -> Result<CommandOutput, FacetError> {
     let parsed = args::parse(args, &["--history-retention"], &["--yes"])?;
     let path = single_optional_path(parsed.positionals(), "gc")?;
-    let overrides = ConfigOverrides::from_parsed(&parsed)?;
+    let overrides = overrides_from_parsed(&parsed)?;
     let apply = parsed.switch("--yes");
     let (_, root) = locate_root(path);
 
