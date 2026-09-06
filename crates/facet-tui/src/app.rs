@@ -124,6 +124,54 @@ impl Section {
     }
 }
 
+/// Tabs on the response pane. `Pretty` formats the body when it can (JSON
+/// today); `Raw` shows the body exactly as decoded; `Headers` lists response
+/// headers; `Inspect` is the run summary (status, timing, sizes).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResponseTab {
+    #[default]
+    Pretty,
+    Raw,
+    Headers,
+    Inspect,
+}
+
+impl ResponseTab {
+    pub const ALL: [ResponseTab; 4] = [
+        ResponseTab::Pretty,
+        ResponseTab::Raw,
+        ResponseTab::Headers,
+        ResponseTab::Inspect,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ResponseTab::Pretty => "Pretty",
+            ResponseTab::Raw => "Raw",
+            ResponseTab::Headers => "Headers",
+            ResponseTab::Inspect => "Inspect",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            ResponseTab::Pretty => ResponseTab::Raw,
+            ResponseTab::Raw => ResponseTab::Headers,
+            ResponseTab::Headers => ResponseTab::Inspect,
+            ResponseTab::Inspect => ResponseTab::Pretty,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            ResponseTab::Pretty => ResponseTab::Inspect,
+            ResponseTab::Raw => ResponseTab::Pretty,
+            ResponseTab::Headers => ResponseTab::Raw,
+            ResponseTab::Inspect => ResponseTab::Headers,
+        }
+    }
+}
+
 /// Status of the most recent send, or the current run.
 #[derive(Clone, Debug, Default)]
 pub enum RunStatus {
@@ -157,10 +205,13 @@ pub struct ResponseView {
     pub duration: Duration,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// Byte length of the body as received, before lossy UTF-8 decoding.
+    pub body_len: usize,
 }
 
 impl ResponseView {
     pub fn from_response(response: HttpResponse) -> Self {
+        let body_len = response.body.len();
         let body = String::from_utf8_lossy(&response.body).into_owned();
         Self {
             status: response.status,
@@ -173,6 +224,29 @@ impl ResponseView {
                 .map(|header| (header.name, header.value))
                 .collect(),
             body,
+            body_len,
+        }
+    }
+
+    /// Value of the `Content-Type` response header, if present.
+    pub fn content_type(&self) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.as_str())
+    }
+
+    /// Body for the Pretty tab: indented JSON when the payload parses as
+    /// JSON, otherwise the raw decoded text unchanged.
+    pub fn pretty_body(&self) -> String {
+        let trimmed = self.body.trim_start();
+        let looks_json = trimmed.starts_with('{') || trimmed.starts_with('[');
+        if !looks_json {
+            return self.body.clone();
+        }
+        match serde_json::from_str::<serde_json::Value>(&self.body) {
+            Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| self.body.clone()),
+            Err(_) => self.body.clone(),
         }
     }
 }
@@ -347,11 +421,15 @@ pub struct App {
     method: String,
     status: RunStatus,
     response_scroll: u16,
+    response_tab: ResponseTab,
     response: Option<ResponseView>,
     /// Receiver for completion events from background runs.
     pending: Option<mpsc::Receiver<RunResult>>,
     /// Cancellation signal for an in-flight HTTP request.
     cancel: Option<watch::Sender<bool>>,
+    /// Set by quit keys; the run loop breaks on it so the caller can
+    /// restore the terminal instead of dying mid-frame via `process::exit`.
+    should_quit: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -390,9 +468,11 @@ impl App {
             method: "GET".to_string(),
             status: RunStatus::Idle,
             response_scroll: 0,
+            response_tab: ResponseTab::Pretty,
             response: None,
             pending: None,
             cancel: None,
+            should_quit: false,
         };
         if let Some(path) = path {
             match load_workspace(path) {
@@ -521,6 +601,9 @@ impl App {
         let tick = tokio::time::Duration::from_millis(100);
         let mut last_draw = std::time::Instant::now();
         loop {
+            if self.should_quit {
+                return Ok(());
+            }
             if let Some(receiver) = self.pending.as_mut()
                 && let Ok(result) = receiver.try_recv()
             {
@@ -595,10 +678,12 @@ impl App {
 
         match (code, modifiers) {
             (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
-                std::process::exit(0);
+                self.should_quit = true;
+                Ok(true)
             }
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                std::process::exit(0);
+                self.should_quit = true;
+                Ok(true)
             }
             (KeyCode::Char('t'), _) => {
                 self.theme_state = self.theme_state.toggle();
@@ -655,6 +740,16 @@ impl App {
                 self.section = self.section.prev();
                 self.request_focus = RequestFocus::Editor;
                 self.kv_index = 0;
+                Ok(true)
+            }
+            (KeyCode::Char(']'), _) if self.focus == Focus::Response => {
+                self.response_tab = self.response_tab.next();
+                self.response_scroll = 0;
+                Ok(true)
+            }
+            (KeyCode::Char('['), _) if self.focus == Focus::Response => {
+                self.response_tab = self.response_tab.prev();
+                self.response_scroll = 0;
                 Ok(true)
             }
             (KeyCode::Char('i'), _) if self.focus == Focus::Request => {
@@ -1090,7 +1185,9 @@ impl App {
         Ok(())
     }
 
-    fn apply_run_result(&mut self, result: RunResult) {
+    /// `pub(crate)` so headless render tests and the smoke example can
+    /// inject a canned response without a network.
+    pub(crate) fn apply_run_result(&mut self, result: RunResult) {
         match result {
             RunResult::Ok(view) => {
                 self.status = RunStatus::Done {
@@ -1192,6 +1289,10 @@ impl App {
     }
 
     /// Response pane scroll offset.
+    pub fn response_tab(&self) -> ResponseTab {
+        self.response_tab
+    }
+
     pub fn response_scroll(&self) -> u16 {
         self.response_scroll
     }
@@ -1412,6 +1513,57 @@ mod tests {
         assert_eq!(app.section(), Section::Path);
         app.section = Section::Auth.next();
         assert_eq!(app.section(), Section::Path);
+    }
+
+    #[tokio::test]
+    async fn response_tabs_cycle() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.response_tab(), ResponseTab::Pretty);
+        app.response_tab = app.response_tab.next();
+        assert_eq!(app.response_tab(), ResponseTab::Raw);
+        app.response_tab = app.response_tab.next();
+        app.response_tab = app.response_tab.next();
+        assert_eq!(app.response_tab(), ResponseTab::Inspect);
+        app.response_tab = app.response_tab.next();
+        assert_eq!(app.response_tab(), ResponseTab::Pretty);
+        app.response_tab = app.response_tab.prev();
+        assert_eq!(app.response_tab(), ResponseTab::Inspect);
+    }
+
+    #[test]
+    fn pretty_body_formats_json_and_passes_through_text() {
+        let json = ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "https://example.com".to_string(),
+            duration: Duration::from_millis(1),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body: "{\"a\":1}".to_string(),
+            body_len: 7,
+        };
+        assert_eq!(json.pretty_body(), "{\n  \"a\": 1\n}");
+        assert_eq!(json.content_type(), Some("application/json"));
+        assert_eq!(json.body_len, 7);
+
+        let text = ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "https://example.com".to_string(),
+            duration: Duration::from_millis(1),
+            headers: Vec::new(),
+            body: "plain text".to_string(),
+            body_len: 10,
+        };
+        assert_eq!(text.pretty_body(), "plain text");
+        assert_eq!(text.content_type(), None);
+
+        // JSON-looking but invalid: fall back to the raw body.
+        let broken = ResponseView {
+            body: "{not json".to_string(),
+            body_len: 9,
+            ..json.clone()
+        };
+        assert_eq!(broken.pretty_body(), "{not json");
     }
 
     #[tokio::test]
