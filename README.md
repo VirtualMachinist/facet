@@ -12,11 +12,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=222222&colorB=8FD14F&label=ci" alt="CI"></a>
-  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.7"><img src="https://img.shields.io/badge/Facet-v0.5.7-8FD14F?style=flat&colorA=222222" alt="Facet v0.5.7"></a>
-  <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust 1.95"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-8FD14F?style=flat&colorA=222222" alt="License"></a>
-  <a href="https://hedronite.com"><img src="https://img.shields.io/badge/Hedronite-hedronite.com-8FD14F?style=flat&colorA=222222" alt="Hedronite"></a>
+  <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=1A1A1A&colorB=C9A227&label=ci" alt="CI"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.7"><img src="https://img.shields.io/badge/Facet-v0.5.7-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.7"></a>
+  <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=1A1A1A&logo=rust&logoColor=white" alt="Rust 1.95"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-C9A227?style=flat&colorA=1A1A1A" alt="License"></a>
+  <a href="https://hedronite.com"><img src="https://img.shields.io/badge/Hedronite-hedronite.com-C9A227?style=flat&colorA=1A1A1A" alt="Hedronite"></a>
 </p>
 
 <p align="center">
