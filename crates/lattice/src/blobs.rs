@@ -110,6 +110,49 @@ pub(crate) fn place(
     }
 }
 
+/// Hash-only placement (Surface 1, v2): request bodies always live in a
+/// content-addressed blob file, never inline. There is no threshold. Used
+/// for `req_body`; response bodies still use [`place`] with the inline
+/// threshold.
+pub(crate) fn place_hashed(
+    blobs_dir: &Path,
+    body: BodyInput<'_>,
+) -> Result<StoredBody, LatticeError> {
+    match body {
+        BodyInput::None => Ok(StoredBody::default()),
+        BodyInput::Unretained { len } => Ok(StoredBody {
+            len: Some(len),
+            inline: None,
+            hash: None,
+        }),
+        BodyInput::Bytes(bytes) => {
+            let len = bytes.len() as u64;
+            let hash = sha256_hex(bytes);
+            write_blob(blobs_dir, &hash, |sink| sink.write_all(bytes))?;
+            Ok(StoredBody {
+                len: Some(len),
+                inline: None,
+                hash: Some(hash),
+            })
+        }
+        BodyInput::File(path) => {
+            let len = fs::metadata(path)
+                .map_err(|error| io_error(path, error))?
+                .len();
+            let hash = hash_file(path)?;
+            write_blob(blobs_dir, &hash, |sink| {
+                let mut source = fs::File::open(path)?;
+                io::copy(&mut source, sink).map(|_| ())
+            })?;
+            Ok(StoredBody {
+                len: Some(len),
+                inline: None,
+                hash: Some(hash),
+            })
+        }
+    }
+}
+
 fn hash_file(path: &Path) -> Result<String, LatticeError> {
     let mut file = fs::File::open(path).map_err(|error| io_error(path, error))?;
     let mut hasher = Sha256::new();
@@ -128,7 +171,7 @@ fn hash_file(path: &Path) -> Result<String, LatticeError> {
 
 /// Writes a blob atomically: temp file in the blobs directory, then rename.
 /// Identical content already on disk is left untouched.
-fn write_blob(
+pub(crate) fn write_blob(
     blobs_dir: &Path,
     hash: &str,
     fill: impl FnOnce(&mut fs::File) -> io::Result<()>,

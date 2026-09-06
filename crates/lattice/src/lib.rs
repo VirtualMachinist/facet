@@ -44,9 +44,9 @@ pub use store::{
 pub use ulid::{is_ulid, ulid};
 
 /// Current workspace-store schema version (highest numbered migration).
-pub const WORKSPACE_SCHEMA_VERSION: i64 = 1;
+pub const WORKSPACE_SCHEMA_VERSION: i64 = 2;
 /// Current machine-store schema version (highest numbered migration).
-pub const MACHINE_SCHEMA_VERSION: i64 = 1;
+pub const MACHINE_SCHEMA_VERSION: i64 = 2;
 
 /// Failures raised by Lattice.
 #[derive(Debug)]

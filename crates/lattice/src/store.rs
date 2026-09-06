@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -27,7 +28,10 @@ pub const WORKSPACE_FILE: &str = "workspace.toml";
 /// Lattice configuration file name (workspace and machine).
 pub const CONFIG_FILE: &str = "config.toml";
 
-const WORKSPACE_MIGRATIONS: &[&str] = &[include_str!("../migrations/workspace/0001_init.sql")];
+const WORKSPACE_MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/workspace/0001_init.sql"),
+    include_str!("../migrations/workspace/0002_hash_only_req.sql"),
+];
 
 const GITIGNORE: &str = "# Lattice run history is machine-local. workspace.toml and config.toml are shared.\n\
 lattice.db\n\
@@ -37,7 +41,7 @@ lattice.db-journal\n\
 blobs/\n";
 
 const RUN_COLUMNS: &str = "id, started_at, duration_ms, request_path, request_hash, environment, method, url, \
-status, error, req_headers, res_headers, req_body_len, req_body_hash, req_body IS NOT NULL, \
+status, error, req_headers, res_headers, req_body_len, req_body_hash, \
 res_body_len, res_body_hash, res_body IS NOT NULL, res_content_type, session_id, actor, tags";
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +268,10 @@ impl WorkspaceStore {
         ensure_file(&facet_dir.join(".gitignore"), GITIGNORE)?;
         let workspace_id = ensure_workspace_id(&facet_dir)?;
         let conn = open_connection(&facet_dir.join(DB_FILE), &config)?;
+        // Before applying the v2 migration (which drops the inline req_body
+        // column), hydrate any v1 inline request bodies into blob files so no
+        // body is lost. No-op on fresh stores and stores already at v2.
+        hydrate_inline_request_bodies(&conn, &facet_dir.join(BLOBS_DIR))?;
         migrate(&conn, WORKSPACE_MIGRATIONS)?;
         Ok(Self {
             root,
@@ -328,7 +336,9 @@ impl WorkspaceStore {
         let id = ulid();
         let blobs_dir = self.blobs_dir();
         let threshold = self.config.inline_body_max;
-        let req_body = blobs::place(&blobs_dir, run.req_body, threshold)?;
+        // Request bodies are hash-only (Surface 1, v2): always a blob file,
+        // never inline. Response bodies keep the inline threshold.
+        let req_body = blobs::place_hashed(&blobs_dir, run.req_body)?;
         let res_body = blobs::place(&blobs_dir, run.res_body, threshold)?;
         let now = now_ms();
 
@@ -343,9 +353,9 @@ impl WorkspaceStore {
         }
         tx.execute(
             "INSERT INTO runs (id, started_at, duration_ms, request_path, request_hash, environment, method, url, \
-             status, error, req_headers, res_headers, req_body_len, req_body, req_body_hash, \
+             status, error, req_headers, res_headers, req_body_len, req_body_hash, \
              res_body_len, res_body, res_body_hash, res_content_type, session_id, actor, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
             params![
                 id,
                 run.started_at,
@@ -360,7 +370,6 @@ impl WorkspaceStore {
                 run.req_headers,
                 run.res_headers,
                 req_body.len.map(to_i64),
-                req_body.inline,
                 req_body.hash,
                 res_body.len.map(to_i64),
                 res_body.inline,
@@ -432,9 +441,14 @@ impl WorkspaceStore {
             .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))?)
     }
 
-    /// Reads a run's request body per the reader rule.
+    /// Reads a run's request body per the reader rule. Request bodies are
+    /// hash-only (v2): the body lives in `.facet/blobs/<req_body_hash>`, or
+    /// there is no body. There is no inline fallback.
     pub fn request_body(&self, run: &RunRow) -> Result<Option<Vec<u8>>, LatticeError> {
-        self.body_bytes(&run.id, &run.req_body, "req_body")
+        match &run.req_body.hash {
+            Some(hash) => blobs::read_blob(&self.blobs_dir(), hash),
+            None => Ok(None),
+        }
     }
 
     /// Reads a run's response body per the reader rule.
@@ -627,20 +641,22 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         error: row.get(9)?,
         req_headers: row.get(10)?,
         res_headers: row.get(11)?,
+        // Request bodies are hash-only (v2): no inline column, so
+        // inline_present is always false. The reader only consults the hash.
         req_body: BodyRef {
             len: row.get::<_, Option<i64>>(12)?.map(i64::unsigned_abs),
             hash: row.get(13)?,
-            inline_present: row.get(14)?,
+            inline_present: false,
         },
         res_body: BodyRef {
-            len: row.get::<_, Option<i64>>(15)?.map(i64::unsigned_abs),
-            hash: row.get(16)?,
-            inline_present: row.get(17)?,
+            len: row.get::<_, Option<i64>>(14)?.map(i64::unsigned_abs),
+            hash: row.get(15)?,
+            inline_present: row.get(16)?,
         },
-        res_content_type: row.get(18)?,
-        session_id: row.get(19)?,
-        actor: row.get(20)?,
-        tags: row.get(21)?,
+        res_content_type: row.get(17)?,
+        session_id: row.get(18)?,
+        actor: row.get(19)?,
+        tags: row.get(20)?,
     })
 }
 
@@ -680,6 +696,56 @@ pub(crate) fn open_connection(
         conn.pragma_update(None, "synchronous", "NORMAL")?;
     }
     Ok(conn)
+}
+
+/// v1 -> v2 data migration: before the SQL migration drops the inline
+/// `req_body` column, write any inline request bodies to content-addressed
+/// blob files and set `req_body_hash`, so no body is lost. No-op on fresh
+/// stores (no `runs` table or no inline rows) and on stores already at v2
+/// (the column is gone). Idempotent: identical content shares one file.
+fn hydrate_inline_request_bodies(
+    conn: &Connection,
+    blobs_dir: &Path,
+) -> Result<(), LatticeError> {
+    // Only meaningful when the v1 `runs` table still has `req_body`.
+    let has_req_body: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('runs') WHERE name = 'req_body'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if has_req_body == 0 {
+        return Ok(());
+    }
+    let mut statement =
+        conn.prepare("SELECT id, req_body FROM runs WHERE req_body IS NOT NULL AND req_body_hash IS NULL")?;
+    let rows: Vec<(String, Vec<u8>)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .filter_map(Result::ok)
+        .collect();
+    drop(statement);
+    if rows.is_empty() {
+        return Ok(());
+    }
+    fs::create_dir_all(blobs_dir).map_err(|error| io_error(blobs_dir, error))?;
+    let now = now_ms();
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    for (id, bytes) in rows {
+        let len = bytes.len() as u64;
+        let hash = blobs::sha256_hex(&bytes);
+        blobs::write_blob(blobs_dir, &hash, |sink| sink.write_all(&bytes))?;
+        tx.execute(
+            "INSERT OR IGNORE INTO blobs (hash, len, content_type, created_at) VALUES (?1, ?2, NULL, ?3)",
+            params![hash, to_i64(len), now],
+        )?;
+        tx.execute(
+            "UPDATE runs SET req_body_hash = ?1, req_body_len = coalesce(req_body_len, ?2) WHERE id = ?3",
+            params![hash, to_i64(len), id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Applies numbered migrations above the current `schema_version` inside one
