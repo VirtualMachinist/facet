@@ -20,6 +20,7 @@
 mod blobs;
 mod config;
 mod machine;
+mod secrets;
 mod store;
 mod ulid;
 
@@ -27,8 +28,15 @@ use std::{fmt, io, path::PathBuf};
 
 pub use blobs::{BodyInput, StoredBody, sha256_hex};
 pub use config::{ConfigError, LatticeConfig, Retention, parse_byte_size, parse_retention};
-pub use machine::{MachineStore, machine_config_dir, machine_data_dir};
+pub use machine::{
+    EnvironmentRow, MachineStore, machine_config_dir, machine_data_dir,
+};
 pub use rusqlite::types::Value as SqlValue;
+pub use secrets::{
+    ENCRYPTED_REF_PREFIX, KEYRING_REF_PREFIX, SECRET_KEY_ENV, SecretBackend, SecretConfig,
+    SecretError, StoredSecret, backend_of, delete_secret, delete_secret_with, get_secret,
+    get_secret_with, put_secret, put_secret_with,
+};
 pub use store::{
     BLOBS_DIR, Blob, BodyRef, CONFIG_FILE, DB_FILE, FACET_DIR, GcReport, HistoryQuery, NewRun,
     RunRow, SqlResult, WORKSPACE_FILE, WorkspaceStore,
@@ -54,6 +62,8 @@ pub enum LatticeError {
     },
     /// Configuration could not be parsed.
     Config(ConfigError),
+    /// A secret at rest (Surface 3) operation failed.
+    Secret(SecretError),
     /// A `--sql` query attempted to write.
     ReadOnlyQuery,
     /// No machine data directory could be resolved.
@@ -68,6 +78,7 @@ impl fmt::Display for LatticeError {
                 write!(f, "lattice I/O error at {}: {source}", path.display())
             }
             Self::Config(error) => write!(f, "lattice configuration error: {error}"),
+            Self::Secret(error) => write!(f, "lattice secret error: {error}"),
             Self::ReadOnlyQuery => write!(
                 f,
                 "--sql queries are read-only; use facet commands to write"
@@ -86,6 +97,7 @@ impl std::error::Error for LatticeError {
             Self::Sqlite(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::Config(error) => Some(error),
+            Self::Secret(error) => Some(error),
             Self::ReadOnlyQuery | Self::NoDataDir => None,
         }
     }
@@ -100,6 +112,12 @@ impl From<rusqlite::Error> for LatticeError {
 impl From<ConfigError> for LatticeError {
     fn from(error: ConfigError) -> Self {
         Self::Config(error)
+    }
+}
+
+impl From<SecretError> for LatticeError {
+    fn from(error: SecretError) -> Self {
+        Self::Secret(error)
     }
 }
 

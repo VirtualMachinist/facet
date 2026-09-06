@@ -64,9 +64,11 @@ probe --version   # probe 0.5.7
 
 ## Lattice layout
 
-Two SQLite stores, both via bundled `rusqlite`. Turso is planned behind a
-cargo feature; DuckDB is never in the binary (attach the SQLite files
-externally for analytics).
+Two SQLite stores, both via bundled `rusqlite` (the default engine). Turso
+and an in-process DuckDB are available behind cargo features (neither is
+the default; both are off in a default build). DuckDB is also usable
+out-of-process: the `duckdb` CLI ATTACHes the SQLite file for analytics
+(see [Engines](#engines)).
 
 | Store | Path | Holds |
 | --- | --- | --- |
@@ -131,12 +133,69 @@ busy_timeout_ms   = 5000
 Flags: `--inline-body-max`, `--history-retention`. Agents get flags; humans
 get files.
 
+### Secrets at rest (Surface 3)
+
+Environment values that are secrets (tokens, keys) never sit in plaintext in
+the machine store. Two backends, picked by environment:
+
+- **OS keyring** (default, desktop): the `keyring` crate (macOS Keychain,
+  Windows Credential Manager, Linux Secret Service). The `environments` row
+  stores a `secret_ref` of the form `kr:<user>`; `value` is NULL. The secret
+  itself lives in the keyring under the `facet` service.
+- **Encrypted** (headless/CI fallback): XChaCha20-Poly1305 with the master key
+  derived from `FACET_SECRET_KEY` via HKDF-SHA256. `secret_ref` stores
+  `enc:v1:<base64(nonce||ciphertext)>`; `value` is NULL.
+
+Selection: `FACET_SECRET_KEY` set and non-empty → encrypted; otherwise the OS
+keyring. There is never a passphrase prompt (it breaks agent use). If no
+keyring backend is available and `FACET_SECRET_KEY` is unset, `set_environment`
+fails with a clear error telling the user to set `FACET_SECRET_KEY`.
+
+Reading is by the `secret_ref` prefix, so a secret written under one backend
+stays readable under the other as long as its key is available. Non-secret
+values stay in `value` with `secret_ref` NULL. Replacing a secret with a
+plain value (or deleting the row) cleans up the old keyring entry.
+
+`MachineStore::{set_environment, environment, environments,
+delete_environment}` are the API; `environments` returns metadata only
+(name, key, `secret`, `updated_at`) and never a secret value.
+
 ### Concurrency (Surface 4)
 
 Connections open in WAL mode with `busy_timeout` (5 s default) and use short
 immediate write transactions. Readers never block. Schema creation runs inside
 one immediate transaction so concurrent first opens serialize.
 `crates/lattice/tests/contention.rs` is the N-writer, M-reader fixture.
+
+### Engines
+
+The default engine is **rusqlite** (bundled SQLite). Two optional cargo
+features, both off by default, add engines without changing the on-disk
+file format:
+
+| Feature | Engine | Notes |
+| --- | --- | --- |
+| `lattice-turso` | Turso / libSQL (local mode) | Same file format as rusqlite (libSQL is a SQLite fork); flipping the flag requires no migration. Smoke: `crates/lattice/tests/turso.rs` (open/write/read a workspace store through libSQL). |
+| `lattice-duckdb` | DuckDB in-process (bundled) | **Apiary-only; never in lathe default members.** ATTACHes the SQLite lattice file for analytics. Smoke: `crates/lattice/tests/duckdb.rs`. Heavy native build. |
+
+The primary analytics path is the **`duckdb` CLI** attaching the SQLite
+file externally (no Rust, no feature flag):
+
+```text
+duckdb -c "INSTALL sqlite; LOAD sqlite; \
+  ATTACH '/path/to/.facet/lattice.db' AS lattice (TYPE SQLITE); \
+  SELECT status, count(*) FROM lattice.runs GROUP BY status;"
+```
+
+`INSTALL sqlite` downloads the `sqlite` extension on first use (network
+needed once). The in-process `lattice-duckdb` feature is a convenience
+for embedding the same ATTACH in Rust; it is not required for analytics.
+
+Feature-gated tests use `required-features` in `crates/lattice/Cargo.toml`,
+so a default `cargo test -p lattice` (features off) never pulls libsql,
+tokio, or duckdb. See `agents/backend/notes/2026-09-06-facet-engines.md`
+in the Lapis vault for the full runbook.
+
 
 ## Commands
 
@@ -258,8 +317,10 @@ fields are added compatibly and never removed or retyped within a version.
   `crates/facet/tests/golden/` (`UPDATE_GOLDEN=1` rewrites them), plus
   recording, reader-rule, read-only SQL, and gc behavior through the binary.
 - `crates/lattice/tests/store.rs`: schema, threshold placement, reader rule
-  across threshold changes, gc, machine index.
+  across threshold changes, gc, machine index, environments (plain + secret).
 - `crates/lattice/tests/contention.rs`: Surface 4 fixture.
+- `crates/lattice/src/secrets.rs` (unit): encrypted round-trip, wrong-key
+  failure, ref-prefix classification, empty/unknown refs.
 
 Facet is compiled and tested on the build host, not on lathe (see
 `agents/SQUAD.AGENTS.md` in the Lapis vault).

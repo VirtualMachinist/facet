@@ -5,7 +5,7 @@ use std::fs;
 
 use lattice::{
     BodyInput, HistoryQuery, LatticeConfig, LatticeError, MachineStore, NewRun, Retention,
-    SqlValue, WORKSPACE_SCHEMA_VERSION, WorkspaceStore, now_ms, sha256_hex,
+    SecretConfig, SqlValue, WORKSPACE_SCHEMA_VERSION, WorkspaceStore, now_ms, sha256_hex,
 };
 
 fn config(threshold: u64) -> LatticeConfig {
@@ -28,6 +28,34 @@ fn run<'a>(path: &'a str, body: &'a [u8]) -> NewRun<'a> {
         res_content_type: Some("text/plain"),
         ..NewRun::default()
     }
+}
+
+#[test]
+fn open_connection_honors_wal_flag() {
+    let wal_dir = tempfile::tempdir().unwrap();
+    WorkspaceStore::open(wal_dir.path(), LatticeConfig::default()).unwrap();
+    let wal_db = wal_dir.path().join(".facet/lattice.db");
+    let wal_mode: String = rusqlite::Connection::open(&wal_db)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(wal_mode, "wal");
+
+    let rollback_dir = tempfile::tempdir().unwrap();
+    WorkspaceStore::open(
+        rollback_dir.path(),
+        LatticeConfig {
+            wal: false,
+            ..LatticeConfig::default()
+        },
+    )
+    .unwrap();
+    let rollback_db = rollback_dir.path().join(".facet/lattice.db");
+    let rollback_mode: String = rusqlite::Connection::open(&rollback_db)
+        .unwrap()
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rollback_mode, "delete");
 }
 
 #[test]
@@ -352,3 +380,59 @@ fn machine_store_indexes_runs_by_workspace() {
     assert_eq!(workspaces[0].name.as_deref(), Some("Pets"));
 }
 
+
+#[test]
+fn environments_round_trip_plain_and_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
+    let machine = MachineStore::open_at(&dir.path().join("machine.db"), store.config()).unwrap();
+    let wsid = store.workspace_id();
+
+    // Plain value: stored in the value column, secret_ref NULL.
+    machine
+        .set_environment_with(wsid, "local", "API_URL", "http://x", false, &SecretConfig::keyring())
+        .unwrap();
+    assert_eq!(
+        machine.environment_with(wsid, "local", "API_URL", &SecretConfig::keyring()).unwrap().as_deref(),
+        Some("http://x")
+    );
+
+    // Secret value: stored via the encrypted backend, value NULL.
+    let key_cfg = SecretConfig::encrypted(b"test-master-key");
+    machine
+        .set_environment_with(wsid, "local", "API_TOKEN", "tok-123", true, &key_cfg)
+        .unwrap();
+    assert_eq!(
+        machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().as_deref(),
+        Some("tok-123")
+    );
+
+    // Listing returns metadata only; secrets are flagged, never returned.
+    let mut rows = machine.environments(wsid).unwrap();
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].key, "API_TOKEN");
+    assert!(rows[0].secret);
+    assert_eq!(rows[1].key, "API_URL");
+    assert!(!rows[1].secret);
+
+    // A secret cannot be read without the right key.
+    assert!(machine
+        .environment_with(wsid, "local", "API_TOKEN", &SecretConfig::encrypted(b"wrong"))
+        .is_err());
+
+    // Replacing a secret with a plain value drops the old secret_ref.
+    machine
+        .set_environment_with(wsid, "local", "API_TOKEN", "plain-now", false, &key_cfg)
+        .unwrap();
+    assert_eq!(
+        machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().as_deref(),
+        Some("plain-now")
+    );
+    assert!(!machine.environments(wsid).unwrap().iter().any(|r| r.key == "API_TOKEN" && r.secret));
+
+    // Delete removes the row.
+    assert!(machine.delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap());
+    assert!(machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().is_none());
+    assert!(!machine.delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap());
+}
