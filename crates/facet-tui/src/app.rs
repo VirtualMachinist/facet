@@ -639,6 +639,13 @@ impl App {
         self.draw(terminal)
     }
 
+    /// Marks the app as mid-send so headless harnesses can render the
+    /// running overlay without a network. Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_running(&mut self) {
+        self.status = RunStatus::Running;
+    }
+
     /// Returns `Ok(true)` when the event was consumed and a redraw is wanted.
     async fn handle_event(&mut self, event: crossterm::event::Event) -> Result<bool, TuiError> {
         use crossterm::event::{Event, KeyEvent, KeyEventKind};
