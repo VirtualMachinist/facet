@@ -1,5 +1,5 @@
 [package]
-name = "probe-tui"
+name = "facet-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ probe-http = { path = "../http" }
 probe-opencollection = { path = "../opencollection" }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = "0.29"
+serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 unicode-width = "0.2"
 

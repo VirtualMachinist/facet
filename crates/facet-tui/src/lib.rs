@@ -1,6 +1,6 @@
-//! Ratatui TUI adapter for Probe.
+//! Facet's ratatui TUI (`facet tui`).
 //!
-//! Spikes a layout + semantic-token translation of the Porcelain Honey /
+//! Layout + semantic-token translation of the Porcelain Honey /
 //! Graphite Honey palette from the desktop `theme.rs` onto terminal cells.
 //! The TUI is an interface over the shared application and domain crates
 //! (CLI / desktop parity), not a parallel runtime.
@@ -11,7 +11,7 @@ mod tree;
 pub mod ui;
 
 pub use app::{
-    App, BodyKind, Editor, EditorMode, EnvironmentEntry, Focus, RequestFocus, ResponseView,
-    RunResult, RunStatus, Section, TuiError,
+    App, BodyKind, Editor, EditorMode, EnvironmentEntry, Focus, RequestFocus, ResponseTab,
+    ResponseView, RunResult, RunStatus, Section, TuiError,
 };
 pub use theme::{Appearance, Depth, Palette, PaletteToken, Role, Styles, Theme};

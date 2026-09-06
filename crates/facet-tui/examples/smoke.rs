@@ -6,11 +6,11 @@
 //! `tests/fixtures/opencollection/phase1-bundled.yml`.
 //!
 //! Run with:
-//!   cargo run -p probe-tui --example smoke
+//!   cargo run -p facet-tui --example smoke
 
 use std::path::PathBuf;
 
-use probe_tui::{App, Appearance, Depth, Theme};
+use facet_tui::{App, Appearance, Depth, Theme};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;

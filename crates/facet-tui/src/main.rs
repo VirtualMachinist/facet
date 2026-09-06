@@ -1,6 +1,6 @@
 use std::{env, io, path::PathBuf, process::ExitCode};
 
-use probe_tui::{App, Appearance, Depth, Theme};
+use facet_tui::{App, Appearance, Depth, Theme};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 fn main() -> ExitCode {
@@ -11,7 +11,7 @@ fn main() -> ExitCode {
                 print_help();
                 return ExitCode::SUCCESS;
             }
-            eprintln!("probe-tui: {message}");
+            eprintln!("facet-tui: {message}");
             print_help();
             return ExitCode::from(2);
         }
@@ -20,7 +20,7 @@ fn main() -> ExitCode {
     let mut terminal = match setup_terminal() {
         Ok(terminal) => terminal,
         Err(error) => {
-            eprintln!("probe-tui: failed to enter raw mode: {error}");
+            eprintln!("facet-tui: failed to enter raw mode: {error}");
             return ExitCode::from(1);
         }
     };
@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("probe-tui: failed to start tokio runtime: {error}");
+            eprintln!("facet-tui: failed to start tokio runtime: {error}");
             let _ = restore_terminal();
             return ExitCode::from(1);
         }
@@ -44,7 +44,7 @@ fn main() -> ExitCode {
         }
         let result = app.run(&mut terminal).await;
         if let Err(error) = result {
-            eprintln!("probe-tui: {error}");
+            eprintln!("facet-tui: {error}");
             ExitCode::from(1)
         } else {
             ExitCode::SUCCESS
@@ -52,7 +52,7 @@ fn main() -> ExitCode {
     });
 
     if let Err(error) = restore_terminal() {
-        eprintln!("probe-tui: failed to restore terminal: {error}");
+        eprintln!("facet-tui: failed to restore terminal: {error}");
     }
     exit_code
 }
@@ -100,7 +100,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Cli, String> {
 
 fn print_help() {
     eprintln!(
-        "Usage: probe-tui [--appearance graphite|porcelain] [collection.yml]\n\
+        "Usage: facet-tui [--appearance graphite|porcelain] [collection.yml]\n\
          \n\
          Graphite Honey is the default. Porcelain Honey is the light appearance.\n\
          Keys: j/k move · Enter send · i edit · / search · e env · t theme · q quit"

@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::app::{
-    App, BodyKind, EditorMode, Focus, RequestFocus, ResponseView, RunStatus, Section,
+    App, BodyKind, EditorMode, Focus, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
 };
 use crate::theme::{PaletteToken, Styles, resolve};
 use crate::tree::Row;
@@ -50,8 +50,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn render_title(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     let dirty = if app.editor_dirty() { " •" } else { "" };
     let title_text = match app.collection_name() {
-        Some(name) => format!(" probe-tui · {name}{dirty} "),
-        None => format!(" probe-tui{dirty} "),
+        Some(name) => format!(" facet · {name}{dirty} "),
+        None => format!(" facet{dirty} "),
     };
     let appearance = app.theme().appearance().label();
     let line = Line::from(vec![
@@ -633,23 +633,60 @@ fn response_lines<'a>(
         format!("  {}", response.url),
         styles.url,
     )));
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("  headers", styles.muted)));
-    for (name, value) in &response.headers {
-        lines.push(Line::from(vec![
-            Span::styled(format!("    {name}: "), styles.muted),
-            Span::styled(value.clone(), styles.editor),
-        ]));
+
+    // Stone-pill tab row, mirroring the request section tabs.
+    let mut tabs = vec![Span::raw("  ")];
+    for tab in ResponseTab::ALL {
+        let style = if app.response_tab() == tab {
+            styles.stone_pill
+        } else {
+            styles.muted
+        };
+        tabs.push(Span::styled(format!(" {} ", tab.label()), style));
+        tabs.push(Span::raw(" "));
     }
+    lines.push(Line::from(tabs));
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("  body", styles.muted)));
-    for line in response.body.lines() {
+
+    match app.response_tab() {
+        ResponseTab::Pretty => push_body_lines(&mut lines, &response.pretty_body(), styles),
+        ResponseTab::Raw => push_body_lines(&mut lines, &response.body, styles),
+        ResponseTab::Headers => {
+            for (name, value) in &response.headers {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {name}: "), styles.muted),
+                    Span::styled(value.clone(), styles.editor),
+                ]));
+            }
+        }
+        ResponseTab::Inspect => {
+            let content_type = response.content_type().unwrap_or("—");
+            let rows = [
+                ("status", format!("{} {}", response.status, response.reason)),
+                ("url", response.url.clone()),
+                ("duration", format!("{} ms", response.duration.as_millis())),
+                ("body", format!("{} bytes", response.body_len)),
+                ("content-type", content_type.to_string()),
+                ("headers", format!("{}", response.headers.len())),
+            ];
+            for (name, value) in rows {
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {name}: "), styles.muted),
+                    Span::styled(value, styles.editor),
+                ]));
+            }
+        }
+    }
+    lines
+}
+
+fn push_body_lines<'a>(lines: &mut Vec<Line<'a>>, body: &str, styles: Styles) {
+    for line in body.lines() {
         lines.push(Line::from(Span::styled(
             format!("    {line}"),
             styles.editor,
         )));
     }
-    lines
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
@@ -813,6 +850,36 @@ mod tests {
             text.contains("List pets") || text.contains("Pets"),
             "{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn response_pane_shows_tab_row_and_pretty_json() {
+        use crate::app::{ResponseView, RunResult};
+        use std::time::Duration;
+
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.apply_run_result(RunResult::Ok(ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "https://example.com/pets".to_string(),
+            duration: Duration::from_millis(42),
+            headers: vec![("Content-Type".to_string(), "application/json".to_string())],
+            body: "{\"id\":1}".to_string(),
+            body_len: 8,
+        }));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("200 OK"), "status line: {text}");
+        assert!(text.contains("Pretty"), "tab row: {text}");
+        assert!(text.contains("Raw"), "{text}");
+        assert!(text.contains("Headers"), "{text}");
+        assert!(text.contains("Inspect"), "{text}");
+        // Pretty tab is the default: JSON is indented, not one line.
+        assert!(text.contains("\"id\": 1"), "pretty body: {text}");
     }
 
     #[tokio::test]
