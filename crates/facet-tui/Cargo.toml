@@ -2,7 +2,7 @@
 name = "facet-tui"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 rust-version.workspace = true
 
 [dependencies]

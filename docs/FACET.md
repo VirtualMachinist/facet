@@ -29,18 +29,26 @@ Rules:
 
 ### License and attribution
 
-Upstream `LICENSE` is Apache License 2.0 (the workspace `Cargo.toml` also
-declares `MIT OR Apache-2.0`; the LICENSE file is authoritative for the fork).
-Apache-2.0 permits this fork, including commercial and private use, on these
-terms:
+Decided by Evan on 2026-09-06 (Surface 7, closed):
 
-- Keep the `LICENSE` file and upstream copyright notices.
-- Files modified from upstream carry a notice that they were changed
-  (Section 4(b)). New Facet crates are new files under the same license.
-- Distributions include the license text. There is no upstream `NOTICE` file.
-- No use of upstream trademarks or names to imply endorsement.
-
-Facet binaries and docs identify Probe as upstream and link to it.
+- **Upstream-derived files stay Apache-2.0.** Probe's `LICENSE` (Apache License
+  2.0) governs `crates/cli`, `crates/core`, `crates/desktop`, `crates/http`,
+  `crates/opencollection`, `crates/postman`, `crates/yaak`, and the docs they
+  came with. They are never relicensed, so Probe PRs from this tree stay legal.
+  Files modified from upstream carry a change notice (Section 4(b)).
+- **Facet-original crates are MIT:** `crates/facet`, `crates/lattice`,
+  `crates/facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
+  in its own `Cargo.toml`. `crates/facet-tui` adapts palette values from the
+  upstream desktop theme; that derivation is noted in `NOTICE`.
+- **Copyright:** `Copyright 2026 Hedronite` for the Facet-original work.
+  Upstream copyright notices are kept as found; the root `LICENSE` text is
+  upstream's and is left byte-identical. Git identity for the fork stays
+  VirtualMachinist; the copyright holder is Hedronite.
+- The root `NOTICE` file states the fork relationship and the per-crate terms.
+  Distributions include `LICENSE`, `NOTICE`, and the per-crate `LICENSE-MIT`.
+- The workspace `Cargo.toml` still declares `license = "MIT OR Apache-2.0"`
+  for inherited upstream crates; that is upstream's own declaration and is
+  left alone.
 
 ## Binaries
 

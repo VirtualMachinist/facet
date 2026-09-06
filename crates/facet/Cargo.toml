@@ -2,7 +2,7 @@
 name = "facet-cli"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
 rust-version.workspace = true
 description = "Facet: Probe cut for the terminal, with Lattice underneath"
 
@@ -23,6 +23,7 @@ serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time", "signal"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
 
 [lints]

@@ -1,0 +1,18 @@
+Facet
+Copyright 2026 Hedronite
+
+Facet is a fork of Probe (https://github.com/crizant/probe), used under the
+Apache License, Version 2.0 (see LICENSE). Upstream-derived crates and files
+(crates/cli, crates/core, crates/desktop, crates/http, crates/opencollection,
+crates/postman, crates/yaak, and the shared docs they came with) remain under
+the upstream Apache-2.0 terms and are not relicensed.
+
+Facet-original crates are licensed under the MIT License (LICENSE-MIT in
+each crate), Copyright 2026 Hedronite:
+
+  crates/facet      (the `facet` binary)
+  crates/lattice    (run-history store)
+  crates/facet-tui  (terminal UI)
+
+crates/facet-tui adapts palette values from the upstream desktop theme
+(crates/desktop/src/theme.rs, Apache-2.0).
