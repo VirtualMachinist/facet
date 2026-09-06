@@ -1336,6 +1336,26 @@ impl App {
             .and_then(|loaded| loaded.workspace().metadata().name.as_deref())
     }
 
+    /// Whether a collection is loaded (the splash shows when it is not).
+    pub fn has_collection(&self) -> bool {
+        self.loaded.is_some()
+    }
+
+    /// Whether a Lattice workspace store exists beside the loaded collection
+    /// (`.facet/lattice.db` in the collection directory). A filesystem check
+    /// only; the TUI does not open the store.
+    pub fn lattice_ready(&self) -> bool {
+        let Some(source) = self.loaded.as_ref().and_then(|loaded| loaded.source_path()) else {
+            return false;
+        };
+        let root = if source.is_dir() {
+            source.to_path_buf()
+        } else {
+            source.parent().map(Path::to_path_buf).unwrap_or_default()
+        };
+        root.join(".facet").join("lattice.db").is_file()
+    }
+
     /// Resolves a folder's display name from its session key.
     pub fn folder_name(&self, key: FolderKey) -> Option<String> {
         let loaded = self.loaded.as_ref()?;

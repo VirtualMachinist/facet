@@ -635,6 +635,12 @@ pub struct Styles {
     pub stone_pill: Style,
     pub placeholder: Style,
     pub accent_text: Style,
+    /// Wordmark and footer brackets: bold accent on the window ground.
+    pub brand: Style,
+    /// Lattice nodes on the splash.
+    pub brand_bright: Style,
+    /// Lattice edges on the splash.
+    pub brand_line: Style,
 }
 
 impl Styles {
@@ -686,6 +692,9 @@ impl Styles {
             .add_modifier(Modifier::BOLD);
         let placeholder = base.fg(resolve(theme, PaletteToken::TextPlaceholder));
         let accent_text = base.fg(accent).add_modifier(Modifier::BOLD);
+        let brand_line = base.fg(accent);
+        let brand = brand_line.add_modifier(Modifier::BOLD);
+        let brand_bright = brand;
 
         let _ = palette;
         Self {
@@ -706,6 +715,9 @@ impl Styles {
             stone_pill,
             placeholder,
             accent_text,
+            brand,
+            brand_bright,
+            brand_line,
         }
     }
 }

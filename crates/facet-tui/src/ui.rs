@@ -8,9 +8,11 @@
 //! chip, the tree selection pill, and Send.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, BodyKind, EditorMode, Focus, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
@@ -128,6 +130,11 @@ fn render_work_area(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         .style(styles.editor);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    if !app.has_collection() {
+        render_pane_title(frame, area, " facet ", focused, styles);
+        render_splash(frame, inner, styles);
+        return;
+    }
     render_pane_title(frame, area, " Request / Response ", focused, styles);
 
     let request_height = if inner.height >= 22 { 12 } else { 8 };
@@ -138,6 +145,84 @@ fn render_work_area(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
 
     render_request_pane(frame, split[0], app, styles);
     render_response_pane(frame, split[1], app, styles);
+}
+
+/// Release-train codename shown in the footer's first segment.
+pub const CODENAME: &str = "G38";
+/// Subtitle under the wordmark on the splash.
+pub const TAGLINE: &str = "local-first api client";
+
+/// Seven-node lattice glyph from the design alpha: a hexagon of six nodes
+/// around a center, spokes to every vertex. Nodes take the bright brand
+/// color, lines the accent.
+const LATTICE_GLYPH: [&str; 11] = [
+    "     ●     ",
+    "   ╱ │ ╲   ",
+    " ●   │   ● ",
+    " │╲  │  ╱│ ",
+    " │ ╲ │ ╱ │ ",
+    " │   ●   │ ",
+    " │ ╱ │ ╲ │ ",
+    " │╱  │  ╲│ ",
+    " ●   │   ● ",
+    "   ╲ │ ╱   ",
+    "     ●     ",
+];
+
+/// Box-drawing wordmark, three rows, honey.
+const WORDMARK: [&str; 3] = [
+    "┌─  ┌─┐ ┌─  ┌─┐ ─┬─",
+    "├─  ├─┤ │   ├─┘  │ ",
+    "│   ┴ ┴ └─  └─┘  ┴ ",
+];
+
+/// Splash for `facet tui` without a collection: lattice glyph, wordmark,
+/// tagline, and how to open something. Degrades by height: glyph first,
+/// then the wordmark, then a single line.
+fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
+    if area.width < 24 || area.height < 3 {
+        let line = Line::from(Span::styled("facet · local-first api client", styles.brand));
+        frame.render_widget(
+            Paragraph::new(line)
+                .alignment(Alignment::Center)
+                .style(styles.editor),
+            area,
+        );
+        return;
+    }
+    let show_glyph = area.height >= LATTICE_GLYPH.len() as u16 + WORDMARK.len() as u16 + 5;
+    let mut lines: Vec<Line> = Vec::new();
+    if show_glyph {
+        for row in LATTICE_GLYPH {
+            let spans = row
+                .chars()
+                .map(|ch| match ch {
+                    '●' => Span::styled(ch.to_string(), styles.brand_bright),
+                    ' ' => Span::raw(" "),
+                    _ => Span::styled(ch.to_string(), styles.brand_line),
+                })
+                .collect::<Vec<_>>();
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::raw(""));
+    }
+    for row in WORDMARK {
+        lines.push(Line::from(Span::styled(row, styles.brand)));
+    }
+    lines.push(Line::from(Span::styled(TAGLINE, styles.muted)));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "open a collection · facet tui <path>",
+        styles.placeholder,
+    )));
+    let height = (lines.len() as u16).min(area.height);
+    let target = centered(area, area.width, height);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(styles.editor),
+        target,
+    );
 }
 
 fn render_pane_title(frame: &mut Frame, area: Rect, label: &str, focused: bool, styles: Styles) {
@@ -689,6 +774,9 @@ fn push_body_lines<'a>(lines: &mut Vec<Line<'a>>, body: &str, styles: Styles) {
     }
 }
 
+/// Footer from the design alpha: `[ G38 │ lattice ready │ hints │ graphite honey ]`.
+/// Brackets in honey, separators in stone. Segments drop from the middle
+/// outward when the terminal is narrow.
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     let status_style = match app.status() {
         RunStatus::Idle => styles.status_idle,
@@ -699,26 +787,55 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         }
         RunStatus::Failed(_) => styles.status_error,
     };
-    let label = match app.status() {
+    let status_label = match app.status() {
+        RunStatus::Idle if app.lattice_ready() => "lattice ready".to_string(),
+        RunStatus::Idle => "lattice idle".to_string(),
         RunStatus::Done { status, duration } => {
-            format!(" done · {} · {} ms", status, duration.as_millis())
+            format!("{} · {} ms", status, duration.as_millis())
         }
-        other => format!(" {}", other.label()),
+        other => other.label().to_string(),
     };
     let hint = if app.editor_mode() == EditorMode::Insert {
-        " insert · Esc normal · Enter save "
+        "insert · Esc normal · Enter save"
     } else if app.searching() {
-        " search · Enter apply · Esc clear "
+        "search · Enter apply · Esc clear"
     } else if app.env_dropdown_open() {
-        " env · j/k select · Enter close "
+        "env · j/k select · Enter close"
     } else {
-        " j/k move · Enter send · i edit · / search · e env · [ ] tabs · t theme · q quit "
+        "j/k · Enter send · i edit · / search · e env · [] tabs · t theme · q quit"
     };
-    let spans = vec![
-        Span::styled(label, status_style),
-        Span::raw(" "),
-        Span::styled(hint, styles.muted),
+    let appearance = app.theme().appearance().label().to_lowercase();
+
+    let mut segments: Vec<(String, Style)> = vec![
+        (CODENAME.to_string(), styles.muted),
+        (status_label, status_style),
+        (hint.to_string(), styles.muted),
+        (appearance, styles.muted),
     ];
+    let width = |segments: &[(String, Style)]| -> usize {
+        // "[ " + segments joined by " │ " + " ]"
+        4 + segments.iter().map(|(text, _)| text.width()).sum::<usize>()
+            + 3 * segments.len().saturating_sub(1)
+    };
+    let available = area.width as usize;
+    if width(&segments) > available {
+        segments.remove(2);
+    }
+    if width(&segments) > available {
+        segments.remove(0);
+    }
+
+    let mut spans = vec![Span::styled("[ ", styles.brand)];
+    for (index, (text, style)) in segments.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" │ ", styles.border));
+        }
+        spans.push(Span::styled(text.clone(), *style));
+    }
+    let used = width(&segments);
+    let pad = available.saturating_sub(used);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(" ]", styles.brand));
     frame.render_widget(Paragraph::new(Line::from(spans)).style(styles.base), area);
 }
 
@@ -892,5 +1009,59 @@ mod tests {
         let text = dump(terminal.backend().buffer());
         assert!(text.contains("Porcelain Honey"), "{text}");
         assert!(text.contains("Send"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn splash_renders_when_no_collection_is_loaded() {
+        let mut app = App::load(None).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("local-first api client"), "tagline: {text}");
+        assert!(text.contains("┌─┐ ┌─  ┌─┐ ─┬─"), "wordmark: {text}");
+        assert_eq!(text.matches('●').count(), 7, "seven lattice nodes: {text}");
+        assert!(text.contains("facet tui <path>"), "open hint: {text}");
+        assert!(!text.contains("Request / Response"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn footer_is_the_bracketed_status_bar() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+
+        assert!(footer.starts_with("[ G38 │ "), "{footer}");
+        assert!(
+            footer.contains("lattice idle"),
+            "no store beside the fixture: {footer}"
+        );
+        assert!(footer.contains("│ graphite honey"), "{footer}");
+        assert!(footer.trim_end().ends_with(']'), "{footer}");
+        assert!(
+            footer.contains("q quit"),
+            "hints fit at 120 columns: {footer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn footer_drops_hints_before_codename_when_narrow() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+
+        assert!(footer.starts_with("[ G38 │ "), "{footer}");
+        assert!(!footer.contains("q quit"), "hints dropped: {footer}");
+        assert!(footer.contains("graphite honey"), "{footer}");
     }
 }
