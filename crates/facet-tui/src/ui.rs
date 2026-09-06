@@ -176,9 +176,33 @@ const WORDMARK: [&str; 3] = [
     "│   ┴ ┴ └─  └─┘  ┴ ",
 ];
 
+/// The lattice glyph inside an outer hexagon outline, 14×23. The hexagon
+/// is drawn with ASCII `/`, `\`, `-` so the renderer can style it apart
+/// from the glyph: edges become `╱ ╲ ─` in `brand_fill` (the one filled
+/// brand frame). Glyph chars keep their node/line styles. Concentric
+/// with the glyph: every glyph row clears the outline by at least one
+/// cell.
+const SPLASH_HEXAGON: [&str; 14] = [
+    "         /---\\         ",
+    "        /  ●  \\        ",
+    "       / ╱ │ ╲ \\       ",
+    "      /●   │   ●\\      ",
+    "     / │╲  │  ╱│ \\     ",
+    "    /  │ ╲ │ ╱ │  \\    ",
+    "   /   │   ●   │   \\   ",
+    "   \\   │ ╱ │ ╲ │   /   ",
+    "    \\  │╱  │  ╲│  /    ",
+    "     \\ ●   │   ● /     ",
+    "      \\  ╲ │ ╱  /      ",
+    "       \\   ●   /       ",
+    "        \\     /        ",
+    "         \\---/         ",
+];
+
 /// Splash for `facet tui` without a collection: lattice glyph, wordmark,
-/// tagline, and how to open something. Degrades by height: glyph first,
-/// then the wordmark, then a single line.
+/// tagline, and how to open something. Tall and wide enough panes get the
+/// glyph inside the outer hexagon outline. Degrades by height: hexagon
+/// first, then the bare glyph, then the wordmark, then a single line.
 fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
     if area.width < 24 || area.height < 3 {
         let line = Line::from(Span::styled("facet · local-first api client", styles.brand));
@@ -190,19 +214,19 @@ fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
         );
         return;
     }
-    let show_glyph = area.height >= LATTICE_GLYPH.len() as u16 + WORDMARK.len() as u16 + 5;
+    let wordmark_height = WORDMARK.len() as u16 + 5;
+    let show_hexagon = area.height >= SPLASH_HEXAGON.len() as u16 + wordmark_height
+        && area.width >= SPLASH_HEXAGON[0].chars().count() as u16 + 2;
+    let show_glyph = area.height >= LATTICE_GLYPH.len() as u16 + wordmark_height;
     let mut lines: Vec<Line> = Vec::new();
-    if show_glyph {
+    if show_hexagon {
+        for row in SPLASH_HEXAGON {
+            lines.push(Line::from(splash_art_spans(row, styles)));
+        }
+        lines.push(Line::raw(""));
+    } else if show_glyph {
         for row in LATTICE_GLYPH {
-            let spans = row
-                .chars()
-                .map(|ch| match ch {
-                    '●' => Span::styled(ch.to_string(), styles.brand_bright),
-                    ' ' => Span::raw(" "),
-                    _ => Span::styled(ch.to_string(), styles.brand_line),
-                })
-                .collect::<Vec<_>>();
-            lines.push(Line::from(spans));
+            lines.push(Line::from(splash_art_spans(row, styles)));
         }
         lines.push(Line::raw(""));
     }
@@ -223,6 +247,22 @@ fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
             .style(styles.editor),
         target,
     );
+}
+
+/// Styles one row of splash art. ASCII `/ \ -` are stand-ins for the
+/// hexagon outline (rendered as `╱ ╲ ─` in the filled brand band); `●`
+/// is a lattice node; any other non-space char is a lattice edge.
+fn splash_art_spans(row: &str, styles: Styles) -> Vec<Span<'static>> {
+    row.chars()
+        .map(|ch| match ch {
+            '●' => Span::styled(ch.to_string(), styles.brand_bright),
+            '/' => Span::styled("╱", styles.brand_fill),
+            '\\' => Span::styled("╲", styles.brand_fill),
+            '-' => Span::styled("─", styles.brand_fill),
+            ' ' => Span::raw(" "),
+            _ => Span::styled(ch.to_string(), styles.brand_line),
+        })
+        .collect()
 }
 
 fn render_pane_title(frame: &mut Frame, area: Rect, label: &str, focused: bool, styles: Styles) {
@@ -897,15 +937,45 @@ fn render_env_dropdown(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
     frame.render_widget(List::new(items).style(styles.editor), inner);
 }
 
+/// Send-in-flight overlay: the seven-node lattice glyph over a caption.
+/// Falls back to the caption-only box when the pane is too small for the
+/// glyph.
 fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    let overlay = centered(area, 30.min(area.width), 3.min(area.height));
+    // Box fits the glyph (11 wide) and the caption (16 cells) with margin.
+    let overlay_width = 20u16;
+    let overlay_height = LATTICE_GLYPH.len() as u16 + 4;
+    if area.width < overlay_width || area.height < overlay_height {
+        let overlay = centered(area, 30.min(area.width), 3.min(area.height));
+        frame.render_widget(Clear, overlay);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(styles.border);
+        let text =
+            Paragraph::new(Span::styled("  Sending request…", styles.status_running)).block(block);
+        frame.render_widget(text, overlay);
+        return;
+    }
+    let overlay = centered(area, overlay_width, overlay_height);
     frame.render_widget(Clear, overlay);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(styles.border);
-    let text =
-        Paragraph::new(Span::styled("  Sending request…", styles.status_running)).block(block);
-    frame.render_widget(text, overlay);
+        .border_style(styles.border)
+        .style(styles.editor);
+    let mut lines: Vec<Line> = Vec::new();
+    for row in LATTICE_GLYPH {
+        lines.push(Line::from(splash_art_spans(row, styles)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Sending request…",
+        styles.status_running,
+    )));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
+        overlay,
+    );
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1025,6 +1095,57 @@ mod tests {
         assert_eq!(text.matches('●').count(), 7, "seven lattice nodes: {text}");
         assert!(text.contains("facet tui <path>"), "open hint: {text}");
         assert!(!text.contains("Request / Response"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn splash_wraps_the_glyph_in_the_hexagon_when_tall() {
+        let mut app = App::load(None).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("╱───╲"), "hexagon top edge: {text}");
+        assert!(text.contains("╲───╱"), "hexagon bottom edge: {text}");
+        assert_eq!(
+            text.matches('●').count(),
+            7,
+            "outline adds no nodes: {text}"
+        );
+        assert!(text.contains("local-first api client"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn porcelain_splash_renders_the_hexagon() {
+        let mut app = App::load(None).await;
+        app.apply_theme(Theme::new(Appearance::Light).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("Porcelain Honey"), "{text}");
+        assert!(text.contains("╱───╲"), "hexagon in porcelain: {text}");
+        assert!(text.contains("local-first api client"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn running_overlay_shows_the_lattice_glyph() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_running();
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("Sending request…"), "caption: {text}");
+        assert_eq!(
+            text.matches('●').count(),
+            7,
+            "overlay glyph has seven nodes: {text}"
+        );
     }
 
     #[tokio::test]
