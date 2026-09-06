@@ -1,89 +1,156 @@
-# Facet
+<p align="center">
+  <a href="https://github.com/VirtualMachinist/facet">
+    <img src="assets/facet-logo.jpeg" alt="Facet" width="220">
+  </a>
+</p>
 
-Hedronite's in-house fork of [Probe](https://github.com/crizant/probe): the same
-core, CLI contract, and OpenCollection YAML, cut for the terminal, with
-**Lattice** underneath it so every run is remembered. Codename G38.
+<h1 align="center">Facet</h1>
 
-The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML;
-Git stays the sync layer. Lattice never holds the collection.
+<p align="center">
+  <strong>Native, local-first API client.</strong><br>
+  The terminal-native fork of Probe, with Lattice run history.
+</p>
 
-```bash
-facet --version          # facet 0.5.7 (probe 0.5.7)
-probe --version          # probe 0.5.7
-```
+<p align="center">
+  <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=222222&colorB=8FD14F&label=ci" alt="CI"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.7"><img src="https://img.shields.io/badge/Facet-v0.5.7-8FD14F?style=flat&colorA=222222" alt="Facet v0.5.7"></a>
+  <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=222222&logo=rust&logoColor=white" alt="Rust 1.95"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-8FD14F?style=flat&colorA=222222" alt="License"></a>
+  <a href="https://hedronite.com"><img src="https://img.shields.io/badge/Hedronite-hedronite.com-8FD14F?style=flat&colorA=222222" alt="Hedronite"></a>
+</p>
 
-## What Facet adds
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-you-get">What you get</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#status">Status</a> ·
+  <a href="#contributing">Contributing</a>
+</p>
 
-- **TUI** (`facet tui`) — Ratatui, Graphite Honey / Porcelain Honey. Not a
-  second GPUI desktop. Upstream `probe-desktop` remains in the workspace but is
-  out of the default build.
-- **Lattice** — SQLite beside the YAML (`.facet/lattice.db`) plus a machine
-  store for secrets, sessions, and a cross-workspace run index.
-- **Agent CLI** — metadata is cheap; payloads are explicit:
+<p align="center">
+  Built by <a href="https://hedronite.com">Hedronite</a>'s <a href="https://x.com/Hedronite">VirtualMachinist</a>.
+  Core engine by <a href="https://github.com/crizant/probe">Probe</a>. Not affiliated with Probe or crizant.
+</p>
 
-```bash
-facet request run ./api users/list-users.yml --environment development --json
-facet history --json
-facet blob <sha256>
-facet history --sql "SELECT status, count(*) FROM runs GROUP BY status"
-facet gc --yes
-```
+---
 
-Everything Probe already documents still holds: [CLI](docs/CLI.md),
-[Architecture](docs/ARCHITECTURE.md). Facet-only contracts live in
-[docs/FACET.md](docs/FACET.md).
+Facet is a fast, native API client that keeps your collections in plain OpenCollection YAML files. It is Hedronite's terminal-optimized fork of [Probe](https://github.com/crizant/probe). The core engine and CLI contracts are identical, but Facet adds a Ratatui interface and **Lattice**, a local SQLite store that remembers every run.
 
-## Goals
+It exists for **developers and agents who want a persistent terminal workflow**: deterministic JSON outputs, content-addressed blobs, and a run history that survives the session. If you love Probe's filesystem-first approach but need to query your request history with SQL or pipe responses into agent workflows, this is the way in.
 
-- TUI-first, agent-optimized
-- Same OpenCollection YAML as Probe; cherry-pickable in both directions
-- Filesystem-first and Git-friendly
-- Run history that survives the terminal
-- Deterministic, versioned JSON
-- No account required
+Facet is not a competing standard and not a rewrite. It is Probe's own core, vendored into a workspace and driven by terminal-first adapters. We are members of the Probe community, and we send core fixes upstream.
 
-## Technology
+**0.5.7** release · **100%** OpenCollection YAML compatible · **1** Ratatui TUI · **SQLite** default engine
 
-- Rust 1.95 (`rust-toolchain.toml`)
-- Ratatui (`crates/facet-tui`)
-- Bundled SQLite via `rusqlite` (default Lattice engine)
-- Optional `lattice-turso` and `lattice-duckdb` features (off by default)
-- OpenCollection YAML
+## Quick start
 
-`probe-core` and `probe-cli` are not edited in a Facet slice. Changes that
-belong there are written as Probe PRs.
+Three steps to run your first request and query its history.
 
-## Development
-
-Install [rustup](https://rustup.rs/). The checked-in toolchain selects 1.95.0
-with `rustfmt` and `clippy`.
-
-```bash
-cargo run -p facet-cli -- --help
-cargo run -p facet-cli -- tui
-cargo run -p probe-cli -- --help
-cargo fmt --check
-cargo clippy --all-targets --all-features
-cargo test
-```
-
-`cargo build` / `cargo test` skip GPUI. Use `cargo build --workspace` if you
-need the upstream desktop.
+**1. Build and install.**
 
 ```bash
 cargo build --release -p probe-cli -p facet-cli
-# then put target/release/facet and target/release/probe on PATH
+export PATH="$PWD/target/release:$PATH"
 ```
 
-Read [AGENTS.md](AGENTS.md) before changing code. Facet-only work: [docs/FACET.md](docs/FACET.md).
-Index: [docs/README.md](docs/README.md).
+**2. Run a request.**
 
-## License
+Facet uses the exact same OpenCollection YAML as Probe.
 
-- **Facet-original crates** (`facet`, `lattice`, `facet-tui`): [MIT](crates/facet/LICENSE-MIT),
-  Copyright 2026 Hedronite.
-- **Upstream-derived crates and files**: [Apache License 2.0](LICENSE) (Probe).
-- See [NOTICE](NOTICE) for the fork relationship.
+```bash
+facet request run ./api users/list-users.yml --environment development --json
+```
 
-Upstream: [crizant/probe](https://github.com/crizant/probe).
-This tree: [VirtualMachinist/facet](https://github.com/VirtualMachinist/facet).
+**3. Explore your history.**
+
+Lattice remembers the run automatically.
+
+```bash
+# View recent runs
+facet history --json
+
+# Query history with SQL
+facet history --sql "SELECT status, count(*) FROM runs GROUP BY status"
+
+# Extract a specific response body by hash
+facet blob <sha256>
+```
+
+For the TUI, run `facet tui`.
+
+## What you get
+
+Everything below builds on Probe's core engine, running natively in your terminal.
+
+| | Probe | Facet |
+|---|---|---|
+| Core Engine | Rust, fast, filesystem-first | Same core engine, cherry-pickable |
+| Collections | OpenCollection YAML | Same YAML, 100% compatible |
+| Interface | GPUI Desktop + CLI | Ratatui TUI (`facet tui`) + Agent CLI |
+| History | In-memory session | **Lattice**: SQLite workspace & machine store |
+| Binaries | `probe` | `facet` (coexists with `probe` on `PATH`) |
+| Data | Ephemeral CLI runs | Persistent, queryable, content-addressed blobs |
+| Output | Human-readable & JSON | Deterministic, versioned JSON optimized for agents |
+
+### What stays upstream, on purpose
+
+Facet rebuilds the terminal and history layers. The core domain and HTTP execution belong to Probe, and every place the two meet is written down rather than papered over. The full boundary is documented in [docs/FACET.md](docs/FACET.md).
+
+| Upstream | On Facet |
+|---|---|
+| `probe-core`, `probe-cli` | Untouched. Fixes go upstream first. |
+| GPUI Desktop | Out of default build. `cargo build --workspace` to include. |
+| OpenCollection YAML | Canonical format. No proprietary database extensions. |
+| CLI Contracts | `facet` delegates standard commands to `probe-cli` verbatim. |
+
+## How it works
+
+One rule drives the whole design: **if it's core business logic, it goes upstream. If it's terminal UI or run history, it's Facet.** Nothing the user touches gets rewritten in Facet if Probe already models it.
+
+- The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML; Git stays the sync layer. Lattice never holds the collection itself.
+- **Lattice** uses SQLite beside the YAML (`.facet/lattice.db`) plus a machine store for secrets, sessions, and a cross-workspace run index.
+- Agent CLI commands (`history`, `blob`, `gc`) are built for machine consumption. Metadata is cheap, and large bodies are content-addressed.
+- Secrets are stored securely at rest using the OS keyring or XChaCha20-Poly1305 encryption.
+
+<details>
+<summary><strong>Repository map</strong></summary>
+
+```
+crates/cli/               # upstream probe-cli
+crates/core/              # upstream probe-core
+crates/desktop/           # upstream probe-desktop (excluded from default build)
+crates/http/              # upstream HTTP client
+crates/opencollection/    # upstream YAML parser
+crates/facet/             # the facet binary
+crates/lattice/           # run history, blobs, gc, sql
+crates/facet-tui/         # Ratatui interface
+docs/FACET.md             # Facet-specific documentation
+AGENTS.md                 # project instructions
+```
+
+</details>
+
+## Status
+
+**G38 / lattice ready / graphite honey**
+
+Facet 0.5.7 is stable for daily driving. The `facet` binary is actively used in production agent workflows. The Lattice schema is versioned and migrated automatically.
+
+- **Lattice**: Ready. SQLite/rusqlite is the default engine.
+- **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
+- **Agent CLI**: Ready. Deterministic JSON and SQL querying.
+
+## Contributing
+
+Issues and pull requests are welcome. Start with [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [AGENTS.md](AGENTS.md) for the rules the tree already follows. Two of them matter most: core logic belongs in Probe, and Facet-only crates are strictly separated.
+
+When something we fix turns out to be a Probe bug rather than a terminal-ism, it goes upstream. Being a good citizen of the Probe community is part of the job.
+
+## Credits and license
+
+Facet is built and maintained by [Hedronite](https://hedronite.com). The core engine is [Probe](https://github.com/crizant/probe) by crizant.
+
+- **Facet-original crates** (`facet`, `lattice`, `facet-tui`): MIT License, Copyright 2026 Hedronite.
+- **Upstream-derived crates and files**: Apache License 2.0 (Probe).
+
+See [LICENSE](LICENSE) and [NOTICE](NOTICE) for the fork relationship and full terms. The Facet mark is Hedronite's.
