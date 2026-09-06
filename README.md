@@ -29,7 +29,8 @@
 
 <p align="center">
   Built by <a href="https://hedronite.com">Hedronite</a>'s <a href="https://x.com/Hedronite">VirtualMachinist</a>.
-  Core engine by <a href="https://github.com/crizant/probe">Probe</a>. Not affiliated with Probe or crizant.
+  Core engine by <a href="https://github.com/crizant/probe">Probe</a>. Not affiliated with Probe or crizant.<br>
+  <em>The Facet mark is the graphite honey hex lattice.</em>
 </p>
 
 ---
@@ -134,7 +135,7 @@ AGENTS.md                 # project instructions
 
 **G38 / lattice ready / graphite honey**
 
-Facet 0.5.7 is stable for daily driving. The `facet` binary is actively used in production agent workflows. The Lattice schema is versioned and migrated automatically.
+Facet is the working tree at 0.5.7; track `main`. The Lattice schema is versioned and migrated automatically.
 
 - **Lattice**: Ready. SQLite/rusqlite is the default engine.
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
@@ -142,7 +143,7 @@ Facet 0.5.7 is stable for daily driving. The `facet` binary is actively used in 
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [AGENTS.md](AGENTS.md) for the rules the tree already follows. Two of them matter most: core logic belongs in Probe, and Facet-only crates are strictly separated.
+Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md) for the rules the tree already follows. Two of them matter most: core logic belongs in Probe, and Facet-only crates are strictly separated.
 
 When something we fix turns out to be a Probe bug rather than a terminal-ism, it goes upstream. Being a good citizen of the Probe community is part of the job.
 
