@@ -6,6 +6,8 @@ license = "MIT"
 rust-version.workspace = true
 
 [dependencies]
+facet-record = { path = "../facet-record" }
+lattice = { path = "../lattice" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
 probe-opencollection = { path = "../opencollection" }

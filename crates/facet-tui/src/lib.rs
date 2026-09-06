@@ -11,7 +11,7 @@ mod tree;
 pub mod ui;
 
 pub use app::{
-    App, BodyKind, Editor, EnvironmentEntry, Focus, Mode, RequestFocus, ResponseTab, ResponseView,
-    RunResult, RunStatus, Section, TuiError,
+    App, BodyKind, Editor, EnvironmentEntry, Focus, Mode, RecordSummary, RequestFocus, ResponseTab,
+    ResponseView, RunResult, RunStatus, Section, TuiError,
 };
 pub use theme::{Appearance, Depth, Palette, PaletteToken, Role, Styles, Theme};
