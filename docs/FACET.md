@@ -175,7 +175,7 @@ file format:
 
 | Feature | Engine | Notes |
 | --- | --- | --- |
-| `lattice-turso` | Turso / libSQL (local mode) | Same file format as rusqlite (libSQL is a SQLite fork); flipping the flag requires no migration. Smoke: `crates/lattice/tests/turso.rs` (open/write/read a workspace store through libSQL). |
+| `lattice-turso` | Turso / libSQL (local mode) | Same file format as rusqlite (libSQL is a SQLite fork); flipping the flag requires no migration. Smoke: `crates/lattice/tests/turso.rs` (open/write/read a workspace store through libSQL). The smoke is libsql-only: rusqlite and libsql both bundle SQLite and cannot coexist in one binary (libsql's `sqlite3_config(SERIALIZED)` returns `SQLITE_MISUSE` after rusqlite initializes SQLite; `skip_safety_assert` is `unsafe` and the workspace forbids it). Verified still true 2026-09-06 (libsql 0.9.30). |
 | `lattice-duckdb` | DuckDB in-process (bundled) | **Apiary-only; never in lathe default members.** ATTACHes the SQLite lattice file for analytics. Smoke: `crates/lattice/tests/duckdb.rs`. Heavy native build. |
 
 The primary analytics path is the **`duckdb` CLI** attaching the SQLite
