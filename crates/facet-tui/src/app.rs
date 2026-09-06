@@ -438,6 +438,8 @@ pub struct App {
     command: String,
     /// `?` help overlay.
     help_open: bool,
+    /// Awaiting the second key of a `Ctrl-W` focus chord.
+    ctrl_w_pending: bool,
     editor: Editor,
     editor_snapshot: EditorSnapshot,
     editor_dirty: bool,
@@ -518,6 +520,7 @@ impl App {
             mode: Mode::Normal,
             command: String::new(),
             help_open: false,
+            ctrl_w_pending: false,
             editor: Editor::default(),
             editor_snapshot: EditorSnapshot::default(),
             editor_dirty: false,
@@ -748,7 +751,7 @@ impl App {
     ) -> Result<bool, TuiError> {
         match self.mode {
             Mode::Insert => return self.handle_insert_key(code, modifiers),
-            Mode::Command => return self.handle_command_key(code),
+            Mode::Command => return self.handle_command_key(code).await,
             Mode::Normal => {}
         }
         if self.help_open {
@@ -760,6 +763,11 @@ impl App {
         if self.searching {
             return self.handle_search_key(code, modifiers);
         }
+        if self.ctrl_w_pending {
+            self.ctrl_w_pending = false;
+            self.handle_focus_chord(code);
+            return Ok(true);
+        }
 
         if matches!(code, KeyCode::Esc) && self.cancel.is_some() {
             self.cancel_run();
@@ -767,10 +775,14 @@ impl App {
         }
 
         match (code, modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
+            (KeyCode::Char('q'), _) => {
                 self.should_quit = true;
                 Ok(true)
             }
+            // Esc in Normal is a no-op. Overlays, search, env, Insert and
+            // Command consume it above; an in-flight run is cancelled above
+            // that. `q` (or `:q`) quits — never Esc.
+            (KeyCode::Esc, _) => Ok(true),
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.should_quit = true;
                 Ok(true)
@@ -784,19 +796,8 @@ impl App {
                 self.help_open = true;
                 Ok(true)
             }
-            (KeyCode::Char('t'), _) => {
-                self.theme_state = self.theme_state.toggle();
-                Ok(true)
-            }
-            (KeyCode::Char('a'), _) => {
-                self.theme_state = match self.theme_state.appearance() {
-                    Appearance::Light => {
-                        Theme::new(Appearance::Dark).with_depth(self.theme_state.depth())
-                    }
-                    Appearance::Dark => {
-                        Theme::new(Appearance::Light).with_depth(self.theme_state.depth())
-                    }
-                };
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                self.ctrl_w_pending = true;
                 Ok(true)
             }
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
@@ -851,7 +852,10 @@ impl App {
                 self.response_scroll = 0;
                 Ok(true)
             }
-            (KeyCode::Char('i'), _) if self.focus == Focus::Request => {
+            // `i` and `a` both enter Insert (our fields append at the end,
+            // so insert *is* append). Appearance moves to `:theme` only —
+            // no appearance verbs leak into Normal mode.
+            (KeyCode::Char('i') | KeyCode::Char('a'), _) if self.focus == Focus::Request => {
                 self.ensure_kv_row();
                 self.mode = Mode::Insert;
                 Ok(true)
@@ -980,8 +984,29 @@ impl App {
         }
     }
 
+    /// Second key of the `Ctrl-W` focus chord (vim window style).
+    /// `h`/`l` left-right, `j`/`k` down-up across the stacked right panes,
+    /// `w` cycles like Tab. Any other key just ends the chord.
+    fn handle_focus_chord(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Tree,
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('l') | KeyCode::Right => {
+                self.focus = Focus::Request;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.focus = Focus::Response,
+            KeyCode::Char('w') => {
+                self.focus = match self.focus {
+                    Focus::Tree => Focus::Request,
+                    Focus::Request => Focus::Response,
+                    Focus::Response => Focus::Tree,
+                };
+            }
+            _ => {}
+        }
+    }
+
     /// `:` command line. Esc cancels, Enter executes, printable chars edit.
-    fn handle_command_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+    async fn handle_command_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
         match code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
@@ -989,7 +1014,7 @@ impl App {
                 Ok(true)
             }
             KeyCode::Enter => {
-                self.execute_command();
+                self.execute_command().await?;
                 Ok(true)
             }
             KeyCode::Backspace => {
@@ -1005,8 +1030,9 @@ impl App {
     }
 
     /// Executes the `:` buffer and returns to Normal mode. Command set is
-    /// vim grammar, not aliases: `w`/`q`/`wq`, `theme`, `env`.
-    fn execute_command(&mut self) {
+    /// vim grammar, not aliases: `w`/`q`/`wq`, `send`, `theme`, `env`,
+    /// `help`.
+    async fn execute_command(&mut self) -> Result<(), TuiError> {
         let input = self.command.trim().to_string();
         self.command.clear();
         self.mode = Mode::Normal;
@@ -1027,6 +1053,10 @@ impl App {
                 }
                 self.should_quit = true;
             }
+            "send" => {
+                self.run_selected().await?;
+            }
+            "help" => self.help_open = true,
             "theme" | "appearance" => match arg {
                 "graphite" | "dark" => {
                     self.theme_state =
@@ -1060,6 +1090,7 @@ impl App {
                 self.status = RunStatus::Failed(format!("unknown command :{name}"));
             }
         }
+        Ok(())
     }
 
     /// `?` help overlay: any of Esc/q/?/Enter closes it.
@@ -1845,24 +1876,24 @@ mod tests {
             .unwrap();
         assert_eq!(app.mode(), Mode::Command);
         for ch in "theme porcelain".chars() {
-            app.handle_command_key(KeyCode::Char(ch)).unwrap();
+            app.handle_command_key(KeyCode::Char(ch)).await.unwrap();
         }
         assert_eq!(app.command_line(), "theme porcelain");
-        app.handle_command_key(KeyCode::Enter).unwrap();
+        app.handle_command_key(KeyCode::Enter).await.unwrap();
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.theme().appearance(), Appearance::Light);
 
         // :env with an unknown name fails loudly; :env none clears.
         app.command = "env nosuch".to_string();
-        app.execute_command();
+        app.execute_command().await.unwrap();
         assert!(matches!(app.status(), RunStatus::Failed(message) if message.contains("nosuch")));
         app.command = "env none".to_string();
-        app.execute_command();
+        app.execute_command().await.unwrap();
         assert!(app.active_environment.is_none());
 
         // Unknown command is an error, not a quit.
         app.command = "frobnicate".to_string();
-        app.execute_command();
+        app.execute_command().await.unwrap();
         assert!(
             matches!(app.status(), RunStatus::Failed(message) if message.contains("unknown command"))
         );
@@ -1870,7 +1901,7 @@ mod tests {
 
         // :q quits.
         app.command = "q".to_string();
-        app.execute_command();
+        app.execute_command().await.unwrap();
         assert!(app.should_quit);
     }
 
@@ -1880,10 +1911,169 @@ mod tests {
         app.handle_key(KeyCode::Char(':'), KeyModifiers::NONE)
             .await
             .unwrap();
-        app.handle_command_key(KeyCode::Char('q')).unwrap();
-        app.handle_command_key(KeyCode::Esc).unwrap();
+        app.handle_command_key(KeyCode::Char('q')).await.unwrap();
+        app.handle_command_key(KeyCode::Esc).await.unwrap();
         assert_eq!(app.mode(), Mode::Normal);
         assert_eq!(app.command_line(), "");
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn command_send_and_help_verbs() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.command = "help".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.help_open());
+        app.help_open = false;
+
+        app.command = "send".to_string();
+        app.execute_command().await.unwrap();
+        assert!(matches!(app.status(), RunStatus::Running));
+        assert!(app.pending.is_some());
+        app.cancel_run();
+    }
+
+    #[tokio::test]
+    async fn a_enters_insert_and_appearance_has_no_normal_verb() {
+        let mut app = App::load(Some(&fixture())).await;
+        let before = app.theme().appearance();
+        app.focus = Focus::Request;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.theme().appearance(), before);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        // `t` is unbound in Normal: appearance only moves via :theme.
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.theme().appearance(), before);
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn esc_in_normal_never_quits() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.should_quit);
+        assert_eq!(app.mode(), Mode::Normal);
+        // Overlay first: Esc closes help, still no quit.
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.help_open());
+        assert!(!app.should_quit);
+        // q quits.
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn ctrl_w_focus_chord_moves_between_panes() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.focus(), Focus::Tree);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Response);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Tree);
+        // Ctrl-W w cycles like Tab.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        // An unknown second key just ends the chord.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+    }
+
+    #[tokio::test]
+    async fn flat_fallback_arrows_tab_enter_drive_the_flow() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.mode(), Mode::Normal);
+        // Up to the top of the tree, then arrows move the selection.
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Up, KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.selection(), 0);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 1);
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        // Row 0 is the Pets folder: Enter collapses and re-expands it.
+        let rows_before = app.rows().len();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.rows().len() < rows_before);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.rows().len(), rows_before);
+        // Enter on a request opens the editor.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        // Arrows move inside the request pane; Tab cycles focus.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Response);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.response_scroll(), 1);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Tree);
+        assert_eq!(app.mode(), Mode::Normal);
         assert!(!app.should_quit);
     }
 
