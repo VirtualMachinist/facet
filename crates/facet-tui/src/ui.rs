@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, BodyKind, EditorMode, Focus, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
+    App, BodyKind, Focus, Mode, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
 };
 use crate::theme::{PaletteToken, Styles, resolve};
 use crate::tree::Row;
@@ -46,6 +46,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if matches!(app.status(), RunStatus::Running) {
         render_running_overlay(frame, shell[1], styles);
+    }
+    if app.help_open() {
+        render_help_overlay(frame, shell[1], styles);
     }
 }
 
@@ -469,7 +472,7 @@ fn render_url_bar(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     let method = app.method();
     let method_color = app.theme().palette().method(method);
     let url_focused = app.focus() == Focus::Request && app.request_focus() == RequestFocus::Url;
-    let insert = app.editor_mode() == EditorMode::Insert && url_focused;
+    let insert = app.mode() == Mode::Insert && url_focused;
     let mut url = app.editor().url.clone();
     if insert {
         url.push('▌');
@@ -581,7 +584,7 @@ fn render_section_editor(frame: &mut Frame, area: Rect, app: &App, styles: Style
     }
     let editor_focused =
         app.focus() == Focus::Request && app.request_focus() == RequestFocus::Editor;
-    let insert = app.editor_mode() == EditorMode::Insert && editor_focused;
+    let insert = app.mode() == Mode::Insert && editor_focused;
     let lines = match app.section() {
         Section::Path => kv_lines(
             &app.editor().path_rows,
@@ -835,21 +838,31 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         }
         other => other.label().to_string(),
     };
-    let hint = if app.editor_mode() == EditorMode::Insert {
-        "insert · Esc normal · Enter save"
+    let mode = app.mode();
+    let mode_style = match mode {
+        Mode::Normal => styles.muted,
+        Mode::Insert | Mode::Command => styles.accent_text,
+    };
+    let hint = if mode == Mode::Command {
+        format!(":{}", app.command_line())
+    } else if mode == Mode::Insert {
+        "insert · Esc normal · Enter save".to_string()
+    } else if app.help_open() {
+        "help · Esc close".to_string()
     } else if app.searching() {
-        "search · Enter apply · Esc clear"
+        "search · Enter apply · Esc clear".to_string()
     } else if app.env_dropdown_open() {
-        "env · j/k select · Enter close"
+        "env · j/k select · Enter close".to_string()
     } else {
-        "j/k · Enter send · i edit · / search · e env · [] tabs · t theme · q quit"
+        "j/k · Enter send · i insert · : command · ? help · q quit".to_string()
     };
     let appearance = app.theme().appearance().label().to_lowercase();
 
     let mut segments: Vec<(String, Style)> = vec![
         (CODENAME.to_string(), styles.muted),
+        (mode.indicator().to_string(), mode_style),
         (status_label, status_style),
-        (hint.to_string(), styles.muted),
+        (hint, styles.muted),
         (appearance, styles.muted),
     ];
     let width = |segments: &[(String, Style)]| -> usize {
@@ -859,7 +872,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     };
     let available = area.width as usize;
     if width(&segments) > available {
-        segments.remove(2);
+        segments.remove(3);
     }
     if width(&segments) > available {
         segments.remove(0);
@@ -976,6 +989,50 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
             .block(block),
         overlay,
     );
+}
+
+/// `?` help overlay: the whole keymap in one stone box. Keys in accent,
+/// actions in editor text. This is option A's discoverability device —
+/// one overlay, no which-key.
+fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
+    const KEYS: [(&str, &str); 14] = [
+        ("j/k · arrows", "move (tree, rows, response scroll)"),
+        ("Enter", "folder toggle · open · send"),
+        ("i", "insert (URL or section) · Esc back"),
+        ("/", "search · Enter apply · Esc clear"),
+        ("e", "environment dropdown · :env <name>"),
+        ("[ ]", "section / response tabs"),
+        ("h/l · Space", "collapse folder · name/value"),
+        ("m / b", "method · body kind"),
+        ("n / d", "add / delete a row"),
+        ("t / a", "toggle / force appearance"),
+        ("Ctrl-S", "save to disk · :w"),
+        (":", "command line (:w :q :wq :theme :env)"),
+        ("?", "this help"),
+        ("q · Esc", "quit · cancel run"),
+    ];
+    let width = 60u16.min(area.width);
+    let height = (KEYS.len() as u16 + 4).min(area.height);
+    let overlay = centered(area, width, height);
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(" facet keys ", styles.brand));
+    let mut lines = Vec::new();
+    for (key, action) in KEYS {
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {key:<14}"), styles.accent_text),
+            Span::styled(action, styles.editor),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " normal · i inserts · : commands · arrows always work",
+        styles.muted,
+    )));
+    frame.render_widget(Paragraph::new(lines).block(block), overlay);
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1168,6 +1225,41 @@ mod tests {
         assert!(
             footer.contains("q quit"),
             "hints fit at 120 columns: {footer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn footer_shows_the_mode_indicator() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+
+        assert!(footer.starts_with("[ G38 │ NOR │ "), "{footer}");
+        assert!(
+            footer.contains("? help"),
+            "normal hints mention help: {footer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn help_overlay_lists_the_keymap() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_help();
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("facet keys"), "title: {text}");
+        assert!(text.contains("command line"), ": row: {text}");
+        assert!(
+            text.contains("arrows always work"),
+            "flat fallback note: {text}"
         );
     }
 
