@@ -1,4 +1,11 @@
-use std::{error::Error, fmt, io, path::Path, time::Duration};
+use std::{
+    error::Error,
+    fmt, io,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use probe_core::{
@@ -442,7 +449,9 @@ pub struct App {
     response_tab: ResponseTab,
     response: Option<ResponseView>,
     /// Receiver for completion events from background runs.
-    pending: Option<mpsc::Receiver<RunResult>>,
+    pending: Option<mpsc::Receiver<(RunResult, Option<RecordSummary>)>>,
+    /// Lattice outcome of the last send.
+    last_recording: Option<RecordSummary>,
     /// Cancellation signal for an in-flight HTTP request.
     cancel: Option<watch::Sender<bool>>,
     /// Set by quit keys; the run loop breaks on it so the caller can
@@ -461,6 +470,35 @@ pub struct EnvironmentEntry {
 pub enum RunResult {
     Ok(ResponseView),
     Err(String),
+}
+
+/// What Lattice did with the last send, for the footer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordSummary {
+    /// Run ULID when the row landed.
+    pub run_id: Option<String>,
+    /// `recorded`, a skip reason, or `unrecorded: <why>`.
+    pub note: String,
+}
+
+impl RecordSummary {
+    #[must_use]
+    pub fn from_recording(recording: &Recording) -> Self {
+        match recording {
+            Recording::Recorded { run, .. } => Self {
+                run_id: Some(run.id.clone()),
+                note: "recorded".to_string(),
+            },
+            Recording::Skipped(reason) => Self {
+                run_id: None,
+                note: (*reason).to_string(),
+            },
+            Recording::Failed(message) => Self {
+                run_id: None,
+                note: format!("unrecorded: {message}"),
+            },
+        }
+    }
 }
 
 impl App {
@@ -491,6 +529,7 @@ impl App {
             response_tab: ResponseTab::Pretty,
             response: None,
             pending: None,
+            last_recording: None,
             cancel: None,
             should_quit: false,
         };
@@ -625,8 +664,9 @@ impl App {
                 return Ok(());
             }
             if let Some(receiver) = self.pending.as_mut()
-                && let Ok(result) = receiver.try_recv()
+                && let Ok((result, recording)) = receiver.try_recv()
             {
+                self.last_recording = recording;
                 self.apply_run_result(result);
                 self.pending = None;
                 self.cancel = None;
@@ -664,6 +704,17 @@ impl App {
     #[doc(hidden)]
     pub fn preview_running(&mut self) {
         self.status = RunStatus::Running;
+    }
+
+    /// Injects a Lattice outcome for headless renders. Not product API.
+    #[doc(hidden)]
+    pub fn preview_recording(&mut self, summary: Option<RecordSummary>) {
+        self.last_recording = summary;
+    }
+
+    /// Lattice outcome of the last send, if any.
+    pub fn last_recording(&self) -> Option<&RecordSummary> {
+        self.last_recording.as_ref()
     }
 
     /// Opens the `?` help overlay for headless harnesses. Not part of the
@@ -1291,6 +1342,18 @@ impl App {
             base_directory: self.base_directory(),
             response_cache: None,
         };
+        // Facts for Lattice, captured before the task takes the request.
+        let root = self.base_directory();
+        let selector = self
+            .tree
+            .selected_request_key()
+            .and_then(|key| self.loaded.as_ref()?.request_selector(key))
+            .map(str::to_string);
+        let environment = self.active_environment_name().map(str::to_string);
+        let should_record = root.is_some() && !facet_record::recording_disabled();
+        let actor = facet_record::actor_from_env();
+        let session = facet_record::session_from_env();
+
         let (sender, receiver) = mpsc::channel(1);
         let (cancel_sender, mut cancel_signal) = watch::channel(false);
         self.cancel = Some(cancel_sender);
@@ -1298,30 +1361,65 @@ impl App {
         self.status = RunStatus::Running;
         self.response = None;
         self.response_scroll = 0;
+        self.last_recording = None;
 
         tokio::spawn(async move {
-            let result = match HttpEngine::new() {
-                Ok(engine) => {
-                    match engine
-                        .execute_cancellable(&request, &options, async move {
-                            loop {
-                                if *cancel_signal.borrow() {
-                                    return;
-                                }
-                                if cancel_signal.changed().await.is_err() {
-                                    return;
-                                }
-                            }
-                        })
-                        .await
-                    {
-                        Ok(response) => RunResult::Ok(ResponseView::from_response(response)),
-                        Err(error) => RunResult::Err(error.to_string()),
-                    }
+            let started_at = lattice::now_ms();
+            let clock = Instant::now();
+            let engine = match HttpEngine::new() {
+                Ok(engine) => engine,
+                Err(error) => {
+                    let _ = sender.send((RunResult::Err(error.to_string()), None)).await;
+                    return;
                 }
+            };
+            let outcome = engine
+                .execute_cancellable(&request, &options, async move {
+                    loop {
+                        if *cancel_signal.borrow() {
+                            return;
+                        }
+                        if cancel_signal.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                })
+                .await;
+            let elapsed_ms = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
+            // Same recording path as `facet request run`, so TUI and CLI
+            // rows are identical. Store I/O is brief and off the UI loop.
+            let summary = if should_record {
+                let selector = selector.as_deref().unwrap_or("");
+                let recording = record(&RecordRequest {
+                    root: root.as_deref(),
+                    overrides: &ConfigOverrides::default(),
+                    selector,
+                    environment: environment.as_deref(),
+                    request: &request,
+                    started_at,
+                    elapsed_ms,
+                    result: &outcome,
+                    output: None,
+                    tags: &[],
+                    actor: &actor,
+                    session: session.as_deref(),
+                });
+                Some(RecordSummary::from_recording(&recording))
+            } else {
+                Some(RecordSummary {
+                    run_id: None,
+                    note: if root.is_none() {
+                        "no workspace".to_string()
+                    } else {
+                        "disabled".to_string()
+                    },
+                })
+            };
+            let result = match outcome {
+                Ok(response) => RunResult::Ok(ResponseView::from_response(response)),
                 Err(error) => RunResult::Err(error.to_string()),
             };
-            let _ = sender.send(result).await;
+            let _ = sender.send((result, summary)).await;
         });
         Ok(())
     }
@@ -1757,9 +1855,7 @@ mod tests {
         // :env with an unknown name fails loudly; :env none clears.
         app.command = "env nosuch".to_string();
         app.execute_command();
-        assert!(
-            matches!(app.status(), RunStatus::Failed(message) if message.contains("nosuch"))
-        );
+        assert!(matches!(app.status(), RunStatus::Failed(message) if message.contains("nosuch")));
         app.command = "env none".to_string();
         app.execute_command();
         assert!(app.active_environment.is_none());

@@ -834,7 +834,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         RunStatus::Idle if app.lattice_ready() => "lattice ready".to_string(),
         RunStatus::Idle => "lattice idle".to_string(),
         RunStatus::Done { status, duration } => {
-            format!("{} · {} ms", status, duration.as_millis())
+            let lattice = match app.last_recording() {
+                Some(summary) if summary.run_id.is_some() => " · recorded",
+                Some(_) => " · unrecorded",
+                None => "",
+            };
+            format!("{} · {} ms{lattice}", status, duration.as_millis())
         }
         other => other.label().to_string(),
     };
@@ -1276,5 +1281,43 @@ mod tests {
         assert!(footer.starts_with("[ G38 │ "), "{footer}");
         assert!(!footer.contains("q quit"), "hints dropped: {footer}");
         assert!(footer.contains("graphite honey"), "{footer}");
+    }
+
+    #[tokio::test]
+    async fn footer_marks_a_recorded_send() {
+        use crate::app::{RecordSummary, ResponseView, RunResult};
+        use std::time::Duration;
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.apply_run_result(RunResult::Ok(ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "http://127.0.0.1/".to_string(),
+            duration: Duration::from_millis(12),
+            headers: Vec::new(),
+            body: "{}".to_string(),
+            body_len: 2,
+        }));
+        app.preview_recording(Some(RecordSummary {
+            run_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+            note: "recorded".to_string(),
+        }));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+        assert!(footer.contains("200 · 12 ms · recorded"), "{footer}");
+
+        app.preview_recording(Some(RecordSummary {
+            run_id: None,
+            note: "unrecorded: boom".to_string(),
+        }));
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        assert!(
+            text.lines().last().unwrap().contains("· unrecorded"),
+            "{text}"
+        );
     }
 }
