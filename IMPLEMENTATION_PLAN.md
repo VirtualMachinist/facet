@@ -60,54 +60,63 @@ in parallel.
 | --- | --- |
 | 01 HTTP requests | Live. Same engine as Probe. Lattice records every `request run` / TUI send. |
 | 05 Custom theme support | **Partial.** Graphite Honey (default) and Porcelain Honey, `:theme` toggle, `--appearance`. User-defined theme files are still open (see below). |
-| 07 Secret storage | **Facet machine store.** OS keyring or `FACET_SECRET_KEY` XChaCha20-Poly1305. Probe desktop secret UX remains upstream. |
+| 07 Secret storage | **At rest and hydrated.** OS keyring or `FACET_SECRET_KEY` XChaCha20-Poly1305; Lattice env overlay on `request run` / TUI send / `replay` (`facet env`). Probe desktop secret UX remains upstream. |
+| ··· And more | **Shipped 2026-09-07** (PRs #8–#13). Sessions, recall, TUI history grid, replay, hash-diff, overlay, `doctor`, `--expect` (exit **1**), `--dry-run`. See [docs/FACET.md](docs/FACET.md#shipped-2026-09-07-and-more). |
+
+### Why Probe 02–04 did not ship
+
+WebSocket, GraphQL, and gRPC are **protocol engines**, not Lattice work. They
+need a shared protocol-session / event abstraction in `probe-core` first
+(Thread A, parked on `repos/probe-upstream`). Facet's fork rule is
+cherry-pickable both ways: `probe-core` / `probe-cli` stay untouched except as
+an upstream PR. A Facet-only WS/GraphQL/gRPC stack against an HTTP-only core
+would fork the engine. The 2026-09-07 train ranked the week-1 HTTP loop
+(send → see → compare → send again) ahead of finishing Probe's numbered list.
+Unpark Thread A when Evan says; then core PR upstream, Facet JSONL + TUI
+session pane + Lattice events in this tree in parallel.
 
 ### Next (Probe-aligned)
 
 Ship in Facet; offer the shared core upstream first when it touches
-`probe-core` / `probe-cli`. Thread A (`protocol-session` on
-`repos/probe-upstream`) stays parked until unparked — adapters can still be
-designed against the event shape.
+`probe-core` / `probe-cli`. Thread A stays parked until unparked.
 
 | # | Item | Facet slice | Upstream |
 | --- | --- | --- | --- |
-| 02 | WebSocket | TUI session pane + Lattice events + `facet` JSONL | Protocol session/event abstraction in `probe-core` |
-| 03 | GraphQL | Collection item + TUI editor + history | Shared operation/variables model |
-| 04 | gRPC streaming | Same session adapter as WebSocket | Streaming on the protocol session |
+| 02 | WebSocket | TUI session pane + Lattice events + `facet` JSONL | Protocol session/event abstraction in `probe-core` (**Thread A**) |
+| 03 | GraphQL | Collection item + TUI editor + history | Shared operation/variables model (**Thread A**) |
+| 04 | gRPC streaming | Same session adapter as WebSocket | Streaming on the protocol session (**Thread A**) |
 | 05 | Custom themes (rest) | Versioned theme files for `facet-tui` | Desktop theme files per [docs/DESIGN.md](docs/DESIGN.md#future-plain-text-themes) |
-| 06 | Git integration | Optional status/diff/commit in TUI; filesystem stays the Git boundary | No provider coupling in core |
-| 07 | Secret storage (rest) | Already in Lattice; wire TUI env editor to the machine store | Probe desktop |
+| 06 | Git integration | Auto-tag `git:<sha>[-dirty]` on record; filesystem stays the Git boundary. No lazygit, no host UI. | No provider coupling in core |
+| 07 | Secret storage (rest) | TUI env editor on `facet env` / machine store; offer the resolve hook upstream | Probe desktop |
 
-### Facet-only — next slice (*and more*)
+### Facet-only — next slice
 
-Probe's last public item is open-ended. Facet's is Lattice doing work:
-send → see → compare → send again, with a ULID an agent can hold. Canonical
-write-up: [docs/FACET.md](docs/FACET.md#next-slice). Product note:
-`agents/fullstack/notes/2026-09-07-and-more.md` in the Lapis vault.
+Canonical write-up: [docs/FACET.md](docs/FACET.md#next-slice). Product notes
+for the closed train stay in the Lapis vault
+(`agents/fullstack/notes/2026-09-07-and-more.md` and the explore / deep-dive
+passes).
 
-**Ship next** (ranked):
+**Facet-owned rest** (ranked; no `probe-core`; finish this train first):
 
-1. Session lifecycle — `facet session start/end`, mint-if-missing, `history --session`
-2. Recall — `history --id` plus `--session/--environment/--tag/--hash`; TUI history grid hydrates the response pane
-3. Replay — current YAML at the recorded env; warn on hash change; `--frozen` refuses
-4. Hash-first diff — `facet diff <a> <b>`; exit 1 on mismatch
-5. Secret hydration — Lattice env as `--var` before resolve
-6. Dry-run + `--expect` — upstream-first; `--expect` is exit 6 `expect_failed`
+1. MCP — `facet mcp` stdio; tools over lattice + record + run; same JSON; no stdout parse
+2. Git HEAD auto-tag — `git:<sha>[-dirty]` on record; no column
+3. Bells — `facet last`, `:history` sparkline, pins
+4. Theme files — Probe 05 rest
+5. TUI env editor + `ctrl+u`/`ctrl+d` — Probe 07 rest + deferred Surface 2 scroll
 
-**Load-bearing picks** for that slice: replay = current YAML; overlay secrets
-now; MCP after 1–6. Still open: `--expect` exit **6 vs 1** (explore pass
-argues 1 so agents do not retry assertion misses); git HEAD skip / auto-tag
-rather than 0003.
+**Probe contribution** (later, separate train): `--expect` + `--dry-run` on
+`probe request run`; secret-provider hook in `probe-core` (not Lattice);
+then Thread A (02–04) when unparked. Fresh branch off upstream `main`.
 
 MCP / harness adapter over Lattice must not parse CLI output. Engines stay
-rusqlite default; DuckDB ATTACH is `scripts/duckdb-attach-demo.sh`. TUI
-`ctrl+u` / `ctrl+d` deferred.
+rusqlite default; DuckDB ATTACH is `scripts/duckdb-attach-demo.sh`.
 
 ### Facet-only (later)
 
 - TUI depth: collections browser, run inspector, vim-modal polish
 - Public docs/brand seating and release tagging aligned with workspace version
 - `history --follow --jsonl`, fixtures from blobs, watch, FTS5
+- `facet-record` large-variant
 
 ### Inherited notes (still load-bearing)
 

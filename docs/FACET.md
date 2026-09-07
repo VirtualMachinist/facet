@@ -121,42 +121,63 @@ in the output means the run is recorded but not indexed).
 Environment: `FACET_ACTOR` names the actor (default `human`);
 `FACET_SESSION` sets `sessionId`; `FACET_NO_RECORD=1` disables recording.
 
-`FACET_SESSION` is written onto the run row today. The machine-store
-`sessions` table has no API yet; a session id with no parent row is a
-dangling FK (acceptable until the next slice mints-if-missing).
+`FACET_SESSION` is written onto the run row. `facet session start` mints the
+parent; recording mint-if-missing if the env is set and the row is absent.
+
+### Shipped 2026-09-07 (*and more*)
+
+The week-1 loop is closed on `main` (`5087ba7`, PRs #8–#13): send → see →
+compare → send again, with a ULID an agent can hold. Probe's public "and
+more" was blank; this is what Facet put there.
+
+| # | Item | On `main` | PR |
+| --- | --- | --- | --- |
+| 1 | **Session lifecycle** | `facet session start/end/list/show`; mint-if-missing; `history --session` | [#8](https://github.com/VirtualMachinist/facet/pull/8) |
+| 2 | **Recall** | `history --id`; filters `--session/--environment/--tag/--hash`; TUI `:history` grid hydrates + yank | #8 + [#9](https://github.com/VirtualMachinist/facet/pull/9) |
+| 3 | **Replay** | `facet replay` = **current YAML** + recorded env; `--frozen` refuses (exit 1) | [#10](https://github.com/VirtualMachinist/facet/pull/10) |
+| 4 | **Hash-first diff** | `facet diff`; exit 0/1/4/9; `durationMs`/`actor`/`tags` do not flip `equal` | #10 |
+| 5 | **Secret hydration** | Lattice env overlay as `--var` before resolve; `--var` wins; `facet env` | [#11](https://github.com/VirtualMachinist/facet/pull/11) |
+| 5′ | **`facet doctor`** | Preflight + `--sql` ATTACH refused | [#12](https://github.com/VirtualMachinist/facet/pull/12) |
+| 6 | **`--expect` + `--dry-run`** | Miss → exit **1** `expect_failed`; transport stays 6; `--dry-run` no network | [#13](https://github.com/VirtualMachinist/facet/pull/13) |
+
+**Calls that landed:** replay truth is current YAML; overlay secrets now (no
+upstream provider hook); `--expect` is exit **1** (6 stays network); 0003 is
+`replayed_from` + `var_names` (names only), not `git_head`; MCP waits until
+after this train (now eligible).
+
+CLI remains the harness contract. MCP wraps the same functions and must not
+parse stdout. Sketch: `agents/fullstack/notes/2026-09-07-and-more.md` in the
+Lapis vault.
 
 ### Next slice
 
-Lattice already records more than the CLI and TUI expose. `:history` is a
-dump (no run id, cannot hydrate). `WorkspaceStore::run(id)` exists and has
-no command. Secrets sit in the machine store and are never joined at
-resolve time. The next Facet-only train fills that gap — **faster loops,
-better recall** — not protocols and not a Postman clone.
+Two trains. Finish the Facet-owned rest **before** pivoting to Probe.
 
-Ranked (fullstack, 2026-09-07). Smallest vertical slice first.
+#### Facet-owned rest (no `probe-core`)
 
 | # | Item | Smallest slice | Belonging |
 | --- | --- | --- | --- |
-| 1 | **Session lifecycle** | `facet session start/end`; mint-if-missing when `FACET_SESSION` is set; `history --session` | Facet-only (`lattice` + `facet` + `facet-record`) |
-| 2 | **Recall** | `history --id <ulid>`; filters `--session/--environment/--tag/--hash`; TUI grid hydrates the response pane | Facet-only |
-| 3 | **Replay** | `facet replay <runId>` re-resolves **current** YAML at the recorded env; warn on `request_hash` change; `--frozen` refuses | Facet command; Probe engine untouched |
-| 4 | **Hash-first diff** | `facet diff <a> <b>`: hashes equal ⇒ bodies equal; exit 1 on mismatch, 9 if a run is missing | Facet-only |
-| 5 | **Secret hydration** | Overlay Lattice env as `--var` before resolve on `request run` / TUI send. `--var` still wins | Facet overlay now; secret-provider hook upstream later |
-| 6 | **Dry-run + `--expect`** | `--expect 200,201` after a real run; miss → exit **1** `expect_failed` (decided; see § `--expect`); Lattice still records. `--dry-run` second | **Upstream-first** on `request run` |
+| 1 | **MCP** | `facet mcp` stdio. Tools over lattice + record + the same run function (never shell out to `facet`). v1: session start/end, request list/get/run, history list/get, blob_get, run_diff, run_replay, sql_query. Same JSON envelopes. Skills/rules before freezing names. | Facet adapter; not a second API |
+| 2 | **Git HEAD auto-tag** | On record, tag `git:<sha>[-dirty]` when cwd is a repo. No column. `history --tag git:…`. | Facet-only |
+| 3 | **Bells** | `facet last`; sparkline on the `:history` grid; pins. Each rides a command that is already green. | Facet-only |
+| 4 | **Theme files** (Probe 05 rest) | Versioned files for `facet-tui`; invalid → Graphite/Porcelain. | Facet TUI; desktop files stay upstream |
+| 5 | **TUI env editor** (Probe 07 rest) + `ctrl+u`/`ctrl+d` | Overlay UI on `facet env` / machine store. Half-page scroll deferred from Surface 2. | Facet TUI |
 
-CLI is the harness contract. MCP wraps the same functions later and must
-not parse stdout. Sketch: `agents/fullstack/notes/2026-09-07-and-more.md`
-in the Lapis vault.
+#### Probe contribution (later, separate)
 
-**Load-bearing picks** (Evan, next slice — recommended in italics):
+Give Probe the pieces we already shipped that belong in `probe-cli` / `probe-core`, then protocols. Fresh branch off upstream `main` — not the parked Thread A tree.
 
-1. *Replay truth = current YAML + recorded env.* `--frozen` is opt-in refuse-on-hash-change. Frozen stored bytes are a trap (secrets redacted; auth is scheme-only in the hash).
-2. *Overlay secrets now,* do not wait for an upstream provider hook. Missing Lattice secret + OpenCollection `Secret` → `secret_variable_unavailable` (exit 5), never empty substitution.
-3. *`--expect` exit code.* First pass: **6** (`expect_failed`). Explore pass: **1**, so agents do not retry assertion misses (6 stays network/timeout). Do not invent 10; do not renumber 0–5 / 7–9.
-4. *MCP after items 1–6.* Shell-out is enough for week 1. Teach harnesses with skill/rule files before freezing MCP tools.
-5. *Git HEAD stamp: skip this train.* Explore pass: auto-tag `git:<sha>` rather than 0003; spend 0003 on `replayed_from` + `var_names` if anything.
+| # | Item | Notes |
+| --- | --- | --- |
+| A1 | `--expect` + `--dry-run` on `request run` | Exit **1** `expect_failed`; transport stays 6. Facet-only fallback already shipped. |
+| A2 | Secret-provider hook | Probe still errors `secret_variable_unavailable` with no `--var`. A host trait; do not push Lattice into Probe. |
+| B | Thread A — Probe 02–04 | WebSocket, GraphQL, gRPC. Need `protocol-session` in `probe-core` first. Unpark when Evan says; Facet JSONL + TUI session pane + Lattice events **after** the core PR exists. |
 
-Not this train: Thread A protocols, `ctrl+u`/`ctrl+d`, collection-in-Lattice, a writer daemon, kitchen-sink MCP, a JS test runner.
+Do **not** ship 02–04 as Facet-only adapters against an HTTP-only core — that forks the engine.
+
+**Still not this product:** collection-in-Lattice, a writer daemon,
+kitchen-sink MCP writes, a JS test runner, Probe-shaped git hosting UI,
+`facet-record` large-variant, `history --follow` / FTS5 (later).
 
 ### Configuration
 
@@ -256,6 +277,7 @@ facet env list [<path>] [--environment <name>] [--json]
 facet env delete [<path>] --environment <name> --name <key> [--json]
 facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
+facet doctor [--probe] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
 ```
 
@@ -578,6 +600,15 @@ alone). The live `request run` document still shows what was sent.
 addressed blobs that may hold what the YAML put there; `facet blob` is the
 one place a human knowingly opens one.
 
+### `doctor`
+
+Preflight. Reports, never fixes. Exit **0** healthy, **1** warnings, **9**
+when the machine store cannot be opened. `--probe` round-trips a throwaway
+secret through the secrets layer and sets `secrets.usable`; without it
+usability is `null`. No value, `secret_ref`, or `FACET_SECRET_KEY` is
+printed. Human lists warnings; JSON is `machine` / `workspace` / `secrets`
+/ `env` (presence of `FACET_*` only).
+
 ### `blob`
 
 Writes the raw bytes to stdout. With `--json`:
@@ -624,8 +655,9 @@ fields are added compatibly and never removed or retyped within a version.
 - `crates/facet/tests/facet_commands.rs`: one golden file per command under
   `crates/facet/tests/golden/` (`UPDATE_GOLDEN=1` rewrites them), plus
   recording, reader-rule, read-only SQL, gc, session lifecycle,
-  mint-if-missing, `history --id`, and the session / environment / tag /
-  hash filters through the binary.
+  mint-if-missing, `history --id`, session / environment / tag / hash
+  filters, replay, diff, secret overlay, `env`, `doctor`, `--expect`, and
+  `--dry-run` through the binary.
 - `crates/lattice/tests/store.rs`: schema, threshold placement, reader rule
   across threshold changes, gc, machine index, environments (plain + secret).
 - `crates/lattice/tests/contention.rs`: Surface 4 fixture.
