@@ -171,6 +171,23 @@ impl MachineStore {
         Ok(rows)
     }
 
+    /// The workspace (`id`, last known path) the index knows a run under,
+    /// or `None`. One query; `facet replay` uses it as a breadcrumb when a
+    /// run id belongs to another workspace.
+    pub fn indexed_run(&self, run_id: &str) -> Result<Option<(String, String)>, LatticeError> {
+        match self.conn.query_row(
+            "SELECT run_index.workspace_id, coalesce(workspaces.path, '') FROM run_index \
+             LEFT JOIN workspaces ON workspaces.id = run_index.workspace_id \
+             WHERE run_index.run_id = ?1",
+            params![run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(pair) => Ok(Some(pair)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(other) => Err(other.into()),
+        }
+    }
+
     /// Total pointer rows.
     pub fn count_indexed_runs(&self) -> Result<i64, LatticeError> {
         Ok(self

@@ -6,7 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod diff;
+
 use std::path::Path;
+
+pub use diff::{
+    BodyDiff, BodySide, FieldChange, PROVENANCE_FIELDS, RunDiff, compare, diff_request_bodies,
+    diff_response_bodies, unified_diff,
+};
 
 use lattice::{
     BodyInput, LatticeConfig, LatticeError, MachineStore, NewRun, Retention, RunRow,
@@ -194,6 +201,11 @@ pub struct RecordRequest<'a> {
     pub actor: &'a str,
     /// Machine-store session id.
     pub session: Option<&'a str>,
+    /// `runs.id` this run replays (`facet replay`), if any.
+    pub replayed_from: Option<&'a str>,
+    /// Names of the `--var` overrides used at resolve time. Names only;
+    /// values are never written anywhere in Lattice.
+    pub var_names: &'a [String],
 }
 
 /// Records one run in the workspace store beside the collection, then
@@ -214,6 +226,8 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
         tags,
         actor,
         session,
+        replayed_from,
+        var_names,
     } = *req;
     let Some(root) = root else {
         return Recording::Skipped("stdin_workspace");
@@ -244,6 +258,8 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
         Some(json!(tags).to_string())
     };
     let redacted_url = redact_url(request.url.as_deref().unwrap_or(""));
+    // Always written post-0003 so `[]` (none) stays distinct from NULL (unknown).
+    let var_names_json = json!(var_names).to_string();
 
     let res_body = match result {
         Ok(response) => {
@@ -286,6 +302,8 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
         session_id: session,
         actor,
         tags: tags_json.as_deref(),
+        replayed_from,
+        var_names: Some(&var_names_json),
     };
 
     match store.record_run(&new_run) {
@@ -370,6 +388,14 @@ fn url_encode(value: &str) -> String {
         }
     }
     out
+}
+
+/// The `request_hash` Lattice would store for `request` as resolved now.
+/// `facet replay` compares this against the recorded row before sending.
+#[must_use]
+pub fn request_hash_of(request: &HttpRequest) -> String {
+    let body = request_body_bytes(request);
+    request_hash(request, body.as_deref())
 }
 
 /// SHA-256 of a canonical JSON view of the resolved request. Bodies enter by

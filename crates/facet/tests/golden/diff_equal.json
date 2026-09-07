@@ -1,0 +1,71 @@
+{
+  "a": {
+    "id": "<ulid>",
+    "startedAt": "<int>",
+    "status": 200
+  },
+  "b": {
+    "id": "<ulid>",
+    "startedAt": "<int>",
+    "status": 200
+  },
+  "changes": [
+    {
+      "a": 10,
+      "b": 20,
+      "field": "durationMs"
+    },
+    {
+      "a": [],
+      "b": [
+        "retry"
+      ],
+      "field": "tags"
+    }
+  ],
+  "equal": true,
+  "request": {
+    "body": {
+      "a": {
+        "hash": "<sha256>",
+        "retention": "blob",
+        "sizeBytes": 16
+      },
+      "b": {
+        "hash": "<sha256>",
+        "retention": "blob",
+        "sizeBytes": 16
+      },
+      "equal": true,
+      "omissionReason": null,
+      "text": null
+    },
+    "hash": {
+      "a": "<sha256>",
+      "b": "<sha256>",
+      "equal": true
+    }
+  },
+  "response": {
+    "body": {
+      "a": {
+        "hash": "<sha256>",
+        "retention": "inline",
+        "sizeBytes": 12
+      },
+      "b": {
+        "hash": "<sha256>",
+        "retention": "inline",
+        "sizeBytes": 12
+      },
+      "equal": true,
+      "omissionReason": null,
+      "text": null
+    }
+  },
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}

@@ -249,6 +249,8 @@ facet session start [--actor <name>] [--meta <json>] [--json]
 facet session end [<id>|current] [--json]
 facet session list [--limit <n>] [--actor <name>] [--open] [--json]
 facet session show <id>|current [--json]
+facet replay <runId> [<path>] [--frozen] [--environment <name>] [--var k=v]... [--tag <tag>]... [--strict-variables] [--no-record] [--json]
+facet diff <idA> <idB> [<path>] [--bodies] [--json]
 facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
@@ -341,6 +343,11 @@ any filter or with `--sql` (`invalid_arguments`, exit 2). An unknown id, or
 no store at all, is `run_not_found` (exit 4). This is the seam replay and
 diff stand on: an agent keeps run ids, not bodies.
 
+Rows carry two lineage fields from migration 0003: `replayedFrom` (the run
+this one replayed, else `null`) and `varNames` (the `--var` names used at
+resolve time, never values; `[]` when none, `null` on rows recorded before
+0003, meaning unknown).
+
 ### `history --sql`
 
 Runs one read-only statement against the workspace store on a read-only
@@ -390,6 +397,72 @@ created (a harness invented the id), the first recorded run inserts the row
 with that run's actor and no `meta`. Later runs never rewrite it. This is
 best effort like machine-store indexing and never fails the run.
 
+### `replay`
+
+Re-sends a recorded run. **Replay truth is the current YAML plus the recorded
+environment**: the row supplies the selector and environment name (`--environment`
+overrides), the collection at `<path>` (file or directory, default `.`, as for
+`request run`) supplies the request, and the Lattice store is discovered by
+walking up from it. Values passed with `--var` are never stored, so recorded
+`--var` names are a warning (`run … was recorded with --var token; pass them
+again`), never replayed.
+
+The resolved request is hashed before any network. When it differs from the
+recorded `requestHash`: without `--frozen` the run executes with a stderr
+warning and `lattice.hashChanged: true`; with `--frozen` it is refused with
+`replay_changed` (exit **1**), no network, no row, and
+`details.{replayedFrom, recordedHash, currentHash}`. There is no
+"send stored bytes" mode: stored headers are redacted, auth enters the hash by
+scheme only, and request bodies are blobs that may hold secrets.
+
+The output is `request run`'s document; `lattice` gains two fields:
+
+```json
+"lattice": { "recorded": true, "runId": "01K…", "…": "…", "replayedFrom": "01J…", "hashChanged": false }
+```
+
+The new row carries the recorded tags plus `--tag`, `replayedFrom`, and the
+`--var` names. Unknown run id: `run_not_found` (exit 4), with
+`details.workspaceId` / `workspacePath` when the machine index knows the run
+under another workspace. A selector no longer in the YAML is upstream's
+`request_not_found` (exit 4) with `details.replayedFrom`. No store: `lattice_not_found` (exit 9).
+
+### `diff`
+
+Hash-first comparison of two recorded runs. Metadata compares `method`,
+`url`, `status`, `error`, `durationMs`, `environment`, `actor`,
+`requestHash`, `request.headers`, `response.headers`, `request.body.hash`,
+`response.body.hash`, `response.contentType`, and `tags`. Headers compare
+as sorted `name: value` lists; they are already redacted, so a token change
+shows as no change (and `requestHash` does not move either, since auth
+enters it by scheme only).
+
+```json
+{ "schemaVersion": 1, "workspace": { "id": "…", "path": "…" },
+  "a": { "id": "01K…A", "startedAt": 1757250000123, "status": 500 },
+  "b": { "id": "01K…B", "startedAt": 1757250001456, "status": 200 },
+  "equal": false,
+  "changes": [ { "field": "status", "a": 500, "b": 200 }, { "field": "durationMs", "a": 41, "b": 38 } ],
+  "request":  { "hash": { "a": "9f…", "b": "9f…", "equal": true },
+                "body": { "a": { "hash": "…", "sizeBytes": 16, "retention": "blob" }, "b": { "…": "…" }, "equal": true, "text": null, "omissionReason": null } },
+  "response": { "body": { "a": { "hash": "ad…", "sizeBytes": 812, "retention": "inline" }, "b": { "…": "…" }, "equal": false, "text": null, "omissionReason": null } } }
+```
+
+`changes` lists only differing fields, named by their `history` JSON path.
+`durationMs`, `actor`, and `tags` are always compared and reported but
+**never** flip `equal`: they are provenance, and `equal` is about bytes and
+outcome (so a replay tagged `--tag retry` still diffs equal to its source
+when the response matched). Inline bodies are read and hashed so `hash` is
+present for them too. With `--bodies`, differing inline UTF-8 response
+bodies add `response.body.text`, a unified diff (`--- a`, `+++ b`, three
+lines of context); otherwise `omissionReason` says `blob` (pull with
+`blob <hash>`), `binary`, `too_large`, or `none`. Request bodies are
+hash-only and never diffed as text.
+
+Exit **0** equal, **1** different, **4** a run missing
+(`run_not_found`, `details.missing: ["01K…"]`), **9** no store. `--quiet`
+keeps the exit code.
+
 ### `blob`
 
 Writes the raw bytes to stdout. With `--json`:
@@ -422,6 +495,7 @@ Facet extends the upstream table; it never renumbers it.
 | Code | Category |
 | ---: | --- |
 | 0–8 | As in [CLI](CLI.md#exit-codes) |
+| 1 | Assertion failed (`replay_changed`; `diff` found differences) |
 | 9 | Lattice store failure (`lattice_error`, `lattice_not_found`) |
 
 Additional stable categories: `blob_not_found`, `run_not_found`, and

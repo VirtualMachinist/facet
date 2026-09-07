@@ -8,6 +8,7 @@
       "id": "<ulid>",
       "matchedHash": "responseBody",
       "method": "POST",
+      "replayedFrom": null,
       "request": {
         "body": {
           "hash": "<sha256>",
@@ -53,7 +54,8 @@
         "smoke",
         "golden"
       ],
-      "url": "<url>"
+      "url": "<url>",
+      "varNames": []
     }
   ],
   "schemaVersion": 1,
