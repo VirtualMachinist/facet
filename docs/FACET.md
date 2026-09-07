@@ -211,6 +211,11 @@ facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
 ```
 
+Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
+`:theme graphite|porcelain` sets one. `:history` and `:sql <query>` open
+Lattice overlays. `gg` / `G` jump to the first / last row of the focused
+pane. `?` lists the rest.
+
 `<path>` for `history`, `blob`, and `gc` is any file or directory inside the
 workspace (default: the current directory); Facet walks up to the nearest
 `.facet/lattice.db`. `--json` and `--quiet` follow the upstream rules.
