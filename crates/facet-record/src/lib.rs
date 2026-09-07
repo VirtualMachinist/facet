@@ -295,12 +295,21 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
 }
 
 /// Best-effort pointer row in the machine store. The workspace store is the
-/// record of truth; the index is a convenience and never fails the run.
+/// record of truth; the index is a convenience and never fails the run. As
+/// part of the same machine-store write, when the run carries a session id
+/// the parent session row is minted if missing (`ensure_session`), also best
+/// effort. The mint outcome is not surfaced in the `request run` envelope;
+/// see `FACET_HANDOFF_BRIEF` §1.2 (envelope stays) vs §1.7 (`session_created`).
 fn index_run(store: &WorkspaceStore, run: &RunRow) -> Result<(), String> {
     let machine = MachineStore::open(store.config()).map_err(|error| error.to_string())?;
     machine
         .touch_workspace(store.workspace_id(), store.root(), None, now_ms())
         .map_err(|error| error.to_string())?;
+    // Mint-if-missing: when the run carries a session id, ensure a parent
+    // session row exists. Best effort, never fails the run.
+    if let Some(session_id) = run.session_id.as_deref() {
+        let _ = machine.ensure_session(session_id, &run.actor, now_ms());
+    }
     machine
         .index_run(run, store.workspace_id())
         .map_err(|error| error.to_string())
