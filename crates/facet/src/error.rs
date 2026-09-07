@@ -9,9 +9,10 @@ use probe_http::HttpError;
 use serde_json::Value;
 
 use crate::{
-    CONFIGURATION_EXIT_CODE, EXECUTION_EXIT_CODE, INVALID_ARGUMENTS_EXIT_CODE,
+    ASSERTION_EXIT_CODE, CONFIGURATION_EXIT_CODE, EXECUTION_EXIT_CODE, INVALID_ARGUMENTS_EXIT_CODE,
     INVALID_WORKSPACE_EXIT_CODE, LATTICE_EXIT_CODE, REQUEST_NOT_FOUND_EXIT_CODE,
 };
+use serde_json::json;
 
 /// A structured command failure.
 #[derive(Debug)]
@@ -75,6 +76,32 @@ impl FacetError {
             format!("run not found: {id}"),
             REQUEST_NOT_FOUND_EXIT_CODE,
         )
+    }
+
+    /// `diff` with one or both runs missing (exit 4); `details.missing` lists them.
+    pub(crate) fn runs_not_found(missing: &[&str]) -> Self {
+        Self::new(
+            "run_not_found",
+            format!("run not found: {}", missing.join(", ")),
+            REQUEST_NOT_FOUND_EXIT_CODE,
+        )
+        .with_details(json!({ "missing": missing }))
+    }
+
+    /// `replay --frozen` when the current YAML resolves to a different
+    /// request than the recorded one. Assertion family (exit 1): no network,
+    /// no Lattice row.
+    pub(crate) fn replay_changed(run_id: &str, recorded: &str, current: &str) -> Self {
+        Self::new(
+            "replay_changed",
+            format!("request changed since {run_id}; --frozen refuses to replay"),
+            ASSERTION_EXIT_CODE,
+        )
+        .with_details(json!({
+            "replayedFrom": run_id,
+            "recordedHash": recorded,
+            "currentHash": current,
+        }))
     }
 
     /// `session end|show <id>` with an unknown session id (exit 4).

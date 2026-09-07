@@ -324,6 +324,8 @@ fn run_json(
         "actor": row.actor,
         "sessionId": row.session_id,
         "tags": parse_json_or(row.tags.as_deref(), json!([])),
+        "replayedFrom": row.replayed_from,
+        "varNames": parse_json_or(row.var_names.as_deref(), Value::Null),
         "request": {
             "headers": parse_json_or(row.req_headers.as_deref(), Value::Null),
             "body": request_body,

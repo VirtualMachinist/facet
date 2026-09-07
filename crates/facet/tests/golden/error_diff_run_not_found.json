@@ -1,0 +1,13 @@
+{
+  "error": {
+    "category": "run_not_found",
+    "details": {
+      "missing": [
+        "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+      ]
+    },
+    "exitCode": 4,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}

@@ -1536,6 +1536,8 @@ mod tests {
             session_id: None,
             actor: "claude.halo-fullstack".to_string(),
             tags: None,
+            replayed_from: None,
+            var_names: None,
         }]);
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).expect("backend");

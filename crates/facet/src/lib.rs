@@ -8,6 +8,7 @@
 //!   then records the run in the workspace Lattice store.
 //! - `history`, `blob`, and `gc` read and maintain that store.
 //! - `session` starts, ends, lists, and shows agent sessions in the machine store.
+//! - `replay` re-sends a recorded run from the current YAML; `diff` compares two runs.
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -19,9 +20,11 @@ use std::io::{self, Read};
 use serde_json::{Value, json};
 
 mod args;
+mod diff;
 mod error;
 mod history;
 mod presentation;
+mod replay;
 mod run;
 mod session;
 mod tui;
@@ -38,6 +41,12 @@ pub use tui::run_tui;
 /// Exit code used when the Lattice store cannot be opened, read, or written.
 /// Extends the upstream exit-code table; never renumbers it.
 pub const LATTICE_EXIT_CODE: u8 = 9;
+
+/// Exit code for the assertion family: the check the caller asked for is
+/// false (`replay --frozen` refused, `diff` found differences). Unix's `1`,
+/// as in `test`, `grep`, `diff`, `cmp`; unused upstream (constants start at
+/// 2), so it never collides.
+pub const ASSERTION_EXIT_CODE: u8 = 1;
 
 /// Captured CLI output and process status. `stdout` is bytes because
 /// `facet blob` writes a raw body.
@@ -94,6 +103,7 @@ pub(crate) struct CommandOutput {
     human: Vec<u8>,
     json: Value,
     warnings: Vec<String>,
+    exit_code: u8,
 }
 
 impl CommandOutput {
@@ -102,11 +112,19 @@ impl CommandOutput {
             human: human.into(),
             json,
             warnings: Vec::new(),
+            exit_code: 0,
         }
     }
 
     pub(crate) fn warn(mut self, warning: impl Into<String>) -> Self {
         self.warnings.push(warning.into());
+        self
+    }
+
+    /// A successful document that still signals an assertion outcome
+    /// (`diff` differs). Output is rendered as usual; only the code changes.
+    pub(crate) fn with_exit_code(mut self, exit_code: u8) -> Self {
+        self.exit_code = exit_code;
         self
     }
 
@@ -123,7 +141,11 @@ impl CommandOutput {
             .iter()
             .map(|warning| format!("warning: {warning}\n"))
             .collect();
-        RunOutput::success(stdout, stderr)
+        RunOutput {
+            stdout,
+            stderr,
+            exit_code: self.exit_code,
+        }
     }
 }
 
@@ -146,6 +168,8 @@ pub const fn help() -> &'static str {
         "  session end [<id>|current]          End a session (default: $FACET_SESSION); idempotent\n",
         "  session list                        List sessions, newest first\n",
         "  session show <id>|current           Show one session\n",
+        "  replay <runId> [<path>]             Re-send a recorded run from the current YAML\n",
+        "  diff <idA> <idB> [<path>]           Compare two recorded runs, hashes first (exit 1 if different)\n",
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
         "  tui [<path>]                        Open the terminal UI\n",
@@ -164,7 +188,8 @@ pub const fn help() -> &'static str {
         "      --environment <name>    Only history resolved with one environment\n",
         "      --hash <sha256>         Only history whose request, request body, or response body hash matches\n",
         "      --id <ulid>             One run by id (exclusive with the filters above)\n",
-        "      --bodies                Include inline bodies in history JSON\n",
+        "      --bodies                Include inline bodies in history JSON; unified body diff for diff\n",
+        "      --frozen                Refuse to replay when the request hash changed (exit 1)\n",
         "      --meta <json>           Session metadata object (session start)\n",
         "      --open                  Only sessions still open (session list)\n",
         "      --output <file>         Write a blob to a file instead of stdout\n",
@@ -212,7 +237,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "session" | "blob" | "gc" | "tui" | "-V" | "--version" | "-h" | "--help",
+            "history" | "session" | "replay" | "diff" | "blob" | "gc" | "tui" | "-V" | "--version"
+            | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -257,6 +283,8 @@ where
         "request" => run::run(&args[2..], stdin),
         "history" => history::history(&args[1..]),
         "session" => session::session(&args[1..]),
+        "replay" => replay::replay(&args[1..], stdin),
+        "diff" => diff::diff(&args[1..]),
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(

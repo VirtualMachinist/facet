@@ -1,0 +1,87 @@
+{
+  "a": {
+    "id": "<ulid>",
+    "startedAt": "<int>",
+    "status": 200
+  },
+  "b": {
+    "id": "<ulid>",
+    "startedAt": "<int>",
+    "status": 200
+  },
+  "changes": [
+    {
+      "a": "<url>",
+      "b": "<url>",
+      "field": "url"
+    },
+    {
+      "a": 10,
+      "b": 30,
+      "field": "durationMs"
+    },
+    {
+      "a": "<sha256>",
+      "b": "<sha256>",
+      "field": "requestHash"
+    },
+    {
+      "a": [
+        "connection: close",
+        "content-length: 12",
+        "content-type: application/json"
+      ],
+      "b": [
+        "connection: close",
+        "content-length: 13",
+        "content-type: application/json"
+      ],
+      "field": "response.headers"
+    }
+  ],
+  "equal": false,
+  "request": {
+    "body": {
+      "a": {
+        "hash": "<sha256>",
+        "retention": "blob",
+        "sizeBytes": 16
+      },
+      "b": {
+        "hash": "<sha256>",
+        "retention": "blob",
+        "sizeBytes": 16
+      },
+      "equal": true,
+      "omissionReason": null,
+      "text": null
+    },
+    "hash": {
+      "a": "<sha256>",
+      "b": "<sha256>",
+      "equal": false
+    }
+  },
+  "response": {
+    "body": {
+      "a": {
+        "hash": "<sha256>",
+        "retention": "inline",
+        "sizeBytes": 12
+      },
+      "b": {
+        "hash": "<sha256>",
+        "retention": "inline",
+        "sizeBytes": 13
+      },
+      "equal": false,
+      "omissionReason": null,
+      "text": "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-{\"users\":[]}\n+{\"users\":[1]}\n"
+    }
+  },
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}
