@@ -46,46 +46,80 @@ Facet-original surface on top of that core (see [docs/FACET.md](docs/FACET.md)):
 
 ## Planned Work
 
-### Facet-first
+Folded from Probe's public roadmap
+([rusty-probe.pages.dev](https://rusty-probe.pages.dev)): HTTP is live; next is
+WebSocket, GraphQL, gRPC streaming, custom themes, git integration, secret
+storage, and *and more*. Facet ships these independently where we already own
+the layer, and contributes shared core upstream. Protocol work in `probe-core`
+is written as an upstream PR; Facet TUI/CLI/Lattice adapters land in this tree
+in parallel.
 
-These require explicit task scope before implementation:
+### Shipped (Facet)
 
-- Lattice engine options behind cargo features (`lattice-turso`; analytics via external
-  DuckDB ATTACH — not a default product path);
-- TUI depth (collections browser, run inspector, vim-modal command surface polish);
-- Public docs/brand seating and release tagging aligned with workspace version;
-- Anything that changes Facet-only contracts in [docs/FACET.md](docs/FACET.md).
+| Probe item | Facet |
+| --- | --- |
+| 01 HTTP requests | Live. Same engine as Probe. Lattice records every `request run` / TUI send. |
+| 05 Custom theme support | **Partial.** Graphite Honey (default) and Porcelain Honey, `:theme` toggle, `--appearance`. User-defined theme files are still open (see below). |
+| 07 Secret storage | **Facet machine store.** OS keyring or `FACET_SECRET_KEY` XChaCha20-Poly1305. Probe desktop secret UX remains upstream. |
 
-### Inherited deferred (still open upstream)
+### Next (Probe-aligned)
 
-The following were intentionally deferred in Probe's plan and remain out of Facet's
-default scope until explicitly tasked. Prefer contributing shared core work upstream
-when it belongs in `probe-core` / `probe-cli`.
+Ship in Facet; offer the shared core upstream first when it touches
+`probe-core` / `probe-cli`. Thread A (`protocol-session` on
+`repos/probe-upstream`) stays parked until unparked — adapters can still be
+designed against the event shape.
 
-#### User-Defined Themes
+| # | Item | Facet slice | Upstream |
+| --- | --- | --- | --- |
+| 02 | WebSocket | TUI session pane + Lattice events + `facet` JSONL | Protocol session/event abstraction in `probe-core` |
+| 03 | GraphQL | Collection item + TUI editor + history | Shared operation/variables model |
+| 04 | gRPC streaming | Same session adapter as WebSocket | Streaming on the protocol session |
+| 05 | Custom themes (rest) | Versioned theme files for `facet-tui` | Desktop theme files per [docs/DESIGN.md](docs/DESIGN.md#future-plain-text-themes) |
+| 06 | Git integration | Optional status/diff/commit in TUI; filesystem stays the Git boundary | No provider coupling in core |
+| 07 | Secret storage (rest) | Already in Lattice; wire TUI env editor to the machine store | Probe desktop |
 
-Add versioned, human-editable theme files after the semantic token model is stable.
-Parsing and validation must remain outside components, invalid themes must fall back
-safely to built-ins, and theme configuration must remain local presentation data rather
-than OpenCollection content. Design contract:
+### Facet-only (not on Probe's list)
+
+- Lattice engines: rusqlite default; `lattice-turso` feature; analytics via
+  external DuckDB ATTACH (`scripts/duckdb-attach-demo.sh`). In-process
+  `lattice-duckdb` is apiary-only, never lathe.
+- TUI depth: collections browser, run inspector, vim-modal polish. `ctrl+u` /
+  `ctrl+d` deferred.
+- MCP / harness adapter over Lattice (must not parse CLI output). Sketch lives
+  with fullstack's 2026-09-07 "and more" note.
+- Public docs/brand seating and release tagging aligned with workspace version.
+
+### Exploring (*and more*)
+
+Probe's last roadmap item is open-ended. Facet explores it as agent-harness
+integration, run replay, and Lattice-powered recall — not a second desktop
+Postman. See `agents/fullstack/notes/2026-09-07-and-more.md` in the Lapis vault
+once it lands.
+
+### Inherited notes (still load-bearing)
+
+#### User-defined theme files
+
+Versioned, human-editable theme files after the semantic token model is stable.
+Parsing and validation stay outside components; invalid themes fall back to
+built-ins. Local presentation data, not OpenCollection content.
 [docs/DESIGN.md](docs/DESIGN.md#future-plain-text-themes).
 
-#### Streaming Protocols
+#### Streaming protocols
 
-Design a shared protocol session/event abstraction before adding WebSocket, SSE, or
-gRPC. Protocol implementations must be independent of stdin/stdout and GPUI; the CLI
-may adapt events to JSONL while a desktop/TUI adapts the same events to visual sessions.
+Shared protocol session/event abstraction before WebSocket, SSE, or gRPC.
+Implementations independent of stdin/stdout and GPUI; CLI adapts events to
+JSONL, TUI/desktop to visual sessions.
 
-#### Git Integration
+#### Git
 
-The filesystem remains the primary Git boundary. Optional built-in status, diff,
-branch, commit, pull, and push workflows may be added later without coupling core
-collection behavior to a hosting provider.
+Filesystem remains the primary Git boundary. Optional built-in status, diff,
+branch, commit, pull, and push later, without coupling collections to a host.
 
-#### MCP Interface
+#### MCP
 
-An MCP server may eventually become another adapter over the shared application layer.
-It must not duplicate business logic or depend on parsing CLI output.
+Another adapter over the shared application layer. Must not duplicate business
+logic or depend on parsing CLI output.
 
 ## Planning Rules
 
