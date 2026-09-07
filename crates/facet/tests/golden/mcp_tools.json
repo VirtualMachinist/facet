@@ -1,0 +1,377 @@
+{
+  "tools": [
+    {
+      "description": "Start a session in the machine store and return it ({ session: { id, actor, startedAt, endedAt, meta, runs? } }). Export the id as FACET_SESSION for the runs that follow.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "description": "Agent name (default: FACET_ACTOR, else human)",
+            "type": "string"
+          },
+          "meta": {
+            "description": "Pointers only (harness ids, cwd); merged over Herdr ids. Never transcripts or secrets.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "session_start"
+    },
+    {
+      "description": "End a session (default: FACET_SESSION). Idempotent: alreadyEnded says whether it was already closed.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Session ULID, or `current`",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "session_end"
+    },
+    {
+      "description": "Probe's request list for a collection: { requests: [ { selector, name, method, url, … } ] }. Use selectors, never names.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Collection path: an OpenCollection YAML file or an unbundled workspace directory",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "request_list"
+    },
+    {
+      "description": "Probe's request get: one request as stored, or resolved with an environment.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Environment name to resolve with",
+            "type": "string"
+          },
+          "path": {
+            "description": "Collection path: an OpenCollection YAML file or an unbundled workspace directory",
+            "type": "string"
+          },
+          "selector": {
+            "description": "Request selector from request_list",
+            "type": "string"
+          },
+          "strictVariables": {
+            "description": "Fail on any unresolved variable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "request_get"
+    },
+    {
+      "description": "Execute a request through Facet and record it in Lattice. Result is Probe's request-run document plus lattice { runId, requestHash, secrets, … }. With dryRun the request is resolved and previewed, nothing sent or recorded.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "dryRun": {
+            "description": "Preview only: resolve, redact, do not send",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Environment name; enables secret hydration from the machine store",
+            "type": "string"
+          },
+          "expect": {
+            "description": "Assert the status after a real run: \"2xx\", \"200,201\", or an array like [200, \"3xx\"]. Miss → exit 1 expect_failed with the full document.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "noRecord": {
+            "description": "Execute without writing to Lattice",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "Collection path: an OpenCollection YAML file or an unbundled workspace directory",
+            "type": "string"
+          },
+          "selector": {
+            "description": "Request selector",
+            "type": "string"
+          },
+          "strictVariables": {
+            "description": "Fail on any unresolved variable",
+            "type": "boolean"
+          },
+          "tag": {
+            "description": "Tags to store with the run",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "var": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Variable overrides (--var). Never a secret: names stored in the Facet machine store are refused; hydration supplies them.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "path",
+          "selector"
+        ],
+        "type": "object"
+      },
+      "name": "request_run"
+    },
+    {
+      "description": "Recorded runs, newest first, metadata only (bodies are explicit pulls). Filters AND together.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "description": "Only runs by this actor",
+            "type": "string"
+          },
+          "bodies": {
+            "description": "Include inline bodies",
+            "type": "boolean"
+          },
+          "environment": {
+            "description": "Only runs resolved with this environment",
+            "type": "string"
+          },
+          "hash": {
+            "description": "Request hash, request body hash, or response body hash; rows say matchedHash",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum rows (default 50)",
+            "type": "integer"
+          },
+          "path": {
+            "description": "File or directory inside the workspace (default: current directory); Facet walks up to .facet/lattice.db",
+            "type": "string"
+          },
+          "request": {
+            "description": "Only runs of this selector",
+            "type": "string"
+          },
+          "session": {
+            "description": "Session ULID, or `current` for FACET_SESSION",
+            "type": "string"
+          },
+          "since": {
+            "description": "Only runs started at or after this Unix millisecond time",
+            "type": "integer"
+          },
+          "status": {
+            "description": "Only runs with this HTTP status",
+            "type": "integer"
+          },
+          "tag": {
+            "description": "Every listed tag must be present",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "history_list"
+    },
+    {
+      "description": "One recorded run by id: { workspace, run }. run_not_found (exit 4) when unknown.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bodies": {
+            "description": "Include inline bodies",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Run ULID",
+            "type": "string"
+          },
+          "path": {
+            "description": "File or directory inside the workspace (default: current directory); Facet walks up to .facet/lattice.db",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "history_get"
+    },
+    {
+      "description": "One stored body by SHA-256: { blob: { hash, sizeBytes, contentType, body } }. Bodies may contain secrets the redaction list cannot see.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "description": "SHA-256 hex from a history row",
+            "type": "string"
+          },
+          "path": {
+            "description": "File or directory inside the workspace (default: current directory); Facet walks up to .facet/lattice.db",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash"
+        ],
+        "type": "object"
+      },
+      "name": "blob_get"
+    },
+    {
+      "description": "Hash-first comparison of two recorded runs: changes by field, request.hash, both bodies. durationMs, actor, and tags never flip equal.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "description": "Run ULID",
+            "type": "string"
+          },
+          "b": {
+            "description": "Run ULID",
+            "type": "string"
+          },
+          "bodies": {
+            "description": "Unified diff for differing inline UTF-8 response bodies",
+            "type": "boolean"
+          },
+          "path": {
+            "description": "File or directory inside the workspace (default: current directory); Facet walks up to .facet/lattice.db",
+            "type": "string"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "type": "object"
+      },
+      "name": "run_diff"
+    },
+    {
+      "description": "Re-send a recorded run from the current YAML at the recorded environment; the new run carries replayedFrom. frozen refuses when the request hash changed (exit 1 replay_changed).",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "environment": {
+            "description": "Override the recorded environment",
+            "type": "string"
+          },
+          "expect": {
+            "description": "Assert the status after a real run: \"2xx\", \"200,201\", or an array like [200, \"3xx\"]. Miss → exit 1 expect_failed with the full document.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "frozen": {
+            "description": "Refuse when the resolved request differs from the recorded hash",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Run ULID to replay",
+            "type": "string"
+          },
+          "path": {
+            "description": "Collection path (default: current directory)",
+            "type": "string"
+          },
+          "tag": {
+            "description": "Extra tags (the recorded ones carry over)",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "var": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Variable overrides (--var). Never a secret: names stored in the Facet machine store are refused; hydration supplies them.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "run_replay"
+    },
+    {
+      "description": "Read-only SQL over the workspace store (runs, blobs). Writes fail with sql_read_only. The machine store is never attached.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "File or directory inside the workspace (default: current directory); Facet walks up to .facet/lattice.db",
+            "type": "string"
+          },
+          "sql": {
+            "description": "One SELECT statement",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "type": "object"
+      },
+      "name": "sql_query"
+    }
+  ]
+}

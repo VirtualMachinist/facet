@@ -279,6 +279,7 @@ facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet doctor [--probe] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
+facet mcp
 ```
 
 Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
@@ -633,6 +634,51 @@ orphans. Nothing is deleted without `--yes`.
   "retention": "unlimited", "runsExpired": 0,
   "orphans": [ { "hash": "…", "sizeBytes": 3 } ], "registryOrphans": 0, "bytesReclaimable": 3 }
 ```
+
+### `mcp`
+
+`facet mcp` serves the Facet commands as Model Context Protocol tools over
+stdio (JSON-RPC 2.0, one message per line; no HTTP transport in v1). It is a
+typed adapter over the **same functions** the CLI calls (`lattice`,
+`facet-record`, and the command functions themselves); it never spawns
+`facet` and never parses terminal output. Every tool result is the existing
+`schemaVersion: 1` document, byte for byte what `facet <command> --json`
+prints, delivered as `structuredContent` (and as pretty text in `content`).
+Errors are the same `error.{category, exitCode, message, details}` envelope
+with `isError: true`; a success document that carries `error` (an `--expect`
+miss) is also `isError: true`. There are no MCP-only fields.
+
+| Tool | Arguments | Same as |
+| --- | --- | --- |
+| `session_start` | `actor?`, `meta?` | `session start` |
+| `session_end` | `id?` (or `current`) | `session end` |
+| `request_list` | `path` | `request list` (Probe, in-process) |
+| `request_get` | `path`, `selector`, `environment?`, `strictVariables?` | `request get` (Probe, in-process) |
+| `request_run` | `path`, `selector`, `environment?`, `var?`, `tag?`, `expect?`, `dryRun?`, `strictVariables?`, `noRecord?` | `request run` |
+| `history_list` | `path?`, `limit?`, `request?`, `status?`, `actor?`, `since?`, `session?`, `environment?`, `tag?`, `hash?`, `bodies?` | `history` |
+| `history_get` | `id`, `path?`, `bodies?` | `history --id` |
+| `blob_get` | `hash`, `path?` | `blob` |
+| `run_diff` | `a`, `b`, `path?`, `bodies?` | `diff` |
+| `run_replay` | `id`, `path?`, `environment?`, `var?`, `tag?`, `expect?`, `frozen?` | `replay` |
+| `sql_query` | `sql`, `path?` | `history --sql` (read-only) |
+
+`expect` is a string spec (`"2xx"`, `"200,201"`) or an array like
+`[200, "3xx"]`. `var` is an object of overrides. **MCP never takes secret
+values as arguments:** a `var` whose name is stored in the Facet machine
+store for that workspace is refused (`invalid_arguments`) before anything
+runs; hydration supplies it, `facet env set` changes it. Not in v1: collection
+writes, `env set`, `gc --yes`, resources. Auth inherits the process
+environment (`FACET_SECRET_KEY`, keyring, `FACET_ACTOR`, `FACET_SESSION`).
+
+Claude Code (`.mcp.json`):
+
+```json
+{ "mcpServers": { "facet": { "command": "facet", "args": ["mcp"], "env": { "FACET_ACTOR": "claude.halo-fullstack" } } } }
+```
+
+The CLI remains the contract; the shell-out path in `docs/FACET.md` and the
+skill template need no MCP. Use `mcp` when a harness wants typed tools and
+`structuredContent` instead of parsing stdout.
 
 ## Exit codes and error categories
 
