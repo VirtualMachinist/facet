@@ -56,6 +56,10 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
         status: parsed.parsed_value::<i64>("--status", "an HTTP status code")?,
         actor: parsed.value("--actor")?.map(str::to_owned),
         since: parsed.parsed_value::<i64>("--since", "Unix milliseconds")?,
+        // session_id / environment / tags / hash filters are wired by the
+        // fullstack CLI slice; default to no filter here so the struct stays
+        // constructible until then.
+        ..HistoryQuery::default()
     };
     if query.limit == 0 {
         return Err(FacetError::invalid_arguments("--limit must be at least 1"));

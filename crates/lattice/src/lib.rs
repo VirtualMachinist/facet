@@ -29,7 +29,7 @@ use std::{fmt, io, path::PathBuf};
 pub use blobs::{BodyInput, StoredBody, sha256_hex};
 pub use config::{ConfigError, LatticeConfig, Retention, parse_byte_size, parse_retention};
 pub use machine::{
-    EnvironmentRow, MachineStore, machine_config_dir, machine_data_dir,
+    EnvironmentRow, MachineStore, SessionQuery, SessionRow, machine_config_dir, machine_data_dir,
 };
 pub use rusqlite::types::Value as SqlValue;
 pub use secrets::{
