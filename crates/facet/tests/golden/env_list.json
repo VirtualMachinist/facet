@@ -1,0 +1,15 @@
+{
+  "entries": [
+    {
+      "environment": "local",
+      "name": "token",
+      "secret": true,
+      "updatedAt": "<int>"
+    }
+  ],
+  "schemaVersion": 1,
+  "workspace": {
+    "id": "<ulid>",
+    "path": "<path>"
+  }
+}

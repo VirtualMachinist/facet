@@ -3,6 +3,7 @@
 //! `blob_not_found`, `run_not_found`, `session_not_found`, `session_not_set`,
 //! `invalid_sql`, and `sql_read_only`.
 
+use facet_record::HydrateError;
 use lattice::LatticeError;
 use probe_core::EnvironmentResolutionError;
 use probe_http::HttpError;
@@ -152,7 +153,27 @@ impl FacetError {
                 error.to_string(),
                 INVALID_ARGUMENTS_EXIT_CODE,
             ),
+            // The secrets layer cannot serve: configuration family, so the
+            // caller fixes inputs (set FACET_SECRET_KEY / keyring) and retries.
+            LatticeError::Secret(error) => Self::new(
+                "secret_backend_unavailable",
+                error.to_string(),
+                CONFIGURATION_EXIT_CODE,
+            ),
             error => Self::new("lattice_error", error.to_string(), LATTICE_EXIT_CODE),
+        }
+    }
+
+    /// Secret hydration could not proceed for a declared secret.
+    pub(crate) fn hydrate(error: HydrateError) -> Self {
+        match error {
+            HydrateError::BackendUnavailable { name, reason } => Self::new(
+                "secret_backend_unavailable",
+                format!("secret backend unavailable for {name}: {reason}"),
+                CONFIGURATION_EXIT_CODE,
+            )
+            .with_details(json!({ "variable": name })),
+            HydrateError::Lattice(error) => Self::lattice(error),
         }
     }
 
