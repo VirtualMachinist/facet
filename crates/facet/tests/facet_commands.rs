@@ -1899,3 +1899,119 @@ fn git_head_auto_tag_rides_on_record_and_not_on_replay() {
     ]);
     assert_eq!(row["run"]["tags"], json!([]));
 }
+
+#[test]
+fn last_prints_the_newest_matching_run_or_exit_4() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.root().to_str().unwrap().to_owned();
+    let (code, error) = sandbox.run_error_json(&["last", &root]);
+    assert_eq!(code, 4, "no store: nothing to substitute");
+    assert_eq!(error["error"]["category"], "run_not_found");
+
+    let first = record_one_run(&sandbox, &["--tag", "a"]);
+    let second = record_one_run(&sandbox, &["--tag", "b"]);
+    let second_id = second["lattice"]["runId"].as_str().unwrap();
+    let first_id = first["lattice"]["runId"].as_str().unwrap();
+
+    let output = sandbox.facet().args(["last", &root]).output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        second_id,
+        "bare ULID"
+    );
+    let last = sandbox.run_json(&["last", &root]);
+    assert_eq!(last["run"]["id"], second_id);
+    assert!(last.get("runs").is_none(), "history --id shape");
+    assert_golden("last.json", &normalize(last));
+    let by_tag = sandbox.run_json(&["last", &root, "--tag", "a"]);
+    assert_eq!(by_tag["run"]["id"], first_id);
+    let by_status = sandbox.run_json(&["last", &root, "--status", "200", "--request", "items/0"]);
+    assert_eq!(by_status["run"]["id"], second_id);
+    let (code, error) = sandbox.run_error_json(&["last", &root, "--status", "500"]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+    assert_golden("error_last_none.json", &normalize_error(error));
+    let (code, _) = sandbox.run_error_json(&["last", &root, "--session", "current"]);
+    assert_eq!(code, 5);
+    let (code, _) = sandbox.run_error_json(&["last", &root, "--limit", "2"]);
+    assert_eq!(code, 2, "last has no --limit");
+    let with_bodies = sandbox.run_json(&["last", &root, "--bodies"]);
+    assert_eq!(
+        with_bodies["run"]["response"]["body"]["content"],
+        r#"{"users":[]}"#
+    );
+}
+
+#[test]
+fn pins_name_runs_in_the_machine_store() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.root().to_str().unwrap().to_owned();
+    let run = record_one_run(&sandbox, &[]);
+    let run_id = run["lattice"]["runId"].as_str().unwrap().to_owned();
+
+    let pinned = sandbox.run_json(&["pin", &run_id, "--as", "auth-ok", &root]);
+    assert_eq!(pinned["pin"]["name"], "auth-ok");
+    assert_eq!(pinned["pin"]["runId"], run_id);
+    assert_eq!(pinned["pin"]["workspaceId"], run["lattice"]["workspaceId"]);
+    assert_eq!(pinned["pin"]["dangling"], false);
+
+    // `pin get` prints the bare id so replay can substitute it.
+    let output = sandbox
+        .facet()
+        .args(["pin", "get", "auth-ok", &root])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), run_id);
+    let got = sandbox.run_json(&["pin", "get", "auth-ok", &root]);
+    assert_eq!(got["pin"]["dangling"], false);
+    assert_golden("pin_get.json", &normalize(got));
+    let listed = sandbox.run_json(&["pin", "list", &root]);
+    assert_eq!(listed["pins"].as_array().unwrap().len(), 1);
+    assert_golden("pin_list.json", &normalize(listed));
+    // Without a workspace to check against, dangling is unknown.
+    let elsewhere = Sandbox::new();
+    let output = elsewhere
+        .facet()
+        .env("FACET_DATA_DIR", sandbox.root().join("machine"))
+        .args([
+            "pin",
+            "get",
+            "auth-ok",
+            elsewhere.root().to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let unknown: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(unknown["pin"]["dangling"].is_null());
+
+    // Re-pin overwrites; bad names and unknown runs are refused.
+    let again = record_one_run(&sandbox, &[]);
+    let again_id = again["lattice"]["runId"].as_str().unwrap();
+    let repinned = sandbox.run_json(&["pin", again_id, "--as", "auth-ok", &root]);
+    assert_eq!(repinned["pin"]["runId"], again_id);
+    let (code, _) = sandbox.run_error_json(&["pin", again_id, "--as", "bad name", &root]);
+    assert_eq!(code, 2);
+    let (code, error) = sandbox.run_error_json(&["pin", UNKNOWN_ULID, "--as", "x", &root]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+    let (code, _) = sandbox.run_error_json(&["pin", "not-a-ulid", "--as", "x", &root]);
+    assert_eq!(code, 2);
+    let (code, error) = sandbox.run_error_json(&["pin", "get", "nope", &root]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "pin_not_found");
+    assert_golden("error_pin_not_found.json", &normalize_error(error));
+
+    // A pin survives the run: gc the run away and the pin dangles.
+    sandbox.backdate_run(again_id, lattice::now_ms() - 3 * 86_400_000);
+    sandbox.run_json(&["gc", &root, "--history-retention", "1d", "--yes"]);
+    let dangling = sandbox.run_json(&["pin", "get", "auth-ok", &root]);
+    assert_eq!(dangling["pin"]["dangling"], true);
+    let deleted = sandbox.run_json(&["pin", "delete", "auth-ok"]);
+    assert_eq!(deleted["deleted"], true);
+    let deleted = sandbox.run_json(&["pin", "delete", "auth-ok"]);
+    assert_eq!(deleted["deleted"], false);
+    assert_eq!(sandbox.run_json(&["pin", "list", &root])["pins"], json!([]));
+}

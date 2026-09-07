@@ -992,3 +992,31 @@ fn machine_index_answers_which_workspace_holds_a_run() {
     assert_eq!(workspace_id, store.workspace_id());
     assert_eq!(path, store.root().to_string_lossy());
 }
+
+#[test]
+fn preferences_round_trip_by_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
+    assert_eq!(machine.preference("pin.auth").unwrap(), None);
+    machine
+        .set_preference("pin.auth", r#"{"runId":"a"}"#)
+        .unwrap();
+    machine.set_preference("pin.b", r#"{"runId":"b"}"#).unwrap();
+    machine
+        .set_preference("tui.theme", r#""graphite""#)
+        .unwrap();
+    machine
+        .set_preference("pin.auth", r#"{"runId":"a2"}"#)
+        .unwrap();
+    assert_eq!(
+        machine.preference("pin.auth").unwrap().as_deref(),
+        Some(r#"{"runId":"a2"}"#)
+    );
+    let pins = machine.preferences("pin.").unwrap();
+    assert_eq!(pins.len(), 2);
+    assert_eq!(pins[0].0, "pin.auth");
+    assert!(machine.delete_preference("pin.b").unwrap());
+    assert!(!machine.delete_preference("pin.b").unwrap());
+    assert_eq!(machine.preferences("pin.").unwrap().len(), 1);
+}

@@ -191,7 +191,7 @@ fn list(args: &[String]) -> Result<CommandOutput, FacetError> {
 
 /// Opens the machine store with the machine-level configuration only.
 /// Sessions are cross-workspace, so no workspace file applies.
-fn open_machine() -> Result<MachineStore, FacetError> {
+pub(crate) fn open_machine() -> Result<MachineStore, FacetError> {
     let mut config = LatticeConfig::default();
     if let Some(dir) = machine_config_dir() {
         config
