@@ -33,19 +33,26 @@ fn run<'a>(path: &'a str, body: &'a [u8]) -> NewRun<'a> {
 #[test]
 fn open_connection_honors_wal_flag() {
     let wal_dir = tempfile::tempdir().unwrap();
-    WorkspaceStore::open(wal_dir.path(), LatticeConfig::default()).unwrap();
+    let store = WorkspaceStore::open(wal_dir.path(), LatticeConfig::default()).unwrap();
     let wal_db = wal_dir.path().join(".facet/lattice.db");
+    // WAL is a file-mode: a fresh connection sees it.
     let wal_mode: String = rusqlite::Connection::open(&wal_db)
         .unwrap()
         .query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .unwrap();
     assert_eq!(wal_mode, "wal");
+    assert_eq!(
+        pragma_busy_timeout(&store),
+        5000,
+        "default busy_timeout is 5 s"
+    );
 
     let rollback_dir = tempfile::tempdir().unwrap();
-    WorkspaceStore::open(
+    let store = WorkspaceStore::open(
         rollback_dir.path(),
         LatticeConfig {
             wal: false,
+            busy_timeout_ms: 1234,
             ..LatticeConfig::default()
         },
     )
@@ -56,6 +63,24 @@ fn open_connection_honors_wal_flag() {
         .query_row("PRAGMA journal_mode", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rollback_mode, "delete");
+    assert_eq!(pragma_busy_timeout(&store), 1234);
+}
+
+fn pragma_busy_timeout(store: &WorkspaceStore) -> i64 {
+    // busy_timeout is per-connection; WorkspaceStore::query opens a
+    // read-only connection and applies config.busy_timeout_ms to it.
+    store
+        .query("PRAGMA busy_timeout")
+        .unwrap()
+        .rows
+        .into_iter()
+        .next()
+        .and_then(|row| row.into_iter().next())
+        .and_then(|value| match value {
+            SqlValue::Integer(n) => Some(n),
+            _ => None,
+        })
+        .expect("busy_timeout row")
 }
 
 #[test]
@@ -211,7 +236,10 @@ fn v1_to_v2_migration_hydrates_inline_request_bodies() {
 
     // Reopen through the store: hydration + 0002 migration run on open.
     let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
-    assert_eq!(store.schema_version().unwrap(), lattice::WORKSPACE_SCHEMA_VERSION);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        lattice::WORKSPACE_SCHEMA_VERSION
+    );
     let row = store.run("01JAV1MIGR0000000001").unwrap().unwrap();
     assert_eq!(row.req_body.retention(), "blob");
     let hash = row.req_body.hash.clone().unwrap();
@@ -240,10 +268,7 @@ fn reader_rule_never_branches_on_length() {
     let row = store.run(&recorded.id).unwrap().unwrap();
     assert_eq!(row.res_body.len, Some(999999));
     assert!(row.res_body.hash.is_none());
-    assert_eq!(
-        store.response_body(&row).unwrap().unwrap(),
-        b"short"
-    );
+    assert_eq!(store.response_body(&row).unwrap().unwrap(), b"short");
 }
 
 #[test]
@@ -464,7 +489,6 @@ fn machine_store_indexes_runs_by_workspace() {
     assert_eq!(actor.as_deref(), Some("human"));
 }
 
-
 #[test]
 fn environments_round_trip_plain_and_secret() {
     let dir = tempfile::tempdir().unwrap();
@@ -474,10 +498,20 @@ fn environments_round_trip_plain_and_secret() {
 
     // Plain value: stored in the value column, secret_ref NULL.
     machine
-        .set_environment_with(wsid, "local", "API_URL", "http://x", false, &SecretConfig::keyring())
+        .set_environment_with(
+            wsid,
+            "local",
+            "API_URL",
+            "http://x",
+            false,
+            &SecretConfig::keyring(),
+        )
         .unwrap();
     assert_eq!(
-        machine.environment_with(wsid, "local", "API_URL", &SecretConfig::keyring()).unwrap().as_deref(),
+        machine
+            .environment_with(wsid, "local", "API_URL", &SecretConfig::keyring())
+            .unwrap()
+            .as_deref(),
         Some("http://x")
     );
 
@@ -487,7 +521,10 @@ fn environments_round_trip_plain_and_secret() {
         .set_environment_with(wsid, "local", "API_TOKEN", "tok-123", true, &key_cfg)
         .unwrap();
     assert_eq!(
-        machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().as_deref(),
+        machine
+            .environment_with(wsid, "local", "API_TOKEN", &key_cfg)
+            .unwrap()
+            .as_deref(),
         Some("tok-123")
     );
 
@@ -501,22 +538,51 @@ fn environments_round_trip_plain_and_secret() {
     assert!(!rows[1].secret);
 
     // A secret cannot be read without the right key.
-    assert!(machine
-        .environment_with(wsid, "local", "API_TOKEN", &SecretConfig::encrypted(b"wrong"))
-        .is_err());
+    assert!(
+        machine
+            .environment_with(
+                wsid,
+                "local",
+                "API_TOKEN",
+                &SecretConfig::encrypted(b"wrong")
+            )
+            .is_err()
+    );
 
     // Replacing a secret with a plain value drops the old secret_ref.
     machine
         .set_environment_with(wsid, "local", "API_TOKEN", "plain-now", false, &key_cfg)
         .unwrap();
     assert_eq!(
-        machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().as_deref(),
+        machine
+            .environment_with(wsid, "local", "API_TOKEN", &key_cfg)
+            .unwrap()
+            .as_deref(),
         Some("plain-now")
     );
-    assert!(!machine.environments(wsid).unwrap().iter().any(|r| r.key == "API_TOKEN" && r.secret));
+    assert!(
+        !machine
+            .environments(wsid)
+            .unwrap()
+            .iter()
+            .any(|r| r.key == "API_TOKEN" && r.secret)
+    );
 
     // Delete removes the row.
-    assert!(machine.delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap());
-    assert!(machine.environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap().is_none());
-    assert!(!machine.delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg).unwrap());
+    assert!(
+        machine
+            .delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg)
+            .unwrap()
+    );
+    assert!(
+        machine
+            .environment_with(wsid, "local", "API_TOKEN", &key_cfg)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !machine
+            .delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg)
+            .unwrap()
+    );
 }

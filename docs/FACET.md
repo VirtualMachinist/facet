@@ -182,7 +182,8 @@ file format:
 | `lattice-duckdb` | DuckDB in-process (bundled) | **Apiary-only; never in lathe default members.** ATTACHes the SQLite lattice file for analytics. Smoke: `crates/lattice/tests/duckdb.rs`. Heavy native build. |
 
 The primary analytics path is the **`duckdb` CLI** attaching the SQLite
-file externally (no Rust, no feature flag):
+file externally (no Rust, no feature flag). Durable smoke:
+`scripts/duckdb-attach-demo.sh` (uses `duckdb` on `PATH` or `~/bin/duckdb`).
 
 ```text
 duckdb -c "INSTALL sqlite; LOAD sqlite; \
@@ -215,6 +216,10 @@ Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
 `:theme graphite|porcelain` sets one. `:history` and `:sql <query>` open
 Lattice overlays. `gg` / `G` jump to the first / last row of the focused
 pane. `?` lists the rest.
+
+Roadmap (Probe's public list, folded): HTTP live; next WebSocket, GraphQL,
+gRPC streaming, user-defined theme files, git integration. Secret storage
+is already in the Facet machine store. See [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md).
 
 `<path>` for `history`, `blob`, and `gc` is any file or directory inside the
 workspace (default: the current directory); Facet walks up to the nearest
