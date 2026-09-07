@@ -1,17 +1,21 @@
 //! HedronDB knowledge-graph engine smoke (apiary-only; `lattice-hedron` feature).
 //!
-//! Proves `hedron-core` (rusqlite 0.32, bundled) and this crate's default
-//! engine (rusqlite 0.40, bundled) **coexist in one binary**: the test
-//! links both bundled-SQLite copies and runs a real HedronDB operation (open
-//! a store, bootstrap a vault + agent, put a document node, read it back
-//! through HQL) inside the lattice test binary. This is the same coexistence
-//! class as `lattice-turso` (two bundled SQLite copies in one binary); a green
-//! smoke is the green light for the `lattice-hedron` feature.
+//! Proves `hedron-core` (rusqlite 0.40, bundled — aligned via the
+//! `facet-pin-align` proposal branch) and this crate's default engine
+//! (rusqlite 0.40, bundled) **coexist in one binary**: both engines share
+//! one `libsqlite3-sys` and the test links + runs a real HedronDB operation
+//! (open a store, bootstrap a vault + agent, put a document node, read it
+//! back through HQL) inside the lattice test binary. This is the
+//! **second data plane** (record/reconcile), not a `lattice-turso` clone:
+//! Turso retrieves the same `lattice.db`; HedronDB records/reconciles a
+//! separate-schema store. Engines are beside, not instead.
 //!
 //! It does **not** open `lattice.db`. `hedron_core::Store::open` bootstraps its
-//! own schema (`nodes`/`edges`/`desired_states`/`events`) on the file, so it
-//! cannot read a Lattice workspace store — HedronDB is a **projection
-//! complement**, not a same-file read engine like Turso. See
+//! own schema (`nodes`/`edges`/`desired_states`/`events`) on the file, so
+//! it cannot read a Lattice workspace store — HedronDB is a separate data
+//! plane, not a same-file read engine like Turso. The Lattice→HedronDB
+//! projection (record/reconcile adapters) is a later slice; do not mix Warm
+//! `current_state` and Cool `causal_chain` in one API. See
 //! `agents/backend/notes/2026-09-07-evaluate-hedrondb.md` and
 //! `docs/FACET.md` § Engines.
 //!

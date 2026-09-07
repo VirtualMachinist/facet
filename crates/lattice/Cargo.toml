@@ -24,12 +24,13 @@ libsql = { version = "0.9", optional = true }
 duckdb = { version = "1.10505.0", optional = true, features = ["bundled"] }
 # HedronDB knowledge-graph engine (complement to Turso; apiary-only for the
 # smoke). `hedron-core` is a separate repo (publish = false), pulled as a git
-# dep only when `lattice-hedron` is on. It pins `rusqlite = "=0.32.1"`
-# (bundled) versus this crate's `0.40` (bundled) — two bundled SQLite copies in
-# one binary is the same coexistence class as `lattice-turso`; the gated smoke
-# proves whether they link and run together. Not the default engine; never in
-# lathe default-members. See `agents/backend/notes/2026-09-07-evaluate-hedrondb.md`
-# and `docs/FACET.md` § Engines.
+# dep only when `lattice-hedron` is on, pinned to the `facet-pin-align` proposal
+# branch which bumps `rusqlite` to 0.40 (bundled) to match this crate's 0.40
+# (bundled) — both engines share one `libsqlite3-sys` and coexist in one binary
+# (the `links = "sqlite3"` blocker is resolved by the alignment, not patched).
+# Not the default engine; never in lathe default-members. See
+# `agents/backend/notes/2026-09-07-evaluate-hedrondb.md` and `docs/FACET.md`
+# § Engines.
 hedron-core = { git = "https://github.com/VirtualMachinist/hedrondb", rev = "c7210486f915b19d6b1cb9a8d9e0bea25782bb1c", optional = true }
 rand = "0.9"
 rusqlite = { version = "0.40", features = ["bundled"] }
