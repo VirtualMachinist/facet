@@ -295,6 +295,17 @@ impl Theme {
         }
     }
 
+    /// A theme over a custom palette (a theme file's overrides merged into
+    /// a built-in base). The appearance stays the base's, so lower depths
+    /// resolve through the built-in role channels.
+    pub const fn from_palette(appearance: Appearance, palette: Palette) -> Self {
+        Self {
+            appearance,
+            palette,
+            depth: Depth::Truecolor,
+        }
+    }
+
     pub fn with_depth(mut self, depth: Depth) -> Self {
         self.depth = depth;
         self

@@ -64,7 +64,10 @@ fn render_title(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         Some(name) => format!(" facet · {name}{dirty} "),
         None => format!(" facet{dirty} "),
     };
-    let appearance = app.theme().appearance().label();
+    let appearance = app
+        .custom_theme_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| app.theme().appearance().label().to_string());
     let line = Line::from(vec![
         Span::styled(title_text, styles.title),
         Span::raw(" "),
@@ -877,7 +880,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     } else {
         "j/k · Enter send · i insert · : command · ? help · q quit".to_string()
     };
-    let appearance = app.theme().appearance().label().to_lowercase();
+    let appearance = app
+        .custom_theme_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| app.theme().appearance().label().to_lowercase());
 
     let mut segments: Vec<(String, Style)> = vec![
         (CODENAME.to_string(), styles.muted),

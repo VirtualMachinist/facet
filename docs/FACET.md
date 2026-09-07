@@ -293,12 +293,17 @@ facet env delete [<path>] --environment <name> --name <key> [--json]
 facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet doctor [--probe] [--json]
-facet tui [<path>] [--appearance graphite|porcelain]
+facet theme check <path> [--json]
+facet theme list [--json]
+facet tui [<path>] [--appearance graphite|porcelain] [--theme <name|path>]
 facet mcp
 ```
 
 Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
-`:theme graphite|porcelain` sets one. `:history` opens the run grid
+`:theme graphite|porcelain` sets one. `:theme <name|path>` loads a theme
+file (see [Theme files](#theme-files)); an invalid file falls back to the
+built-in for the current appearance and names the field in the footer.
+`:history` opens the run grid
 (`STARTED STATUS MS METHOD REQUEST ACTOR ID`): `j`/`k` or arrows move,
 `gg`/`G` jump, Enter hydrates the response pane from Lattice (titled
 `run <id> · replayed view`), `y` yanks the run id and `Y` the response
@@ -308,8 +313,9 @@ the last ≤24 statuses of the focused row's selector (oldest → newest,
 palette status buckets, stone for unrecorded) — paint, not a verb.
 `:sql <query>` opens a read-only overlay. `?` lists the rest.
 
-Roadmap (Probe's public list, folded): HTTP live; next WebSocket, GraphQL,
-gRPC streaming, user-defined theme files, git integration. Secret storage
+Roadmap (Probe's public list, folded): HTTP live; user-defined theme files
+live (`facet-tui`, see [Theme files](#theme-files)); next WebSocket, GraphQL,
+gRPC streaming, git integration. Secret storage
 is already in the Facet machine store. See [IMPLEMENTATION_PLAN.md](../IMPLEMENTATION_PLAN.md).
 
 `<path>` for `history`, `blob`, and `gc` is any file or directory inside the
@@ -672,6 +678,54 @@ orphans. Nothing is deleted without `--yes`.
   "retention": "unlimited", "runsExpired": 0,
   "orphans": [ { "hash": "…", "sizeBytes": 3 } ], "registryOrphans": 0, "bytesReclaimable": 3 }
 ```
+
+### Theme files
+
+`facet tui` reads versioned, human-editable theme files (TOML) from
+`<config dir>/themes/<name>.toml` — the config dir is `FACET_CONFIG_DIR`
+or the platform config dir (`~/.config/facet` on Linux). Theme files are
+local presentation configuration: never collection data, never in Lattice.
+
+```toml
+version = 1                   # required; this facet reads version 1 only
+name = "midnight-honey"       # optional; defaults to the file stem
+extends = "graphite"          # required built-in base: graphite | porcelain
+
+[colors]
+accent = "#e7821b"            # any subset of tokens; "#rrggbb" only
+window_bg = "#101012"
+```
+
+Rules (DESIGN.md § Future Plain-Text Themes): missing tokens merge with the
+built-in base; unknown top-level keys are tolerated so the format can grow
+additively inside a version; an unsupported `version`, an unknown
+`[colors]` token, or an invalid value rejects the **whole file** — the TUI
+keeps (or restores) the complete built-in for the current appearance and
+names the file and field in the footer, and `facet theme check` exits 1
+(`theme_invalid`) with `details.{path, field}`. Built-ins are always
+available as `graphite` / `porcelain`. At 256-color and 16-color depths a
+custom theme resolves through the built-in role channels, so method and
+status families stay distinct.
+
+Apply one with `facet tui --theme <name|path>` or `:theme <name|path>` in
+the TUI (a bare name resolves in the themes directory; anything with a
+path separator or a `.toml` suffix is read as a path). `facet theme check
+<path>` validates without a terminal; `facet theme list` shows built-ins
+plus every discovered file, invalid ones listed with their error.
+
+The `[colors]` tokens, grouped as in `Palette`:
+
+| Group | Tokens |
+| --- | --- |
+| Surfaces | `window_fg` `window_bg` `sidebar_fg` `sidebar_bg` `editor_fg` `editor_bg` `raised_fg` `raised_bg` `overlay_fg` `overlay_bg` |
+| Text | `text_primary` `text_secondary` `text_muted` `text_placeholder` `text_inverse` |
+| Borders | `border_subtle` `border_standard` `border_strong` `border_focused` |
+| Accent | `accent` `accent_hover` `accent_pressed` `accent_disabled` `accent_disabled_fg` |
+| Selection | `selection_active_bg` `selection_active_fg` `selection_inactive_bg` `selection_inactive_fg` |
+| Status | `status_success` `status_warning` `status_error` `status_informational` |
+| HTTP methods | `method_get` `method_post` `method_put` `method_patch` `method_delete` `method_other` |
+| Response status | `response_informational` `response_success` `response_redirect` `response_client_error` `response_server_error` |
+| Syntax | `syntax_property` `syntax_string` `syntax_number` `syntax_boolean` `syntax_null` `syntax_punctuation` |
 
 ### `mcp`
 

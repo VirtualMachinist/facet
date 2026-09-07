@@ -2015,3 +2015,80 @@ fn pins_name_runs_in_the_machine_store() {
     assert_eq!(deleted["deleted"], false);
     assert_eq!(sandbox.run_json(&["pin", "list", &root])["pins"], json!([]));
 }
+
+fn theme_fixture(name: &str) -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/themes")
+        .join(name)
+        .display()
+        .to_string()
+}
+
+#[test]
+fn theme_check_validates_a_theme_file() {
+    let sandbox = Sandbox::new();
+    let checked = sandbox.run_json(&["theme", "check", &theme_fixture("midnight-honey.toml")]);
+    assert_eq!(checked["theme"]["valid"], true);
+    assert_eq!(checked["theme"]["name"], "midnight-honey");
+    assert_eq!(checked["theme"]["extends"], "graphite");
+    assert_eq!(checked["theme"]["overrides"], 4);
+    assert_golden("theme_check_valid.json", &normalize(checked));
+}
+
+#[test]
+fn theme_check_rejects_an_invalid_file_with_file_and_field() {
+    let sandbox = Sandbox::new();
+    let (code, error) =
+        sandbox.run_error_json(&["theme", "check", &theme_fixture("broken-accent.toml")]);
+    assert_eq!(code, 1, "a rejected theme file is the assertion family");
+    assert_eq!(error["error"]["category"], "theme_invalid");
+    assert_eq!(error["error"]["details"]["field"], "colors.accent");
+    assert_golden("error_theme_invalid.json", &normalize_error(error));
+
+    // A missing file and a missing argument are their own categories.
+    let (code, error) = sandbox.run_error_json(&["theme", "check", "nope.toml"]);
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["category"], "theme_invalid");
+    let (code, _) = sandbox.run_error_json(&["theme", "check"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn theme_list_shows_built_ins_and_discovers_files() {
+    let sandbox = Sandbox::new();
+    // Sandbox config dir has no themes yet: built-ins only.
+    let list = sandbox.run_json(&["theme", "list"]);
+    let names: Vec<&str> = list["themes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|theme| theme["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["graphite", "porcelain"]);
+    assert_golden("theme_list.json", &normalize(list));
+
+    // A file in <config>/themes is discovered; a broken sibling lists
+    // with its error instead of failing the command.
+    let themes_dir = sandbox.root().join("config/themes");
+    fs::create_dir_all(&themes_dir).unwrap();
+    fs::write(
+        themes_dir.join("midnight-honey.toml"),
+        "version = 1\nextends = \"graphite\"\n[colors]\naccent = \"#e7821b\"\n",
+    )
+    .unwrap();
+    fs::write(themes_dir.join("oops.toml"), "version = 9\n").unwrap();
+    let list = sandbox.run_json(&["theme", "list"]);
+    let themes = list["themes"].as_array().unwrap();
+    assert_eq!(themes.len(), 4);
+    assert_eq!(themes[2]["name"], "midnight-honey");
+    assert_eq!(themes[2]["source"], "file");
+    assert_eq!(themes[2]["valid"], true);
+    assert_eq!(themes[3]["name"], "oops");
+    assert_eq!(themes[3]["valid"], false);
+    assert!(
+        themes[3]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported theme version 9")
+    );
+}
