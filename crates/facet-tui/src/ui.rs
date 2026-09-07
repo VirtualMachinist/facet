@@ -50,6 +50,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.help_open() {
         render_help_overlay(frame, shell[1], styles);
     }
+    if let Some((title, lines)) = app.data_overlay() {
+        render_data_overlay(frame, shell[1], title, lines, styles);
+    }
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
@@ -158,15 +161,11 @@ pub const TAGLINE: &str = "local-first api client";
 /// Seven-node lattice glyph from the design alpha: a hexagon of six nodes
 /// around a center, spokes to every vertex. Nodes take the bright brand
 /// color, lines the accent.
-const LATTICE_GLYPH: [&str; 11] = [
+const LATTICE_GLYPH: [&str; 7] = [
     "     ●     ",
     "   ╱ │ ╲   ",
     " ●   │   ● ",
-    " │╲  │  ╱│ ",
-    " │ ╲ │ ╱ │ ",
-    " │   ●   │ ",
-    " │ ╱ │ ╲ │ ",
-    " │╱  │  ╲│ ",
+    "     ●     ",
     " ●   │   ● ",
     "   ╲ │ ╱   ",
     "     ●     ",
@@ -179,27 +178,19 @@ const WORDMARK: [&str; 3] = [
     "│   ┴ ┴ └─  └─┘  ┴ ",
 ];
 
-/// The lattice glyph inside an outer hexagon outline, 14×23. The hexagon
-/// is drawn with ASCII `/`, `\`, `-` so the renderer can style it apart
-/// from the glyph: edges become `╱ ╲ ─` in `brand_fill` (the one filled
-/// brand frame). Glyph chars keep their node/line styles. Concentric
-/// with the glyph: every glyph row clears the outline by at least one
-/// cell.
-const SPLASH_HEXAGON: [&str; 14] = [
-    "         /---\\         ",
-    "        /  ●  \\        ",
-    "       / ╱ │ ╲ \\       ",
-    "      /●   │   ●\\      ",
-    "     / │╲  │  ╱│ \\     ",
-    "    /  │ ╲ │ ╱ │  \\    ",
-    "   /   │   ●   │   \\   ",
-    "   \\   │ ╱ │ ╲ │   /   ",
-    "    \\  │╱  │  ╲│  /    ",
-    "     \\ ●   │   ● /     ",
-    "      \\  ╲ │ ╱  /      ",
-    "       \\   ●   /       ",
-    "        \\     /        ",
-    "         \\---/         ",
+/// Flattened hexagon (8×21) around the seven-node glyph. Terminal cells
+/// are taller than they are wide, so a 14-row outline read as stretched;
+/// this squat flat-top hexagon is the 2a-ii correction. ASCII `/ \ -`
+/// become `╱ ╲ ─` in `brand_fill`.
+const SPLASH_HEXAGON: [&str; 8] = [
+    "      /-------\\      ",
+    "     /    ●    \\     ",
+    "    /  ╱     ╲  \\    ",
+    "   / ●    ●    ● \\   ",
+    "   \\ ●         ● /   ",
+    "    \\  ╲     ╱  /    ",
+    "     \\    ●    /     ",
+    "      \\-------/      ",
 ];
 
 /// Splash for `facet tui` without a collection: lattice glyph, wordmark,
@@ -854,6 +845,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         "insert · Esc normal · Enter save".to_string()
     } else if app.help_open() {
         "help · Esc close".to_string()
+    } else if app.data_overlay().is_some() {
+        "overlay · Esc close".to_string()
     } else if app.searching() {
         "search · Enter apply · Esc clear".to_string()
     } else if app.env_dropdown_open() {
@@ -1000,8 +993,9 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
 /// actions in editor text. This is option A's discoverability device —
 /// one overlay, no which-key.
 fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    const KEYS: [(&str, &str); 14] = [
+    const KEYS: [(&str, &str); 15] = [
         ("j/k · arrows", "move (tree, rows, response scroll)"),
+        ("gg / G", "first / last row (tree, request, response)"),
         ("Enter", "folder toggle · open · send · :send"),
         ("i / a", "insert (URL or section) · Esc back"),
         ("/", "search · Enter apply · Esc clear"),
@@ -1012,11 +1006,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         ("n / d", "add / delete a row"),
         ("Ctrl-W h/j/k/l", "focus pane · Ctrl-W w cycles"),
         ("Ctrl-S", "save to disk · :w"),
-        (":", "command line (:w :q :send :theme :env)"),
+        (":", "command line (:w :q :send :theme :history :sql)"),
         ("?", "this help · :help"),
         ("q", "quit · Esc cancels run/overlay"),
     ];
-    let width = 60u16.min(area.width);
+    let width = 68u16.min(area.width);
     let height = (KEYS.len() as u16 + 4).min(area.height);
     let overlay = centered(area, width, height);
     frame.render_widget(Clear, overlay);
@@ -1038,6 +1032,40 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         styles.muted,
     )));
     frame.render_widget(Paragraph::new(lines).block(block), overlay);
+}
+
+fn render_data_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: &[String],
+    styles: Styles,
+) {
+    let longest = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(20)
+        .max(title.chars().count());
+    let width = ((longest + 4) as u16).clamp(40, 80).min(area.width);
+    let height = (lines.len() as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let overlay = centered(area, width, height);
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(title.to_string(), styles.brand));
+    let body: Vec<Line> = lines
+        .iter()
+        .map(|line| Line::from(Span::styled(format!(" {line}"), styles.editor)))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(body).block(block).wrap(Wrap { trim: false }),
+        overlay,
+    );
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1168,8 +1196,8 @@ mod tests {
         app.render_to(&mut terminal).expect("render");
         let text = dump(terminal.backend().buffer());
 
-        assert!(text.contains("╱───╲"), "hexagon top edge: {text}");
-        assert!(text.contains("╲───╱"), "hexagon bottom edge: {text}");
+        assert!(text.contains("╱───────╲"), "hexagon top edge: {text}");
+        assert!(text.contains("╲───────╱"), "hexagon bottom edge: {text}");
         assert_eq!(
             text.matches('●').count(),
             7,
@@ -1188,7 +1216,7 @@ mod tests {
         let text = dump(terminal.backend().buffer());
 
         assert!(text.contains("Porcelain Honey"), "{text}");
-        assert!(text.contains("╱───╲"), "hexagon in porcelain: {text}");
+        assert!(text.contains("╱───────╲"), "hexagon in porcelain: {text}");
         assert!(text.contains("local-first api client"), "{text}");
     }
 
@@ -1262,9 +1290,34 @@ mod tests {
 
         assert!(text.contains("facet keys"), "title: {text}");
         assert!(text.contains("command line"), ": row: {text}");
+        assert!(text.contains(":history"), "history verb: {text}");
+        assert!(text.contains("gg / G"), "gg/G: {text}");
         assert!(
             text.contains("arrows always work"),
             "flat fallback note: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_overlay_renders_rows() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_data_overlay(
+            " history ",
+            vec![
+                "STATUS  MS     METHOD  REQUEST".to_string(),
+                "200     12     GET     Pets/List pets".to_string(),
+            ],
+        );
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        assert!(text.contains("history"), "title: {text}");
+        assert!(text.contains("Pets/List pets"), "{text}");
+        assert!(
+            text.contains("overlay · Esc close") || text.contains("Esc close"),
+            "{text}"
         );
     }
 

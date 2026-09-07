@@ -1,13 +1,14 @@
 use std::{
     error::Error,
     fmt, io,
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use lattice::{HistoryQuery, LatticeConfig, SqlValue, WorkspaceStore};
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_environment,
     resolve_request,
@@ -19,7 +20,7 @@ use ratatui::backend::Backend;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::theme::{Appearance, Theme};
+use crate::theme::{Appearance, Depth, Theme};
 use crate::tree::{Row, TreeView};
 
 /// Top-level TUI error type. Wraps I/O, OpenCollection, and HTTP failures
@@ -438,8 +439,12 @@ pub struct App {
     command: String,
     /// `?` help overlay.
     help_open: bool,
+    /// `:history` / `:sql` overlay (title + body lines).
+    data_overlay: Option<(String, Vec<String>)>,
     /// Awaiting the second key of a `Ctrl-W` focus chord.
     ctrl_w_pending: bool,
+    /// Awaiting a second `g` for `gg`.
+    g_pending: bool,
     editor: Editor,
     editor_snapshot: EditorSnapshot,
     editor_dirty: bool,
@@ -515,12 +520,16 @@ impl App {
             focus: Focus::Tree,
             searching: false,
             request_focus: RequestFocus::Url,
-            theme_state: Theme::detect_default(),
+            // Graphite Honey is the product default (2b-i). `--appearance`
+            // and `:theme` are the switchers; COLORFGBG does not override.
+            theme_state: Theme::new(Appearance::Dark).with_depth(Depth::from_env()),
             section: Section::Path,
             mode: Mode::Normal,
             command: String::new(),
             help_open: false,
+            data_overlay: None,
             ctrl_w_pending: false,
+            g_pending: false,
             editor: Editor::default(),
             editor_snapshot: EditorSnapshot::default(),
             editor_dirty: false,
@@ -757,6 +766,9 @@ impl App {
         if self.help_open {
             return self.handle_help_key(code);
         }
+        if self.data_overlay.is_some() {
+            return self.handle_data_overlay_key(code);
+        }
         if self.env_dropdown_open {
             return self.handle_env_dropdown_key(code);
         }
@@ -767,6 +779,21 @@ impl App {
             self.ctrl_w_pending = false;
             self.handle_focus_chord(code);
             return Ok(true);
+        }
+        if self.g_pending {
+            self.g_pending = false;
+            match code {
+                KeyCode::Char('g') => {
+                    self.jump_home();
+                    return Ok(true);
+                }
+                KeyCode::Char('G') => {
+                    self.jump_end();
+                    return Ok(true);
+                }
+                KeyCode::Esc => return Ok(true),
+                _ => {}
+            }
         }
 
         if matches!(code, KeyCode::Esc) && self.cancel.is_some() {
@@ -798,6 +825,14 @@ impl App {
             }
             (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
                 self.ctrl_w_pending = true;
+                Ok(true)
+            }
+            (KeyCode::Char('g'), _) => {
+                self.g_pending = true;
+                Ok(true)
+            }
+            (KeyCode::Char('G'), _) => {
+                self.jump_end();
                 Ok(true)
             }
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
@@ -1030,8 +1065,8 @@ impl App {
     }
 
     /// Executes the `:` buffer and returns to Normal mode. Command set is
-    /// vim grammar, not aliases: `w`/`q`/`wq`, `send`, `theme`, `env`,
-    /// `help`.
+    /// vim grammar, not aliases: `w`/`q`/`wq`, `send`, `theme`, `history`,
+    /// `sql`, `env`, `help`. Bare `:theme` toggles Graphite ↔ Porcelain.
     async fn execute_command(&mut self) -> Result<(), TuiError> {
         let input = self.command.trim().to_string();
         self.command.clear();
@@ -1056,8 +1091,16 @@ impl App {
             "send" => {
                 self.run_selected().await?;
             }
-            "help" => self.help_open = true,
+            "help" => {
+                self.data_overlay = None;
+                self.help_open = true;
+            }
+            "history" => self.show_history(),
+            "sql" => self.show_sql(arg),
             "theme" | "appearance" => match arg {
+                "" | "toggle" => {
+                    self.theme_state = self.theme_state.toggle();
+                }
                 "graphite" | "dark" => {
                     self.theme_state =
                         Theme::new(Appearance::Dark).with_depth(self.theme_state.depth());
@@ -1067,7 +1110,8 @@ impl App {
                         Theme::new(Appearance::Light).with_depth(self.theme_state.depth());
                 }
                 _ => {
-                    self.status = RunStatus::Failed("usage: :theme graphite|porcelain".to_string());
+                    self.status =
+                        RunStatus::Failed("usage: :theme [graphite|porcelain]".to_string());
                 }
             },
             "env" | "environment" => {
@@ -1101,6 +1145,150 @@ impl App {
                 Ok(true)
             }
             _ => Ok(true),
+        }
+    }
+
+    /// `:history` / `:sql` overlay: Esc/q/Enter closes it.
+    fn handle_data_overlay_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.data_overlay = None;
+                Ok(true)
+            }
+            _ => Ok(true),
+        }
+    }
+
+    fn jump_home(&mut self) {
+        match self.focus {
+            Focus::Tree => {
+                self.tree.select_first();
+                self.refresh_editor_from_selection();
+            }
+            Focus::Request => {
+                self.request_focus = RequestFocus::Url;
+                self.kv_index = 0;
+            }
+            Focus::Response => self.response_scroll = 0,
+        }
+    }
+
+    fn jump_end(&mut self) {
+        match self.focus {
+            Focus::Tree => {
+                self.tree.select_last();
+                self.refresh_editor_from_selection();
+            }
+            Focus::Request => {
+                self.request_focus = RequestFocus::Editor;
+                let len = self.kv_len();
+                if len > 0 {
+                    self.kv_index = len - 1;
+                }
+            }
+            Focus::Response => self.response_scroll = 10_000,
+        }
+    }
+
+    fn open_data_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.help_open = false;
+        self.data_overlay = Some((title.into(), lines));
+    }
+
+    fn workspace_root(&self) -> Option<PathBuf> {
+        let source = self.loaded.as_ref()?.source_path()?;
+        if source.is_dir() {
+            Some(source.to_path_buf())
+        } else {
+            source.parent().map(Path::to_path_buf)
+        }
+    }
+
+    fn open_lattice(&self) -> Result<Option<WorkspaceStore>, String> {
+        let Some(root) = self.workspace_root() else {
+            return Ok(None);
+        };
+        WorkspaceStore::open_existing(&root, LatticeConfig::default())
+            .map_err(|error| error.to_string())
+    }
+
+    fn show_history(&mut self) {
+        match self.open_lattice() {
+            Ok(None) => self.open_data_overlay(
+                " history ",
+                vec!["No Lattice store found; run a request first.".to_string()],
+            ),
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("history: {error}"));
+            }
+            Ok(Some(store)) => match store.history(&HistoryQuery {
+                limit: 50,
+                ..HistoryQuery::default()
+            }) {
+                Ok(rows) => {
+                    let mut lines = vec![format!(
+                        "{:<6} {:<6} {:<7} {}",
+                        "STATUS", "MS", "METHOD", "REQUEST"
+                    )];
+                    if rows.is_empty() {
+                        lines.push("(no runs)".to_string());
+                    }
+                    for row in rows {
+                        let status = row
+                            .status
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "ERR".to_string());
+                        let ms = row
+                            .duration_ms
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        lines.push(format!(
+                            "{status:<6} {ms:<6} {:<7} {}",
+                            row.method, row.request_path
+                        ));
+                    }
+                    self.open_data_overlay(" history ", lines);
+                }
+                Err(error) => {
+                    self.status = RunStatus::Failed(format!("history: {error}"));
+                }
+            },
+        }
+    }
+
+    fn show_sql(&mut self, sql: &str) {
+        if sql.is_empty() {
+            self.status = RunStatus::Failed("usage: :sql <query>".to_string());
+            return;
+        }
+        match self.open_lattice() {
+            Ok(None) => self.open_data_overlay(
+                " sql ",
+                vec!["No Lattice store found; run a request first.".to_string()],
+            ),
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("sql: {error}"));
+            }
+            Ok(Some(store)) => match store.query(sql) {
+                Ok(result) => {
+                    let mut lines = vec![result.columns.join("  ")];
+                    if result.rows.is_empty() {
+                        lines.push("(no rows)".to_string());
+                    }
+                    for row in result.rows.iter().take(200) {
+                        lines.push(
+                            row.iter()
+                                .map(sql_value_human)
+                                .collect::<Vec<_>>()
+                                .join("  "),
+                        );
+                    }
+                    self.open_data_overlay(" sql ", lines);
+                }
+                Err(error) => {
+                    self.status = RunStatus::Failed(format!("sql: {error}"));
+                }
+            },
         }
     }
 
@@ -1506,6 +1694,17 @@ impl App {
         self.help_open
     }
 
+    /// `:history` / `:sql` overlay, if open.
+    pub fn data_overlay(&self) -> Option<&(String, Vec<String>)> {
+        self.data_overlay.as_ref()
+    }
+
+    /// Opens a data overlay for headless harnesses. Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_data_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.open_data_overlay(title, lines);
+    }
+
     /// Which request-pane field is active.
     pub fn request_focus(&self) -> RequestFocus {
         self.request_focus
@@ -1621,18 +1820,11 @@ impl App {
     }
 
     /// Whether a Lattice workspace store exists beside the loaded collection
-    /// (`.facet/lattice.db` in the collection directory). A filesystem check
-    /// only; the TUI does not open the store.
+    /// (`.facet/lattice.db` in the collection directory).
     pub fn lattice_ready(&self) -> bool {
-        let Some(source) = self.loaded.as_ref().and_then(|loaded| loaded.source_path()) else {
-            return false;
-        };
-        let root = if source.is_dir() {
-            source.to_path_buf()
-        } else {
-            source.parent().map(Path::to_path_buf).unwrap_or_default()
-        };
-        root.join(".facet").join("lattice.db").is_file()
+        self.workspace_root()
+            .map(|root| root.join(".facet").join("lattice.db").is_file())
+            .unwrap_or(false)
     }
 
     /// Resolves a folder's display name from its session key.
@@ -1664,6 +1856,16 @@ impl App {
             .filter_map(|folder_key| self.folder_name(*folder_key))
             .collect::<Vec<_>>()
             .join(" › ")
+    }
+}
+
+fn sql_value_human(value: &SqlValue) -> String {
+    match value {
+        SqlValue::Null => "NULL".to_owned(),
+        SqlValue::Integer(number) => number.to_string(),
+        SqlValue::Real(number) => number.to_string(),
+        SqlValue::Text(text) => text.clone(),
+        SqlValue::Blob(bytes) => format!("<blob {} bytes>", bytes.len()),
     }
 }
 
@@ -1761,6 +1963,12 @@ mod tests {
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase1-bundled.yml")
+    }
+
+    #[tokio::test]
+    async fn load_defaults_to_graphite_honey() {
+        let app = App::load(Some(&fixture())).await;
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
     }
 
     #[tokio::test]
@@ -2123,5 +2331,137 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["Health check".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn bare_theme_toggles_graphite_and_porcelain() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+        app.command = "theme".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        app.command = "theme toggle".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+        app.command = "theme porcelain".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        app.command = "theme graphite".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+    }
+
+    #[tokio::test]
+    async fn gg_and_g_jump_the_tree() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert!(app.rows().len() > 1);
+        app.handle_key(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), app.rows().len() - 1);
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 0);
+        // A lone `g` then Esc does not jump and does not quit.
+        app.handle_key(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), app.rows().len() - 1);
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn history_and_sql_open_overlays() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let (title, lines) = app.data_overlay().expect("history overlay");
+        assert!(title.contains("history"), "{title}");
+        assert!(
+            lines.iter().any(|line| line.contains("No Lattice store")),
+            "{lines:?}"
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.data_overlay().is_none());
+
+        app.command = "sql".to_string();
+        app.execute_command().await.unwrap();
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("usage: :sql")),
+            "{:?}",
+            app.status()
+        );
+
+        app.command = "sql SELECT 1".to_string();
+        app.execute_command().await.unwrap();
+        let (title, lines) = app.data_overlay().expect("sql overlay");
+        assert!(title.contains("sql"), "{title}");
+        assert!(
+            lines.iter().any(|line| line.contains("No Lattice store")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_and_sql_read_an_existing_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "facet-tui-s2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml = dir.join("collection.yml");
+        std::fs::copy(fixture(), &yaml).unwrap();
+        let store = WorkspaceStore::open(&dir, LatticeConfig::default()).unwrap();
+        store
+            .record_run(&lattice::NewRun {
+                started_at: lattice::now_ms(),
+                duration_ms: Some(12),
+                request_path: "Pets/List pets",
+                request_hash: "abc",
+                method: "GET",
+                url: "https://example.com/pets",
+                status: Some(200),
+                actor: "human",
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+
+        let mut app = App::load(Some(&yaml)).await;
+        assert!(app.lattice_ready());
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let (_, lines) = app.data_overlay().expect("history overlay");
+        assert!(
+            lines.iter().any(|line| line.contains("Pets/List pets")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("200")), "{lines:?}");
+
+        app.command = "sql SELECT status, method, request_path FROM runs".to_string();
+        app.execute_command().await.unwrap();
+        let (_, lines) = app.data_overlay().expect("sql overlay");
+        assert!(
+            lines.iter().any(|line| line.contains("List pets")),
+            "{lines:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
