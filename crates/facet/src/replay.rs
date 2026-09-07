@@ -19,6 +19,7 @@ use serde_json::json;
 
 use crate::{
     CommandOutput, FacetError, args,
+    expect::{EXPECT_FAIL_TAG, Expectation},
     run::{
         execute, hydrate, lookup_request, parse_vars, render, resolve_selected, var_names,
         with_secrets,
@@ -30,6 +31,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--environment",
     "--var",
     "--tag",
+    "--expect",
     "--inline-body-max",
     "--history-retention",
 ];
@@ -57,6 +59,10 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
     let should_record = !parsed.switch("--no-record") && !recording_disabled();
     let overrides = overrides_from_parsed(&parsed)?;
     let variables = parse_vars(&parsed)?;
+    let expect = parsed
+        .value("--expect")?
+        .map(Expectation::parse)
+        .transpose()?;
     let extra_tags: Vec<String> = parsed
         .values("--tag")
         .into_iter()
@@ -140,7 +146,16 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
 
     // 5. Send and record with lineage.
     let execution = execute(&request, input.base_directory(), None)?;
-    let tags = merged_tags(row.tags.as_deref(), &extra_tags);
+    let status = execution
+        .result
+        .as_ref()
+        .ok()
+        .map(|response| response.status);
+    let miss = expect.as_ref().and_then(|expect| expect.miss(status));
+    let mut tags = merged_tags(row.tags.as_deref(), &extra_tags);
+    if miss.is_some() && !tags.iter().any(|tag| tag == EXPECT_FAIL_TAG) {
+        tags.push(EXPECT_FAIL_TAG.to_owned());
+    }
     let recording = if should_record {
         let actor = actor_from_env();
         let session = session_from_env();
@@ -185,14 +200,18 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
             "request unchanged"
         }
     );
-    render(
+    let rendered = render(
         &request,
         execution,
         None,
         lattice_json,
         lattice_human,
         warnings,
-    )
+    )?;
+    Ok(match miss {
+        Some(error) => rendered.fail(error),
+        None => rendered,
+    })
 }
 
 /// Recorded tags first, then `--tag` additions, without duplicates.

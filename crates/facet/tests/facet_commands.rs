@@ -1391,7 +1391,11 @@ fn doctor_reports_stores_secrets_backend_and_env_presence() {
 
     let doctor = sandbox.run_json(&["doctor"]);
     assert_eq!(doctor["doctor"]["machine"]["opened"], true);
-    assert!(doctor["doctor"]["machine"]["schemaVersion"].as_i64().is_some());
+    assert!(
+        doctor["doctor"]["machine"]["schemaVersion"]
+            .as_i64()
+            .is_some()
+    );
     assert_eq!(doctor["doctor"]["workspace"]["found"], true);
     assert!(doctor["doctor"]["workspace"]["id"].as_str().is_some());
     assert_eq!(doctor["doctor"]["workspace"]["schemaVersion"], 3);
@@ -1430,7 +1434,11 @@ fn doctor_probe_round_trips_a_secret_and_marks_the_backend_usable() {
     assert_eq!(doctor["doctor"]["secrets"]["usable"], true);
     assert_eq!(doctor["doctor"]["secrets"]["probe"], true);
     // The probe must not leave the probe value anywhere in the output.
-    assert!(!doctor.to_string().contains("facet-doctor-probe-not-a-real-secret"));
+    assert!(
+        !doctor
+            .to_string()
+            .contains("facet-doctor-probe-not-a-real-secret")
+    );
     assert_golden("doctor_probe.json", &normalize(doctor));
 }
 
@@ -1456,7 +1464,11 @@ fn history_sql_cannot_reach_the_machine_store_or_any_secret_ref() {
     // The machine store lives under FACET_DATA_DIR (sandbox/machine/lattice.db).
     // `--sql` must not be able to ATTACH it.
     let machine_db = sandbox.root().join("machine").join("lattice.db");
-    assert!(machine_db.is_file(), "machine store exists at {}", machine_db.display());
+    assert!(
+        machine_db.is_file(),
+        "machine store exists at {}",
+        machine_db.display()
+    );
     let attach = format!("ATTACH 'file:{}' AS machine", machine_db.to_string_lossy());
     let (attach_code, attach_error) = sandbox.run_error_json(&["history", root, "--sql", &attach]);
     assert_eq!(attach_code, 2);
@@ -1468,8 +1480,12 @@ fn history_sql_cannot_reach_the_machine_store_or_any_secret_ref() {
 
     // The workspace store has no `environments` table (it lives in the
     // machine store); a query for it must fail.
-    let (env_code, env_error) =
-        sandbox.run_error_json(&["history", root, "--sql", "SELECT count(*) FROM environments"]);
+    let (env_code, env_error) = sandbox.run_error_json(&[
+        "history",
+        root,
+        "--sql",
+        "SELECT count(*) FROM environments",
+    ]);
     assert_eq!(env_code, 2);
     assert_eq!(env_error["error"]["category"], "invalid_sql");
 
@@ -1493,4 +1509,281 @@ fn history_sql_cannot_reach_the_machine_store_or_any_secret_ref() {
     assert!(!dump.to_string().contains("probe-secret-value"));
     assert!(!dump.to_string().contains("enc:v1:"));
     assert!(!dump.to_string().contains("kr:"));
+}
+
+#[test]
+fn expect_is_exit_1_on_a_miss_with_the_full_document() {
+    let sandbox = Sandbox::new();
+    let hit = record_one_run(&sandbox, &["--expect", "2xx"]);
+    assert_eq!(hit["response"]["status"], 200);
+    assert!(hit.get("error").is_none());
+    let hit = record_one_run(&sandbox, &["--expect", "201, 200"]);
+    assert!(hit.get("error").is_none());
+
+    // Miss: full success document plus `error`, exit 1, recorded and tagged.
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let output = sandbox
+        .facet()
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--expect",
+            "201,204",
+            "--tag",
+            "smoke",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty(), "json mode keeps stderr clean");
+    let miss: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(miss["response"]["status"], 200);
+    assert_eq!(miss["response"]["body"]["content"], r#"{"users":[]}"#);
+    assert_eq!(miss["lattice"]["recorded"], true);
+    assert_eq!(miss["error"]["category"], "expect_failed");
+    assert_eq!(miss["error"]["exitCode"], 1);
+    assert_eq!(miss["error"]["details"]["expected"], json!([201, 204]));
+    assert_eq!(miss["error"]["details"]["actual"], 200);
+    assert_golden("run_expect_failed.json", &normalize(miss.clone()));
+    let run_id = miss["lattice"]["runId"].as_str().unwrap();
+    let failed = sandbox.run_json(&["history", ws, "--tag", "expect:fail"]);
+    assert_eq!(failed["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(failed["runs"][0]["id"], run_id);
+    assert_eq!(failed["runs"][0]["tags"], json!(["smoke", "expect:fail"]));
+
+    // Human: response on stdout, error line on stderr; --quiet: nothing, 1.
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let human = sandbox
+        .facet()
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--expect",
+            "3xx",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(human.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&human.stdout).contains("200 OK"));
+    assert!(String::from_utf8_lossy(&human.stderr).starts_with("error[expect_failed]:"));
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let quiet = sandbox
+        .facet()
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--expect",
+            "500",
+            "--quiet",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(quiet.status.code(), Some(1));
+    assert!(quiet.stdout.is_empty());
+    assert!(quiet.stderr.is_empty());
+
+    // Transport failure keeps 6 even with --expect; bad specs are 2.
+    let dead = sandbox.workspace("http://127.0.0.1:9");
+    let (code, error) = sandbox.run_error_json(&[
+        "request",
+        "run",
+        dead.to_str().unwrap(),
+        "items/0",
+        "--environment",
+        "local",
+        "--expect",
+        "2xx",
+    ]);
+    assert_eq!(code, 6);
+    assert_eq!(error["error"]["category"], "network_execution");
+    assert!(error.get("response").is_none());
+    for bad in ["20x", "6xx", "ok", "200,"] {
+        let (code, error) = sandbox.run_error_json(&[
+            "request",
+            "run",
+            dead.to_str().unwrap(),
+            "items/0",
+            "--expect",
+            bad,
+        ]);
+        assert_eq!(code, 2, "{bad}");
+        assert_eq!(error["error"]["category"], "invalid_arguments");
+    }
+
+    // replay --expect: same contract, lineage kept. The workspace file was
+    // rewritten for the dead-port case; point it back at a live server.
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let output = sandbox
+        .facet()
+        .args(["replay", run_id, ws, "--expect", "404", "--json"])
+        .output()
+        .unwrap();
+    again.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let replayed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(replayed["error"]["category"], "expect_failed");
+    assert_eq!(replayed["lattice"]["replayedFrom"], run_id);
+    let tagged = sandbox.run_json(&["history", ws, "--tag", "expect:fail"]);
+    // Four misses so far (json, human, quiet, replay); the replay carries the
+    // source's tags and is tagged once, not twice.
+    assert_eq!(tagged["runs"].as_array().unwrap().len(), 4);
+    assert_eq!(tagged["runs"][0]["tags"], json!(["smoke", "expect:fail"]));
+}
+
+#[test]
+fn dry_run_previews_without_sending_or_recording() {
+    let sandbox = Sandbox::new();
+    // A dead port proves nothing is sent.
+    let workspace = sandbox.workspace("http://127.0.0.1:9");
+    let ws = workspace.to_str().unwrap();
+    let preview = sandbox.run_json(&[
+        "request",
+        "run",
+        ws,
+        "items/0",
+        "--environment",
+        "local",
+        "--dry-run",
+    ]);
+    assert_eq!(preview["dryRun"], true);
+    assert_eq!(preview["request"]["method"], "POST");
+    assert_eq!(preview["request"]["url"], "http://127.0.0.1:9/echo");
+    assert_eq!(
+        preview["request"]["query"],
+        json!([{ "disabled": false, "name": "mode", "value": "cli" }])
+    );
+    let headers = preview["request"]["headers"].as_array().unwrap();
+    assert!(
+        headers
+            .iter()
+            .any(|h| h["name"] == "X-Probe" && h["value"] == "phase-five")
+    );
+    assert!(
+        headers
+            .iter()
+            .all(|h| h["name"] != "Authorization" || h["value"] == "<redacted>"),
+        "{headers:?}"
+    );
+    assert_eq!(preview["request"]["body"]["content"], r#"{"source":"cli"}"#);
+    assert_eq!(preview["request"]["body"]["sizeBytes"], 16);
+    assert_eq!(preview["lattice"]["recorded"], false);
+    assert_eq!(preview["lattice"]["reason"], "dry_run");
+    assert_eq!(
+        preview["lattice"]["requestHash"].as_str().unwrap().len(),
+        64
+    );
+    assert_eq!(
+        preview["lattice"]["secrets"],
+        json!({ "hydrated": [], "source": null })
+    );
+    assert!(preview.get("response").is_none());
+    assert_golden("run_dry_run.json", &normalize(preview.clone()));
+    assert!(!sandbox.root().join(".facet").exists(), "nothing recorded");
+
+    // The hash is the one a real run stores.
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let again = sandbox.run_json(&[
+        "request",
+        "run",
+        ws,
+        "items/0",
+        "--environment",
+        "local",
+        "--dry-run",
+    ]);
+    let real = sandbox.run_json(&["request", "run", ws, "items/0", "--environment", "local"]);
+    server.join().unwrap();
+    assert_eq!(
+        again["lattice"]["requestHash"],
+        real["lattice"]["requestHash"]
+    );
+    assert_eq!(run_count(&sandbox, &["history", ws]), 1);
+
+    // Hydrated secrets are redacted in the preview.
+    let secret_ws = sandbox.secret_workspace("http://127.0.0.1:9");
+    let sws = secret_ws.to_str().unwrap();
+    sandbox.run_json(&[
+        "env",
+        "set",
+        sws,
+        "--environment",
+        "local",
+        "--name",
+        "token",
+        "--value",
+        SECRET_VALUE,
+        "--secret",
+    ]);
+    let hydrated = sandbox.run_json(&[
+        "request",
+        "run",
+        sws,
+        "items/0",
+        "--environment",
+        "local",
+        "--dry-run",
+    ]);
+    assert_eq!(hydrated["lattice"]["secrets"]["hydrated"], json!(["token"]));
+    assert!(!hydrated.to_string().contains(SECRET_VALUE), "{hydrated}");
+    assert!(
+        hydrated["request"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("t=<redacted>")
+    );
+    assert_eq!(
+        hydrated["request"]["body"]["content"],
+        r#"{"token":"<redacted>"}"#
+    );
+
+    // Human mode and the two exclusions.
+    let human = sandbox
+        .facet()
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.starts_with("POST http://"), "{text}");
+    assert!(text.contains("Lattice: not recorded (dry_run)"), "{text}");
+    for extra in [["--expect", "2xx"], ["--output", "x"]] {
+        let mut arguments = vec!["request", "run", ws, "items/0", "--dry-run"];
+        arguments.extend_from_slice(&extra);
+        let (code, _) = sandbox.run_error_json(&arguments);
+        assert_eq!(code, 2);
+    }
 }

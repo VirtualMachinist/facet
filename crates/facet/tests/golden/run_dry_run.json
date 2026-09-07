@@ -1,0 +1,37 @@
+{
+  "dryRun": true,
+  "lattice": {
+    "reason": "dry_run",
+    "recorded": false,
+    "requestHash": "<sha256>",
+    "secrets": {
+      "hydrated": [],
+      "source": null
+    }
+  },
+  "request": {
+    "body": {
+      "content": "{\"source\":\"cli\"}",
+      "omissionReason": null,
+      "omitted": false,
+      "sizeBytes": 16
+    },
+    "headers": [
+      {
+        "disabled": false,
+        "name": "X-Probe",
+        "value": "phase-five"
+      }
+    ],
+    "method": "POST",
+    "query": [
+      {
+        "disabled": false,
+        "name": "mode",
+        "value": "cli"
+      }
+    ],
+    "url": "<url>"
+  },
+  "schemaVersion": 1
+}

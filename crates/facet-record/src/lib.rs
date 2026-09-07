@@ -401,6 +401,56 @@ fn url_encode(value: &str) -> String {
     out
 }
 
+/// What `--dry-run` shows: the resolved request as it would be sent, with
+/// the same redactions Lattice applies (sensitive header names, URL
+/// userinfo, known secret values) so a preview is safe to paste. Bodies are
+/// shown inline when UTF-8 and under `MAX_PREVIEW_BODY`, else by size only.
+#[must_use]
+pub fn request_preview_json(request: &HttpRequest, redact: &[String]) -> Value {
+    const MAX_PREVIEW_BODY: usize = 64 * 1024;
+    let body = request_body_bytes(request);
+    let body_json = match body.as_deref() {
+        None => {
+            json!({ "content": Value::Null, "sizeBytes": Value::Null, "omitted": false, "omissionReason": Value::Null })
+        }
+        Some(bytes) if bytes.len() > MAX_PREVIEW_BODY => json!({
+            "content": Value::Null, "sizeBytes": bytes.len(), "omitted": true, "omissionReason": "too_large",
+        }),
+        Some(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => json!({
+                "content": scrub(text, redact), "sizeBytes": bytes.len(), "omitted": false, "omissionReason": Value::Null,
+            }),
+            Err(_) => json!({
+                "content": Value::Null, "sizeBytes": bytes.len(), "omitted": true, "omissionReason": "binary",
+            }),
+        },
+    };
+    let headers: Value = serde_json::from_str(&scrub(
+        &request_headers_json(&request.headers).to_string(),
+        redact,
+    ))
+    .unwrap_or(Value::Null);
+    let query: Vec<Value> = request
+        .query_parameters
+        .iter()
+        .map(|parameter| {
+            json!({
+                "disabled": parameter.disabled,
+                "name": parameter.name,
+                "value": scrub(&parameter.value, redact),
+            })
+        })
+        .collect();
+    json!({
+        "method": request.method,
+        "url": scrub(&redact_url(request.url.as_deref().unwrap_or("")), redact),
+        "query": query,
+        "headers": headers,
+        "body": body_json,
+        "requestHash": request_hash(request, body.as_deref()),
+    })
+}
+
 /// The `request_hash` Lattice would store for `request` as resolved now.
 /// `facet replay` compares this against the recorded row before sending.
 #[must_use]
