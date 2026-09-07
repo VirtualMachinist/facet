@@ -127,13 +127,13 @@ impl LatticeError {
     #[must_use]
     pub fn is_query_error(&self) -> bool {
         match self {
-        Self::ReadOnlyQuery => true,
-        Self::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => {
-            failure.code == rusqlite::ErrorCode::Unknown
-                || failure.code == rusqlite::ErrorCode::ReadOnly
-        }
-        Self::Sqlite(rusqlite::Error::SqlInputError { .. }) => true,
-        Self::Sqlite(rusqlite::Error::MultipleStatement) => true,
+            Self::ReadOnlyQuery => true,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => {
+                failure.code == rusqlite::ErrorCode::Unknown
+                    || failure.code == rusqlite::ErrorCode::ReadOnly
+            }
+            Self::Sqlite(rusqlite::Error::SqlInputError { .. }) => true,
+            Self::Sqlite(rusqlite::Error::MultipleStatement) => true,
             _ => false,
         }
     }

@@ -42,8 +42,40 @@ impl Sandbox {
             .env("FACET_CONFIG_DIR", self.root().join("config"))
             .env_remove("FACET_ACTOR")
             .env_remove("FACET_SESSION")
-            .env_remove("FACET_NO_RECORD");
+            .env_remove("FACET_NO_RECORD")
+            // Session metadata picks these up when present; goldens must not.
+            .env_remove("HERDR_WORKSPACE_ID")
+            .env_remove("HERDR_TAB_ID")
+            .env_remove("HERDR_PANE_ID")
+            // Session commands count runs from the workspace store discovered
+            // from the current directory.
+            .current_dir(self.root());
         command
+    }
+
+    /// [`Self::facet`] with `FACET_SESSION` set, as a harness would run it.
+    pub(crate) fn facet_in_session(&self, session: &str) -> Command {
+        let mut command = self.facet();
+        command.env("FACET_SESSION", session);
+        command
+    }
+
+    /// Runs `facet … --json` inside a session and returns parsed stdout.
+    pub(crate) fn run_json_in_session(&self, session: &str, arguments: &[&str]) -> Value {
+        let output = self
+            .facet_in_session(session)
+            .args(arguments)
+            .arg("--json")
+            .output()
+            .expect("facet should run");
+        assert!(
+            output.status.success(),
+            "exit {:?}\nstdout: {}\nstderr: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
     }
 
     pub(crate) fn run_json(&self, arguments: &[&str]) -> Value {
@@ -170,10 +202,12 @@ pub(crate) fn normalize(value: Value) -> Value {
                     let replaced = match key.as_str() {
                         "version" | "probeVersion" => json!("<version>"),
                         "id" | "runId" | "workspaceId" => json!("<ulid>"),
+                        "sessionId" if value.is_string() => json!("<ulid>"),
                         "startedAt" | "durationMs" => json!("<int>"),
+                        "endedAt" if value.is_number() => json!("<int>"),
                         "requestHash" => json!("<sha256>"),
                         "hash" if value.is_string() => json!("<sha256>"),
-                        "path" | "outputPath" if value.is_string() => json!("<path>"),
+                        "path" | "outputPath" | "cwd" if value.is_string() => json!("<path>"),
                         "url" if value.is_string() => json!("<url>"),
                         _ => normalize(value),
                     };

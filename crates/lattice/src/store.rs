@@ -737,10 +737,7 @@ pub(crate) fn open_connection(
 /// blob files and set `req_body_hash`, so no body is lost. No-op on fresh
 /// stores (no `runs` table or no inline rows) and on stores already at v2
 /// (the column is gone). Idempotent: identical content shares one file.
-fn hydrate_inline_request_bodies(
-    conn: &Connection,
-    blobs_dir: &Path,
-) -> Result<(), LatticeError> {
+fn hydrate_inline_request_bodies(conn: &Connection, blobs_dir: &Path) -> Result<(), LatticeError> {
     // Only meaningful when the v1 `runs` table still has `req_body`.
     let has_req_body: i64 = conn
         .query_row(
@@ -752,8 +749,9 @@ fn hydrate_inline_request_bodies(
     if has_req_body == 0 {
         return Ok(());
     }
-    let mut statement =
-        conn.prepare("SELECT id, req_body FROM runs WHERE req_body IS NOT NULL AND req_body_hash IS NULL")?;
+    let mut statement = conn.prepare(
+        "SELECT id, req_body FROM runs WHERE req_body IS NOT NULL AND req_body_hash IS NULL",
+    )?;
     let rows: Vec<(String, Vec<u8>)> = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(Result::ok)

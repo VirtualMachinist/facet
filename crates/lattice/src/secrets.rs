@@ -343,8 +343,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ENCRYPTED_REF_PREFIX, SecretBackend, SecretConfig, SecretError, backend_of, delete_secret_with,
-        get_secret_with, put_secret_with,
+        ENCRYPTED_REF_PREFIX, SecretBackend, SecretConfig, SecretError, backend_of,
+        delete_secret_with, get_secret_with, put_secret_with,
     };
 
     #[test]
@@ -354,7 +354,9 @@ mod tests {
         assert_eq!(stored.backend, SecretBackend::Encrypted);
         assert!(stored.reference.starts_with(ENCRYPTED_REF_PREFIX));
         assert_eq!(
-            get_secret_with(&stored.reference, &config).unwrap().as_deref(),
+            get_secret_with(&stored.reference, &config)
+                .unwrap()
+                .as_deref(),
             Some("hunter2")
         );
         assert_eq!(
@@ -365,7 +367,9 @@ mod tests {
         let again = put_secret_with("hunter2", &config).unwrap();
         assert_ne!(stored.reference, again.reference);
         assert_eq!(
-            get_secret_with(&again.reference, &config).unwrap().as_deref(),
+            get_secret_with(&again.reference, &config)
+                .unwrap()
+                .as_deref(),
             Some("hunter2")
         );
         delete_secret_with(&stored.reference, &config).unwrap();

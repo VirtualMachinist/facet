@@ -205,8 +205,13 @@ in the Lapis vault for the full runbook.
 
 ```text
 facet request run <path> <selector> [<probe request run flags>] [--no-record] [--tag <tag>]... [--inline-body-max <size>] [--json]
-facet history [<path>] [--limit <n>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--bodies] [--json]
+facet history [<path>] [--limit <n>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--session <id>|current] [--environment <name>] [--tag <tag>]... [--hash <sha256>] [--bodies] [--json]
+facet history [<path>] --id <ulid> [--bodies] [--json]
 facet history [<path>] --sql "<query>" [--json]
+facet session start [--actor <name>] [--meta <json>] [--json]
+facet session end [<id>|current] [--json]
+facet session list [--limit <n>] [--actor <name>] [--open] [--json]
+facet session show <id>|current [--json]
 facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
@@ -272,6 +277,29 @@ blob bodies are always omitted with `omissionReason: "blob"` (pull them with
 `blob <hash>`). The envelope carries `workspace: { id, path }`, or `null` with
 `runs: []` when no store exists.
 
+Filters are query-side and AND together. `--session <id>` matches
+`sessionId`; `--session current` resolves `FACET_SESSION` and fails with
+`session_not_set` (exit 5) when it is unset. `--environment <name>` matches
+the environment the request was resolved with. `--tag <tag>` may repeat;
+every tag must be present (a run with no tags never matches). `--hash <sha256>`
+is column-agnostic: it matches `requestHash`, the request body hash, or the
+response body hash (case-insensitive), and each returned row gains
+`"matchedHash": "request" | "requestBody" | "responseBody"` saying which
+column hit. `matchedHash` is absent when `--hash` is not given.
+
+### `history --id`
+
+One run by id, as one object rather than a one-element list:
+
+```json
+{ "schemaVersion": 1, "workspace": { "id": "…", "path": "…" }, "run": { …same run shape as history… } }
+```
+
+`--bodies` behaves exactly as on the list. `--id` cannot be combined with
+any filter or with `--sql` (`invalid_arguments`, exit 2). An unknown id, or
+no store at all, is `run_not_found` (exit 4). This is the seam replay and
+diff stand on: an agent keeps run ids, not bodies.
+
 ### `history --sql`
 
 Runs one read-only statement against the workspace store on a read-only
@@ -285,6 +313,41 @@ connection with `query_only` set:
 BLOB columns render as `{ "type": "blob", "sizeBytes": n }`. Writes fail with
 `sql_read_only`; parse failures with `invalid_sql` (both exit 2). A missing
 store is `lattice_not_found` (exit 9).
+
+### `session`
+
+Sessions are the unit a harness turns on and off around a run of work. They
+live in the machine store (cross-workspace); `request run` stamps
+`FACET_SESSION` on every recorded run.
+
+`session start` prints the new ULID alone in human mode, so
+`export FACET_SESSION=$(facet session start)` needs no `jq`. The actor is
+`--actor`, else `FACET_ACTOR`, else `human`. `meta` is pointers only:
+`herdr: { workspace, tab, pane }` from `HERDR_WORKSPACE_ID` / `HERDR_TAB_ID` /
+`HERDR_PANE_ID` when set, `cwd`, then the `--meta` object merged on top (it
+wins). Never transcripts, never secrets.
+
+```json
+{ "schemaVersion": 1,
+  "session": { "id": "01K…", "actor": "claude.halo-fullstack", "startedAt": 1757250000123, "endedAt": null,
+               "meta": { "herdr": { "workspace": "w1", "tab": "w1:tR", "pane": "w1:pR" }, "cwd": "/…/repos/facet" },
+               "runs": 0 } }
+```
+
+`runs` counts the session's runs in the workspace store discovered from the
+current directory; it is omitted when no store is found there. `show` and
+`end` return the same `session` object; `end` adds `"alreadyEnded": true|false`
+and is idempotent (`endedAt` never moves). `list` returns
+`{ "sessions": [ …session… ] }`, newest first, default limit 50; `--open`
+keeps only sessions with `endedAt: null`. `<id>` may be `current`
+(`FACET_SESSION`); `session end` with no id uses `FACET_SESSION` too. An
+unknown id is `session_not_found` (exit 4); no `FACET_SESSION` when one is
+needed is `session_not_set` (exit 5).
+
+Mint-if-missing: when `FACET_SESSION` names a session no `session start`
+created (a harness invented the id), the first recorded run inserts the row
+with that run's actor and no `meta`. Later runs never rewrite it. This is
+best effort like machine-store indexing and never fails the run.
 
 ### `blob`
 
@@ -320,15 +383,18 @@ Facet extends the upstream table; it never renumbers it.
 | 0–8 | As in [CLI](CLI.md#exit-codes) |
 | 9 | Lattice store failure (`lattice_error`, `lattice_not_found`) |
 
-Additional stable categories: `blob_not_found` (exit 4), `invalid_sql` and
-`sql_read_only` (exit 2). Every JSON document carries `schemaVersion: 1`;
+Additional stable categories: `blob_not_found`, `run_not_found`, and
+`session_not_found` (exit 4, "not found"); `session_not_set` (exit 5,
+configuration); `invalid_sql` and `sql_read_only` (exit 2). Every JSON document carries `schemaVersion: 1`;
 fields are added compatibly and never removed or retyped within a version.
 
 ## Tests
 
 - `crates/facet/tests/facet_commands.rs`: one golden file per command under
   `crates/facet/tests/golden/` (`UPDATE_GOLDEN=1` rewrites them), plus
-  recording, reader-rule, read-only SQL, and gc behavior through the binary.
+  recording, reader-rule, read-only SQL, gc, session lifecycle,
+  mint-if-missing, `history --id`, and the session / environment / tag /
+  hash filters through the binary.
 - `crates/lattice/tests/store.rs`: schema, threshold placement, reader rule
   across threshold changes, gc, machine index, environments (plain + secret).
 - `crates/lattice/tests/contention.rs`: Surface 4 fixture.

@@ -591,17 +591,24 @@ fn environments_round_trip_plain_and_secret() {
 #[test]
 fn session_start_end_list_show_round_trip() {
     let dir = tempfile::tempdir().unwrap();
-    let machine = MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default())
-        .unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
 
     let started = machine
-        .start_session("claude.halo-fullstack", Some(r#"{"herdr":{"tab":"w1:tH"}}"#), 1_000)
+        .start_session(
+            "claude.halo-fullstack",
+            Some(r#"{"herdr":{"tab":"w1:tH"}}"#),
+            1_000,
+        )
         .unwrap();
     assert!(lattice::is_ulid(&started.id));
     assert_eq!(started.actor, "claude.halo-fullstack");
     assert_eq!(started.started_at, 1_000);
     assert!(started.ended_at.is_none());
-    assert_eq!(started.meta.as_deref(), Some(r#"{"herdr":{"tab":"w1:tH"}}"#));
+    assert_eq!(
+        started.meta.as_deref(),
+        Some(r#"{"herdr":{"tab":"w1:tH"}}"#)
+    );
 
     // show
     let fetched = machine.session(&started.id).unwrap().unwrap();
@@ -615,13 +622,17 @@ fn session_start_end_list_show_round_trip() {
             ..SessionQuery::default()
         })
         .unwrap();
-    assert_eq!(open, [started.clone()]);
+    assert_eq!(open, std::slice::from_ref(&started));
 
     // end is idempotent: ended_at set once, second call leaves it unchanged.
     let ended = machine.end_session(&started.id, 2_000).unwrap().unwrap();
     assert_eq!(ended.ended_at, Some(2_000));
     let again = machine.end_session(&started.id, 9_999).unwrap().unwrap();
-    assert_eq!(again.ended_at, Some(2_000), "second end must not move ended_at");
+    assert_eq!(
+        again.ended_at,
+        Some(2_000),
+        "second end must not move ended_at"
+    );
 
     // open_only now excludes it; full list still has it.
     let open_after = machine
@@ -641,15 +652,25 @@ fn session_start_end_list_show_round_trip() {
     assert_eq!(all, [ended]);
 
     // missing id -> None (CLI surfaces session_not_found).
-    assert!(machine.session("01K4NOPE00000000000000000").unwrap().is_none());
-    assert!(machine.end_session("01K4NOPE00000000000000000", 3_000).unwrap().is_none());
+    assert!(
+        machine
+            .session("01K4NOPE00000000000000000")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        machine
+            .end_session("01K4NOPE00000000000000000", 3_000)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
 fn session_list_filters_by_actor_and_orders_newest_first() {
     let dir = tempfile::tempdir().unwrap();
-    let machine = MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default())
-        .unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
     let a = machine.start_session("agent-a", None, 1_000).unwrap();
     let b = machine.start_session("agent-b", None, 2_000).unwrap();
     let c = machine.start_session("agent-a", None, 3_000).unwrap();
@@ -672,7 +693,10 @@ fn session_list_filters_by_actor_and_orders_newest_first() {
             ..SessionQuery::default()
         })
         .unwrap();
-    assert_eq!(agent_a.iter().map(|row| row.started_at).collect::<Vec<_>>(), [3_000, 1_000]);
+    assert_eq!(
+        agent_a.iter().map(|row| row.started_at).collect::<Vec<_>>(),
+        [3_000, 1_000]
+    );
 
     let limited = machine
         .sessions(&SessionQuery {
@@ -686,15 +710,18 @@ fn session_list_filters_by_actor_and_orders_newest_first() {
 #[test]
 fn ensure_session_is_idempotent_mint_if_missing() {
     let dir = tempfile::tempdir().unwrap();
-    let machine = MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default())
-        .unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
 
     // First call mints the row.
     let created = machine
         .ensure_session("01K4ENSURE0000000000000001", "agent-x", 1_000)
         .unwrap();
     assert!(created);
-    let row = machine.session("01K4ENSURE0000000000000001").unwrap().unwrap();
+    let row = machine
+        .session("01K4ENSURE0000000000000001")
+        .unwrap()
+        .unwrap();
     assert_eq!(row.actor, "agent-x");
     assert_eq!(row.started_at, 1_000);
     assert!(row.ended_at.is_none());
@@ -706,7 +733,10 @@ fn ensure_session_is_idempotent_mint_if_missing() {
         .ensure_session("01K4ENSURE0000000000000001", "someone-else", 9_999)
         .unwrap();
     assert!(!created_again);
-    let row_after = machine.session("01K4ENSURE0000000000000001").unwrap().unwrap();
+    let row_after = machine
+        .session("01K4ENSURE0000000000000001")
+        .unwrap()
+        .unwrap();
     assert_eq!(row_after.actor, "agent-x");
     assert_eq!(row_after.started_at, 1_000);
 
@@ -745,7 +775,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..NewRun::default()
         })
         .unwrap();
-    assert_eq!(in_session.req_body.hash.as_deref(), Some(req_body_hash.as_str()));
+    assert_eq!(
+        in_session.req_body.hash.as_deref(),
+        Some(req_body_hash.as_str())
+    );
     assert_eq!(in_session.res_body.hash.as_deref(), Some(res_hash.as_str()));
 
     let other_session = store
@@ -786,7 +819,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(session_a.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        session_a.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // environment filter
     let local = store
@@ -797,7 +833,11 @@ fn history_filters_by_session_environment_tag_and_hash() {
         })
         .unwrap();
     assert_eq!(local.len(), 2);
-    assert!(local.iter().all(|r| r.environment.as_deref() == Some("local")));
+    assert!(
+        local
+            .iter()
+            .all(|r| r.environment.as_deref() == Some("local"))
+    );
 
     // tag AND: a run with both smoke and regression
     let tagged = store
@@ -807,7 +847,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(tagged.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        tagged.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // tag that only one run has, but the other lacks
     let regression = store
@@ -817,7 +860,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(regression.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        regression.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // a run with no tags never matches any tag filter
     let no_tags_match = store
@@ -837,7 +883,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(by_res_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        by_res_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // request body hash
     let by_req_body_hash = store
@@ -847,7 +896,13 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(by_req_body_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        by_req_body_hash
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // request hash
     let by_req_hash = store
@@ -857,7 +912,10 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(by_req_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        by_req_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     // a hash that no run carries
     let by_missing_hash = store
@@ -878,7 +936,13 @@ fn history_filters_by_session_environment_tag_and_hash() {
             ..HistoryQuery::default()
         })
         .unwrap();
-    assert_eq!(session_a_smoke.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), [in_session.id.clone()]);
+    assert_eq!(
+        session_a_smoke
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
 
     let _ = other_session;
 }
