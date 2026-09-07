@@ -11,6 +11,7 @@
 //! - `replay` re-sends a recorded run from the current YAML; `diff` compares two runs.
 //! - `env` sets and lists machine-store environment values (metadata only on read).
 //! - `request run --expect` / `--dry-run`: the assertion (exit 1) and the preview.
+//! - `mcp` serves the same functions as Model Context Protocol tools over stdio.
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -28,6 +29,7 @@ mod env;
 mod error;
 mod expect;
 mod history;
+mod mcp;
 mod presentation;
 mod replay;
 mod run;
@@ -36,6 +38,7 @@ mod tui;
 mod workspace;
 
 pub use error::FacetError;
+pub use mcp::{TOOLS as MCP_TOOLS, run_mcp};
 pub use probe_cli::{
     CONFIGURATION_EXIT_CODE, EXECUTION_EXIT_CODE, IMPORT_EXIT_CODE, INVALID_ARGUMENTS_EXIT_CODE,
     INVALID_WORKSPACE_EXIT_CODE, JSON_SCHEMA_VERSION, PERSISTENCE_EXIT_CODE,
@@ -76,19 +79,8 @@ impl RunOutput {
 
     fn failure(error: FacetError, json_output: bool) -> Self {
         if json_output {
-            let mut value = json!({
-                "schemaVersion": JSON_SCHEMA_VERSION,
-                "error": {
-                    "category": error.category,
-                    "exitCode": error.exit_code,
-                    "message": error.message,
-                }
-            });
-            if let Some(details) = error.details {
-                value["error"]["details"] = details;
-            }
             Self {
-                stdout: pretty_json(&value).into_bytes(),
+                stdout: pretty_json(&error.envelope()).into_bytes(),
                 stderr: String::new(),
                 exit_code: error.exit_code,
             }
@@ -150,6 +142,12 @@ impl CommandOutput {
     pub(crate) fn warn(mut self, warning: impl Into<String>) -> Self {
         self.warnings.push(warning.into());
         self
+    }
+
+    /// The JSON document, warnings, and exit code, for adapters that do not
+    /// print (the MCP server).
+    pub(crate) fn into_parts(self) -> (Value, Vec<String>, u8) {
+        (self.json, self.warnings, self.exit_code)
     }
 
     /// A successful document that still signals an assertion outcome
@@ -214,6 +212,7 @@ pub const fn help() -> &'static str {
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
         "  tui [<path>]                        Open the terminal UI\n",
+        "  mcp                                 Serve the same commands as MCP tools over stdio\n",
         "\n",
         "Options:\n",
         "      --no-record             Execute without writing to Lattice\n",
@@ -282,8 +281,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc" | "tui"
-            | "-V" | "--version" | "-h" | "--help",
+            "history" | "mcp" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc"
+            | "tui" | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -337,6 +336,9 @@ where
         "tui" => Err(FacetError::invalid_arguments(
             "tui is interactive and must be started from the facet binary",
         )),
+        "mcp" => Err(FacetError::invalid_arguments(
+            "mcp serves stdio and must be started from the facet binary",
+        )),
         _ => unreachable!("owned commands are routed above"),
     };
     match result {
@@ -381,7 +383,7 @@ fn remove_flags(args: &mut Vec<String>, flags: &[&str]) -> usize {
     count
 }
 
-fn versioned_json(mut value: Value) -> Value {
+pub(crate) fn versioned_json(mut value: Value) -> Value {
     value
         .as_object_mut()
         .expect("command JSON output must be an object")
