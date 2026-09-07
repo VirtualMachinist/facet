@@ -121,6 +121,43 @@ in the output means the run is recorded but not indexed).
 Environment: `FACET_ACTOR` names the actor (default `human`);
 `FACET_SESSION` sets `sessionId`; `FACET_NO_RECORD=1` disables recording.
 
+`FACET_SESSION` is written onto the run row today. The machine-store
+`sessions` table has no API yet; a session id with no parent row is a
+dangling FK (acceptable until the next slice mints-if-missing).
+
+### Next slice
+
+Lattice already records more than the CLI and TUI expose. `:history` is a
+dump (no run id, cannot hydrate). `WorkspaceStore::run(id)` exists and has
+no command. Secrets sit in the machine store and are never joined at
+resolve time. The next Facet-only train fills that gap — **faster loops,
+better recall** — not protocols and not a Postman clone.
+
+Ranked (fullstack, 2026-09-07). Smallest vertical slice first.
+
+| # | Item | Smallest slice | Belonging |
+| --- | --- | --- | --- |
+| 1 | **Session lifecycle** | `facet session start/end`; mint-if-missing when `FACET_SESSION` is set; `history --session` | Facet-only (`lattice` + `facet` + `facet-record`) |
+| 2 | **Recall** | `history --id <ulid>`; filters `--session/--environment/--tag/--hash`; TUI grid hydrates the response pane | Facet-only |
+| 3 | **Replay** | `facet replay <runId>` re-resolves **current** YAML at the recorded env; warn on `request_hash` change; `--frozen` refuses | Facet command; Probe engine untouched |
+| 4 | **Hash-first diff** | `facet diff <a> <b>`: hashes equal ⇒ bodies equal; exit 1 on mismatch, 9 if a run is missing | Facet-only |
+| 5 | **Secret hydration** | Overlay Lattice env as `--var` before resolve on `request run` / TUI send. `--var` still wins | Facet overlay now; secret-provider hook upstream later |
+| 6 | **Dry-run + `--expect`** | `--expect 200,201` after a real run; miss → exit **6** `expect_failed`; Lattice still records. `--dry-run` second | **Upstream-first** on `request run` |
+
+CLI is the harness contract. MCP wraps the same functions later and must
+not parse stdout. Sketch: `agents/fullstack/notes/2026-09-07-and-more.md`
+in the Lapis vault.
+
+**Load-bearing picks** (Evan, next slice — recommended in italics):
+
+1. *Replay truth = current YAML + recorded env.* `--frozen` is opt-in refuse-on-hash-change. Frozen stored bytes are a trap (secrets redacted; auth is scheme-only in the hash).
+2. *Overlay secrets now,* do not wait for an upstream provider hook. Missing Lattice secret + OpenCollection `Secret` → `secret_variable_unavailable` (exit 5), never empty substitution.
+3. *`--expect` is exit 6* (`expect_failed`). Do not renumber 0–9; do not invent 10.
+4. *MCP after items 1–6.* Shell-out is enough for week 1.
+5. *Git HEAD stamp: skip this train, or 0003 column if it rides along.* Auto-tag `git:<sha>` needs no migration but is worse to query. Not a blocker for 1–6.
+
+Not this train: Thread A protocols, `ctrl+u`/`ctrl+d`, collection-in-Lattice, a writer daemon, kitchen-sink MCP, a JS test runner.
+
 ### Configuration
 
 ```toml
