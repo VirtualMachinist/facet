@@ -161,11 +161,15 @@ pub const TAGLINE: &str = "local-first api client";
 /// Seven-node lattice glyph from the design alpha: a hexagon of six nodes
 /// around a center, spokes to every vertex. Nodes take the bright brand
 /// color, lines the accent.
-const LATTICE_GLYPH: [&str; 7] = [
+const LATTICE_GLYPH: [&str; 11] = [
     "     ●     ",
     "   ╱ │ ╲   ",
     " ●   │   ● ",
-    "     ●     ",
+    " │╲  │  ╱│ ",
+    " │ ╲ │ ╱ │ ",
+    " │   ●   │ ",
+    " │ ╱ │ ╲ │ ",
+    " │╱  │  ╲│ ",
     " ●   │   ● ",
     "   ╲ │ ╱   ",
     "     ●     ",
@@ -178,19 +182,27 @@ const WORDMARK: [&str; 3] = [
     "│   ┴ ┴ └─  └─┘  ┴ ",
 ];
 
-/// Flattened hexagon (8×21) around the seven-node glyph. Terminal cells
-/// are taller than they are wide, so a 14-row outline read as stretched;
-/// this squat flat-top hexagon is the 2a-ii correction. ASCII `/ \ -`
-/// become `╱ ╲ ─` in `brand_fill`.
-const SPLASH_HEXAGON: [&str; 8] = [
-    "      /-------\\      ",
-    "     /    ●    \\     ",
-    "    /  ╱     ╲  \\    ",
-    "   / ●    ●    ● \\   ",
-    "   \\ ●         ● /   ",
-    "    \\  ╲     ╱  /    ",
-    "     \\    ●    /     ",
-    "      \\-------/      ",
+/// The lattice glyph inside an outer hexagon outline, 14×23. The hexagon
+/// is drawn with ASCII `/`, `\`, `-` so the renderer can style it apart
+/// from the glyph: edges become `╱ ╲ ─` in `brand_fill` (the one filled
+/// brand frame). Glyph chars keep their node/line styles. Concentric
+/// with the glyph: every glyph row clears the outline by at least one
+/// cell.
+const SPLASH_HEXAGON: [&str; 14] = [
+    "         /---\\         ",
+    "        /  ●  \\        ",
+    "       / ╱ │ ╲ \\       ",
+    "      /●   │   ●\\      ",
+    "     / │╲  │  ╱│ \\     ",
+    "    /  │ ╲ │ ╱ │  \\    ",
+    "   /   │   ●   │   \\   ",
+    "   \\   │ ╱ │ ╲ │   /   ",
+    "    \\  │╱  │  ╲│  /    ",
+    "     \\ ●   │   ● /     ",
+    "      \\  ╲ │ ╱  /      ",
+    "       \\   ●   /       ",
+    "        \\     /        ",
+    "         \\---/         ",
 ];
 
 /// Splash for `facet tui` without a collection: lattice glyph, wordmark,
@@ -1196,8 +1208,8 @@ mod tests {
         app.render_to(&mut terminal).expect("render");
         let text = dump(terminal.backend().buffer());
 
-        assert!(text.contains("╱───────╲"), "hexagon top edge: {text}");
-        assert!(text.contains("╲───────╱"), "hexagon bottom edge: {text}");
+        assert!(text.contains("╱───╲"), "hexagon top edge: {text}");
+        assert!(text.contains("╲───╱"), "hexagon bottom edge: {text}");
         assert_eq!(
             text.matches('●').count(),
             7,
@@ -1216,7 +1228,7 @@ mod tests {
         let text = dump(terminal.backend().buffer());
 
         assert!(text.contains("Porcelain Honey"), "{text}");
-        assert!(text.contains("╱───────╲"), "hexagon in porcelain: {text}");
+        assert!(text.contains("╱───╲"), "hexagon in porcelain: {text}");
         assert!(text.contains("local-first api client"), "{text}");
     }
 
