@@ -251,6 +251,9 @@ facet session list [--limit <n>] [--actor <name>] [--open] [--json]
 facet session show <id>|current [--json]
 facet replay <runId> [<path>] [--frozen] [--environment <name>] [--var k=v]... [--tag <tag>]... [--strict-variables] [--no-record] [--json]
 facet diff <idA> <idB> [<path>] [--bodies] [--json]
+facet env set [<path>] --environment <name> --name <key> --value <value> [--secret] [--json]
+facet env list [<path>] [--environment <name>] [--json]
+facet env delete [<path>] --environment <name> --name <key> [--json]
 facet blob <hash> [<path>] [--output <file>] [--json]
 facet gc [<path>] [--history-retention <r>] [--yes] [--json]
 facet tui [<path>] [--appearance graphite|porcelain]
@@ -463,6 +466,66 @@ Exit **0** equal, **1** different, **4** a run missing
 (`run_not_found`, `details.missing: ["01K…"]`), **9** no store. `--quiet`
 keeps the exit code.
 
+### Secret hydration and `env`
+
+Three layers, and the order is the design:
+
+1. OpenCollection YAML declares variables, plain or `secret: true`. Core
+   refuses to interpolate a declared secret with no value:
+   `secret_variable_unavailable` (exit 5). That stays the floor.
+2. The Facet machine store holds values keyed `(workspace, environment, key)`,
+   plain or through the secrets layer (Surface 3). `facet env set` writes them.
+3. `--var` is the runtime override channel. Last one wins.
+
+On `request run`, `replay`, and a TUI send, when an environment is selected,
+Facet overlays layer 2 as overrides **before** the user's `--var`: only for
+variable names the request references (`discover_request_variables`), never
+the whole environment, never an empty value, never the name. A user `--var`
+for the same name is used instead and the Lattice value is not read. YAML-only
+runs (no `--environment`) are untouched and carry no `secrets` field.
+
+`lattice.secrets` reports names only:
+
+```json
+"lattice": { "…": "…", "secrets": { "hydrated": ["token"], "source": "keyring" | "encrypted" | "plain" } }
+```
+
+`source` is the secrets backend when a secret was read, `plain` when only
+plaintext rows were used, `null` when nothing was hydrated. Human:
+`… · hydrated 1 secret from encrypted`. Hydrated names are **not** `varNames`
+(those are the user's `--var`).
+
+Failure rules: a referenced variable declared `secret` whose backend cannot
+serve it (no keyring and no `FACET_SECRET_KEY`, empty or wrong key, keyring
+error) is `secret_backend_unavailable` (exit 5, `details.variable`) before
+any network. When no referenced variable is declared secret, backend
+problems are silent and the YAML value applies. A Lattice row for a name the
+request does not reference is ignored.
+
+`facet env` is Facet's machine-store CLI, not Probe's `environment` (which
+edits YAML and rejects secrets). `set` stores one value (`--secret` routes it
+through the secrets layer and fails with `secret_backend_unavailable` when no
+backend can hold it); it creates the workspace store beside `<path>` when
+none exists. `list` and `set` return metadata only:
+
+```json
+{ "schemaVersion": 1, "workspace": { "id": "…", "path": "…" },
+  "entries": [ { "environment": "local", "name": "token", "secret": true, "updatedAt": 1757250000123 } ] }
+```
+
+There is no field for the value and there never will be. **Never in
+`history --json`, `--sql`, `session`, or `env list`:** Lattice environment
+values, `--var` values for declared secrets, `FACET_SECRET_KEY`, or `kr:` /
+`enc:v1:` references. Facet knows the values of declared secrets at record
+time (hydrated or passed with `--var`), so it scrubs them from the stored
+URL, request and response header values, and transport error text before
+the row is written (`<redacted>`; values shorter than 4 bytes are left
+alone). The live `request run` document still shows what was sent.
+`--sql` opens the workspace store only; the machine store (where
+`environments` lives) is never attached. Request bodies remain content-
+addressed blobs that may hold what the YAML put there; `facet blob` is the
+one place a human knowingly opens one.
+
 ### `blob`
 
 Writes the raw bytes to stdout. With `--json`:
@@ -499,8 +562,9 @@ Facet extends the upstream table; it never renumbers it.
 | 9 | Lattice store failure (`lattice_error`, `lattice_not_found`) |
 
 Additional stable categories: `blob_not_found`, `run_not_found`, and
-`session_not_found` (exit 4, "not found"); `session_not_set` (exit 5,
-configuration); `invalid_sql` and `sql_read_only` (exit 2). Every JSON document carries `schemaVersion: 1`;
+`session_not_found` (exit 4, "not found"); `session_not_set` and
+`secret_backend_unavailable` (exit 5, configuration); `invalid_sql` and
+`sql_read_only` (exit 2). Every JSON document carries `schemaVersion: 1`;
 fields are added compatibly and never removed or retyped within a version.
 
 ## Tests

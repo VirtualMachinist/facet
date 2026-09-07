@@ -19,7 +19,10 @@ use serde_json::json;
 
 use crate::{
     CommandOutput, FacetError, args,
-    run::{execute, parse_vars, render, selected_request, var_names},
+    run::{
+        execute, hydrate, lookup_request, parse_vars, render, resolve_selected, var_names,
+        with_secrets,
+    },
     workspace::{WorkspaceInput, load, open_store, overrides_from_parsed},
 };
 
@@ -100,11 +103,20 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
 
     // 4. Resolve the current YAML and compare hashes before any network.
     let loaded = load(&input, stdin)?;
-    let request = selected_request(
-        &loaded,
-        selector,
+    let raw = lookup_request(&loaded, selector)
+        .map_err(|error| error.with_details(json!({ "replayedFrom": row.id })))?;
+    let hydration = hydrate(
+        Some(&base),
         environment.as_deref(),
+        raw,
+        &loaded,
         &variables,
+    )?;
+    let request = resolve_selected(
+        &loaded,
+        raw,
+        environment.as_deref(),
+        &hydration.merged(&variables),
         strict_variables,
     )
     .map_err(|error| error.with_details(json!({ "replayedFrom": row.id })))?;
@@ -147,6 +159,7 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
             session: session.as_deref(),
             replayed_from: Some(&row.id),
             var_names: &var_names(&variables),
+            redact: &hydration.redact,
         })
     } else {
         Recording::Skipped("disabled")
@@ -155,12 +168,16 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
         warnings.push(warning);
     }
 
-    let mut lattice_json = recording.json();
+    let (mut lattice_json, lattice_human) = with_secrets(
+        recording.json(),
+        recording.human(),
+        &hydration,
+        environment.is_some(),
+    );
     lattice_json["replayedFrom"] = json!(row.id);
     lattice_json["hashChanged"] = json!(hash_changed);
     let lattice_human = format!(
-        "{} · replayed from {} ({})",
-        recording.human(),
+        "{lattice_human} · replayed from {} ({})",
         row.id,
         if hash_changed {
             "request changed"

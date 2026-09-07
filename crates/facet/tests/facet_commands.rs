@@ -1067,3 +1067,318 @@ fn diff_is_hash_first_and_exit_1_when_different() {
     let (code, _) = sandbox.run_error_json(&["diff", &id_a]);
     assert_eq!(code, 2);
 }
+
+const SECRET_VALUE: &str = "hunter2-never-in-history";
+
+/// Every read surface an agent has must be free of the secret value.
+fn assert_no_secret_anywhere(sandbox: &Sandbox, ws: &str) {
+    let surfaces = [
+        sandbox.run_json(&["history", ws, "--bodies"]).to_string(),
+        sandbox
+            .run_json(&["history", ws, "--sql", "SELECT * FROM runs"])
+            .to_string(),
+        sandbox.run_json(&["env", "list", ws]).to_string(),
+        sandbox.run_json(&["session", "list"]).to_string(),
+    ];
+    for surface in surfaces {
+        assert!(!surface.contains(SECRET_VALUE), "secret leaked: {surface}");
+        assert!(!surface.contains("enc:v1:"), "secret ref leaked: {surface}");
+        assert!(
+            !surface.contains("test-master-key"),
+            "key leaked: {surface}"
+        );
+    }
+}
+
+#[test]
+fn secret_hydration_overlays_lattice_values_before_resolve() {
+    let sandbox = Sandbox::new();
+    let (url, first) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.secret_workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let run = ["request", "run", ws, "items/0", "--environment", "local"];
+
+    // Declared secret, no value anywhere: core refuses, never sends empty.
+    let (code, error) = sandbox.run_error_json(&run);
+    assert_eq!(code, 5);
+    assert_eq!(error["error"]["category"], "secret_variable_unavailable");
+
+    // `facet env set --secret` stores through the secrets layer; list is
+    // metadata only.
+    let set = sandbox.run_json(&[
+        "env",
+        "set",
+        ws,
+        "--environment",
+        "local",
+        "--name",
+        "token",
+        "--value",
+        SECRET_VALUE,
+        "--secret",
+    ]);
+    assert_eq!(set["entry"]["secret"], true);
+    assert_eq!(set["entry"]["name"], "token");
+    assert!(!set.to_string().contains(SECRET_VALUE));
+    assert_golden("env_set.json", &normalize(set));
+    let list = sandbox.run_json(&["env", "list", ws]);
+    assert_eq!(list["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(list["entries"][0]["secret"], true);
+    assert!(list["entries"][0].get("value").is_none());
+    assert_golden("env_list.json", &normalize(list));
+    let human = sandbox.facet().args(["env", "list", ws]).output().unwrap();
+    assert!(!String::from_utf8_lossy(&human.stdout).contains(SECRET_VALUE));
+
+    // The run now hydrates: the server sees the value; JSON carries names.
+    let hydrated = sandbox.run_json(&run);
+    let sent = String::from_utf8(first.join().unwrap()).unwrap();
+    assert_eq!(sent, format!(r#"{{"token":"{SECRET_VALUE}"}}"#));
+    assert_eq!(hydrated["lattice"]["secrets"]["hydrated"], json!(["token"]));
+    assert_eq!(hydrated["lattice"]["secrets"]["source"], "encrypted");
+    // The live document shows what was sent (upstream shape); Lattice's
+    // part of it carries names only.
+    assert!(!hydrated["lattice"].to_string().contains(SECRET_VALUE));
+    assert_golden("run_hydrated.json", &normalize(hydrated.clone()));
+    let run_id = hydrated["lattice"]["runId"].as_str().unwrap().to_owned();
+    let row = sandbox.run_json(&["history", ws, "--id", &run_id]);
+    assert_eq!(row["run"]["varNames"], json!([]), "hydration is not --var");
+    // Scrubbed at record time: URL query and the custom header.
+    assert!(row["run"]["url"].as_str().unwrap().contains("t=<redacted>"));
+    let headers = row["run"]["request"]["headers"].as_array().unwrap();
+    let x_token = headers.iter().find(|h| h["name"] == "X-Token").unwrap();
+    assert_eq!(x_token["value"], "<redacted>");
+    assert_no_secret_anywhere(&sandbox, ws);
+    let human = sandbox.facet().args(run).output().unwrap();
+    assert_eq!(
+        human.status.code(),
+        Some(6),
+        "server gone: transport failure"
+    );
+
+    // replay hydrates too (same URL live again, so the hash is unchanged).
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let replayed = sandbox.run_json(&["replay", &run_id, ws]);
+    assert_eq!(
+        String::from_utf8(again.join().unwrap()).unwrap(),
+        format!(r#"{{"token":"{SECRET_VALUE}"}}"#)
+    );
+    assert_eq!(replayed["lattice"]["secrets"]["hydrated"], json!(["token"]));
+    assert_eq!(replayed["lattice"]["replayedFrom"], run_id);
+    assert_no_secret_anywhere(&sandbox, ws);
+
+    // --var wins and is not reported as hydrated.
+    let (url2, second) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.secret_workspace(&url2);
+    let ws = workspace.to_str().unwrap();
+    let overridden = sandbox.run_json(&[
+        "request",
+        "run",
+        ws,
+        "items/0",
+        "--environment",
+        "local",
+        "--var",
+        "token=from-var",
+    ]);
+    assert_eq!(second.join().unwrap(), br#"{"token":"from-var"}"#);
+    assert_eq!(overridden["lattice"]["secrets"]["hydrated"], json!([]));
+    assert!(overridden["lattice"]["secrets"]["source"].is_null());
+    let overridden_id = overridden["lattice"]["runId"].as_str().unwrap();
+    let row = sandbox.run_json(&["history", ws, "--id", overridden_id]);
+    assert!(
+        row["run"]["url"].as_str().unwrap().contains("t=<redacted>"),
+        "--var secret scrubbed"
+    );
+    assert_eq!(row["run"]["varNames"], json!(["token"]));
+    let dump = sandbox.run_json(&[
+        "history",
+        ws,
+        "--sql",
+        "SELECT url, req_headers, error FROM runs",
+    ]);
+    assert!(!dump.to_string().contains("from-var"), "{dump}");
+
+    // Backend down (empty FACET_SECRET_KEY) with a declared secret referenced:
+    // one clear exit 5, before any network.
+    let output = sandbox
+        .facet()
+        .env("FACET_SECRET_KEY", "")
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["error"]["category"], "secret_backend_unavailable");
+    assert_eq!(error["error"]["details"]["variable"], "token");
+    assert_golden(
+        "error_secret_backend_unavailable.json",
+        &normalize_error(error),
+    );
+    let output = sandbox
+        .facet()
+        .env("FACET_SECRET_KEY", "")
+        .args([
+            "env",
+            "set",
+            ws,
+            "--environment",
+            "local",
+            "--name",
+            "other",
+            "--value",
+            "x",
+            "--secret",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(
+        sandbox.run_json(&["env", "list", ws])["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Wrong key: also backend unavailable, never an empty substitution.
+    let output = sandbox
+        .facet()
+        .env("FACET_SECRET_KEY", "another-key")
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(5));
+
+    // Delete, then the declared secret is unavailable again.
+    let deleted = sandbox.run_json(&[
+        "env",
+        "delete",
+        ws,
+        "--environment",
+        "local",
+        "--name",
+        "token",
+    ]);
+    assert_eq!(deleted["deleted"], true);
+    let (code, error) = sandbox.run_error_json(&run);
+    assert_eq!(code, 5);
+    assert_eq!(error["error"]["category"], "secret_variable_unavailable");
+    let (code, _) = sandbox.run_error_json(&["env", "set", ws, "--name", "x", "--value", "y"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn plain_lattice_values_hydrate_silently_and_yaml_only_runs_are_unchanged() {
+    let sandbox = Sandbox::new();
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let plain = sandbox.run_json(&["request", "run", ws, "items/0", "--environment", "local"]);
+    server.join().unwrap();
+    assert_eq!(
+        plain["lattice"]["secrets"],
+        json!({ "hydrated": [], "source": null })
+    );
+    // No environment selected: upstream sends the literal template (and
+    // fails to build the URL); there is no hydration and no `secrets` field.
+    let (code, bare) = sandbox.run_error_json(&["request", "run", ws, "items/0"]);
+    assert_eq!(code, 5);
+    assert_eq!(bare["error"]["category"], "request_configuration");
+    assert!(bare["error"]["details"]["lattice"].get("secrets").is_none());
+
+    // A plain Lattice value for a referenced, non-secret variable overlays
+    // the YAML value, and works even with no secrets backend at all.
+    let (moved_url, moved) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    sandbox.run_json(&[
+        "env",
+        "set",
+        ws,
+        "--environment",
+        "local",
+        "--name",
+        "serverUrl",
+        "--value",
+        &moved_url,
+    ]);
+    let output = sandbox
+        .facet()
+        .env("FACET_SECRET_KEY", "")
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    moved.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["lattice"]["secrets"]["hydrated"],
+        json!(["serverUrl"])
+    );
+    assert_eq!(value["lattice"]["secrets"]["source"], "plain");
+    assert!(
+        value["request"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with(&moved_url)
+    );
+
+    // A Lattice value for a name the request does not reference is ignored.
+    sandbox.run_json(&[
+        "env",
+        "delete",
+        ws,
+        "--environment",
+        "local",
+        "--name",
+        "serverUrl",
+    ]);
+    sandbox.run_json(&[
+        "env",
+        "set",
+        ws,
+        "--environment",
+        "local",
+        "--name",
+        "unused",
+        "--value",
+        "z",
+    ]);
+    let (url3, third) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url3);
+    let ws = workspace.to_str().unwrap();
+    let value = sandbox.run_json(&["request", "run", ws, "items/0", "--environment", "local"]);
+    third.join().unwrap();
+    assert_eq!(value["lattice"]["secrets"]["hydrated"], json!([]));
+    let list = sandbox.run_json(&["env", "list", ws, "--environment", "local"]);
+    assert_eq!(list["entries"][0]["name"], "unused");
+    let none = sandbox.run_json(&["env", "list", ws, "--environment", "prod"]);
+    assert_eq!(none["entries"], json!([]));
+}
