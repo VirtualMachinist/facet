@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, types::Value};
 
 use crate::{
     DB_FILE, LatticeConfig, LatticeError, RunRow, io_error,
@@ -50,6 +50,32 @@ pub struct WorkspaceRow {
     pub name: Option<String>,
     /// Last time a run was indexed.
     pub last_seen: i64,
+}
+
+/// One row of `sessions` (cross-workspace, machine store only).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionRow {
+    /// ULID.
+    pub id: String,
+    /// `human` or an agent name.
+    pub actor: String,
+    /// Unix milliseconds UTC.
+    pub started_at: i64,
+    /// Unix milliseconds UTC, `None` while the session is open.
+    pub ended_at: Option<i64>,
+    /// JSON metadata pointer (Herdr ids, omp session id, cwd). Never transcripts.
+    pub meta: Option<String>,
+}
+
+/// Filters for [`MachineStore::sessions`].
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SessionQuery {
+    /// Maximum rows, newest first.
+    pub limit: usize,
+    /// Only sessions by this actor.
+    pub actor: Option<String>,
+    /// Only sessions with `ended_at IS NULL`.
+    pub open_only: bool,
 }
 
 /// An open machine store.
@@ -150,6 +176,98 @@ impl MachineStore {
         Ok(self
             .conn
             .query_row("SELECT count(*) FROM run_index", [], |row| row.get(0))?)
+    }
+
+    // ----- Sessions (Goal 1) --------------------------------------------
+
+    /// Starts a new session, returning the row. The id is a fresh ULID.
+    pub fn start_session(
+        &self,
+        actor: &str,
+        meta: Option<&str>,
+        now: i64,
+    ) -> Result<SessionRow, LatticeError> {
+        let id = crate::ulid();
+        self.conn.execute(
+            "INSERT INTO sessions (id, actor, started_at, ended_at, meta) \
+             VALUES (?1, ?2, ?3, NULL, ?4)",
+            params![id, actor, now, meta],
+        )?;
+        Ok(SessionRow {
+            id,
+            actor: actor.to_owned(),
+            started_at: now,
+            ended_at: None,
+            meta: meta.map(str::to_owned),
+        })
+    }
+
+    /// Mint-if-missing: inserts a session with the given id only when no row
+    /// exists yet. Returns `true` when a row was created, `false` when one
+    /// already existed (in which case nothing is written). Used by
+    /// `facet-record` when `FACET_SESSION` is set on a run.
+    pub fn ensure_session(&self, id: &str, actor: &str, now: i64) -> Result<bool, LatticeError> {
+        let inserted = self.conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, actor, started_at, ended_at, meta) \
+             VALUES (?1, ?2, ?3, NULL, NULL)",
+            params![id, actor, now],
+        )?;
+        Ok(inserted > 0)
+    }
+
+    /// Ends a session. Idempotent: calling this on an already-ended session
+    /// leaves `ended_at` unchanged and returns the row. Returns `None` when
+    /// no session with `id` exists.
+    pub fn end_session(&self, id: &str, now: i64) -> Result<Option<SessionRow>, LatticeError> {
+        self.conn.execute(
+            "UPDATE sessions SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
+            params![id, now],
+        )?;
+        self.session(id)
+    }
+
+    /// Fetches one session by id, or `None` when absent.
+    pub fn session(&self, id: &str) -> Result<Option<SessionRow>, LatticeError> {
+        let row = match self.conn.query_row(
+            "SELECT id, actor, started_at, ended_at, meta FROM sessions WHERE id = ?1",
+            params![id],
+            row_to_session,
+        ) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(other) => return Err(other.into()),
+        };
+        Ok(row)
+    }
+
+    /// Lists sessions newest first, optionally filtered by actor and open state.
+    pub fn sessions(&self, query: &SessionQuery) -> Result<Vec<SessionRow>, LatticeError> {
+        let mut sql = String::from("SELECT id, actor, started_at, ended_at, meta FROM sessions");
+        let mut clauses = Vec::new();
+        let mut values: Vec<Value> = Vec::new();
+        if let Some(actor) = &query.actor {
+            clauses.push("actor = ?");
+            values.push(Value::Text(actor.clone()));
+        }
+        if query.open_only {
+            clauses.push("ended_at IS NULL");
+        }
+        if !clauses.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&clauses.join(" AND "));
+        }
+        sql.push_str(" ORDER BY started_at DESC, id DESC LIMIT ?");
+        values.push(Value::Integer(
+            i64::try_from(query.limit as u64).unwrap_or(i64::MAX),
+        ));
+
+        let mut statement = self.conn.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            out.push(row_to_session(row)?);
+        }
+        Ok(out)
     }
 
     // ----- Environments (Surface 3) --------------------------------------
@@ -255,7 +373,12 @@ impl MachineStore {
             "SELECT value, secret_ref FROM environments \
              WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
             params![workspace_id, name, key],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
         ) {
             Ok(pair) => Some(pair),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -265,9 +388,7 @@ impl MachineStore {
             return Ok(None);
         };
         match secret_ref {
-            Some(reference) if !reference.is_empty() => {
-                Ok(get_secret_with(&reference, config)?)
-            }
+            Some(reference) if !reference.is_empty() => Ok(get_secret_with(&reference, config)?),
             _ => Ok(value),
         }
     }
@@ -350,4 +471,14 @@ pub struct EnvironmentRow {
     pub secret: bool,
     /// Unix milliseconds UTC of the last update.
     pub updated_at: i64,
+}
+
+fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+    Ok(SessionRow {
+        id: row.get(0)?,
+        actor: row.get(1)?,
+        started_at: row.get(2)?,
+        ended_at: row.get(3)?,
+        meta: row.get(4)?,
+    })
 }

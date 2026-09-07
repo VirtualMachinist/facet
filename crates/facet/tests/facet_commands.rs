@@ -10,6 +10,12 @@ use common::*;
 const ECHO_BODY: &[u8] = br#"{"users":[]}"#;
 
 fn record_one_run(sandbox: &Sandbox, extra: &[&str]) -> Value {
+    record_run_with(sandbox, &[], extra)
+}
+
+/// `request run … --json` against a one-shot echo server, with extra
+/// environment variables (`FACET_SESSION`, `FACET_ACTOR`) as a harness sets them.
+fn record_run_with(sandbox: &Sandbox, env: &[(&str, &str)], extra: &[&str]) -> Value {
     let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
     let workspace = sandbox.workspace(&url);
     let mut arguments = vec![
@@ -21,11 +27,37 @@ fn record_one_run(sandbox: &Sandbox, extra: &[&str]) -> Value {
         "local",
     ];
     arguments.extend_from_slice(extra);
-    let value = sandbox.run_json(&arguments);
+    let mut command = sandbox.facet();
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let output = command.args(&arguments).arg("--json").output().unwrap();
     let sent = server.join().unwrap();
     assert_eq!(sent, br#"{"source":"cli"}"#);
-    value
+    assert!(
+        output.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
 }
+
+fn run_count(sandbox: &Sandbox, arguments: &[&str]) -> usize {
+    sandbox.run_json(arguments)["runs"]
+        .as_array()
+        .expect("runs array")
+        .len()
+}
+
+/// A well-formed ULID no store has ever minted.
+const UNKNOWN_ULID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
 
 #[test]
 fn version_json_is_golden_and_names_probe() {
@@ -425,4 +457,308 @@ fn delegated_commands_are_untouched() {
     assert_eq!(value["schemaVersion"], 1);
     assert_eq!(value["requests"][0]["selector"], "items/0");
     assert!(!sandbox.root().join(".facet").exists());
+}
+
+#[test]
+fn session_lifecycle_is_golden_and_start_prints_a_bare_ulid() {
+    let sandbox = Sandbox::new();
+
+    // Human mode prints the id alone so `$(facet session start)` needs no jq.
+    let output = sandbox.facet().args(["session", "start"]).output().unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let bare = String::from_utf8(output.stdout).unwrap();
+    assert!(bare.ends_with('\n'));
+    let bare_id = bare.trim().to_owned();
+    assert!(lattice::is_ulid(&bare_id), "not a ULID: {bare_id:?}");
+
+    let started = sandbox.run_json(&[
+        "session",
+        "start",
+        "--actor",
+        "halo-qa",
+        "--meta",
+        r#"{"note":"golden"}"#,
+    ]);
+    let session = &started["session"];
+    assert!(lattice::is_ulid(session["id"].as_str().unwrap()));
+    assert_eq!(session["actor"], "halo-qa");
+    assert!(session["startedAt"].is_number());
+    assert!(session["endedAt"].is_null());
+    assert_eq!(session["meta"]["note"], "golden");
+    assert!(session["meta"]["cwd"].is_string());
+    assert!(session["meta"].get("herdr").is_none(), "env is scrubbed");
+    assert!(session.get("runs").is_none(), "no workspace store yet");
+    assert_golden("session_start.json", &normalize(started.clone()));
+    let id = session["id"].as_str().unwrap().to_owned();
+
+    let shown = sandbox.run_json(&["session", "show", &id]);
+    assert_eq!(shown["session"], started["session"]);
+    let current = sandbox.run_json_in_session(&id, &["session", "show", "current"]);
+    assert_eq!(current["session"]["id"], id);
+
+    let open = sandbox.run_json(&["session", "list", "--open"]);
+    let open_ids: Vec<&str> = open["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(open_ids.len(), 2);
+    assert!(open_ids.contains(&id.as_str()) && open_ids.contains(&bare_id.as_str()));
+    let by_actor = sandbox.run_json(&["session", "list", "--actor", "halo-qa"]);
+    assert_eq!(by_actor["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(by_actor["sessions"][0]["id"], id);
+    assert_golden("session_list.json", &normalize(by_actor));
+
+    let ended = sandbox.run_json(&["session", "end", &id]);
+    assert_eq!(ended["alreadyEnded"], false);
+    assert!(ended["session"]["endedAt"].is_number());
+    assert_golden("session_end.json", &normalize(ended.clone()));
+    // Idempotent: the second end changes nothing and says so.
+    let again = sandbox.run_json(&["session", "end", &id]);
+    assert_eq!(again["alreadyEnded"], true);
+    assert_eq!(again["session"]["endedAt"], ended["session"]["endedAt"]);
+    // No id: FACET_SESSION.
+    let from_env = sandbox.run_json_in_session(&bare_id, &["session", "end"]);
+    assert_eq!(from_env["session"]["id"], bare_id);
+    assert_eq!(from_env["alreadyEnded"], false);
+    let none_open = sandbox.run_json(&["session", "list", "--open"]);
+    assert_eq!(none_open["sessions"], json!([]));
+    assert_eq!(
+        sandbox.run_json(&["session", "list"])["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let (code, error) = sandbox.run_error_json(&["session", "end"]);
+    assert_eq!(code, 5);
+    assert_eq!(error["error"]["category"], "session_not_set");
+    let (code, error) = sandbox.run_error_json(&["session", "show", UNKNOWN_ULID]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "session_not_found");
+    assert_golden("error_session_not_found.json", &normalize_error(error));
+    let (code, error) = sandbox.run_error_json(&["session", "end", UNKNOWN_ULID]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "session_not_found");
+    let (code, error) = sandbox.run_error_json(&["session", "start", "--meta", "[1]"]);
+    assert_eq!(code, 2);
+    assert_eq!(error["error"]["category"], "invalid_arguments");
+    let (code, _) = sandbox.run_error_json(&["session", "frobnicate"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn history_id_is_golden_and_exclusive_with_filters() {
+    let sandbox = Sandbox::new();
+    let run = record_one_run(&sandbox, &[]);
+    let run_id = run["lattice"]["runId"].as_str().unwrap();
+    let root = sandbox.root().to_str().unwrap();
+
+    let one = sandbox.run_json(&["history", root, "--id", run_id]);
+    assert!(one.get("runs").is_none(), "--id is one object, not a list");
+    assert_eq!(one["run"]["id"], run_id);
+    assert_eq!(one["run"]["requestPath"], "items/0");
+    assert_eq!(one["workspace"]["id"], run["lattice"]["workspaceId"]);
+    assert!(one["run"]["response"]["body"].get("content").is_none());
+    assert_golden("history_id.json", &normalize(one));
+
+    // --bodies behaves exactly as on the list.
+    let with_bodies = sandbox.run_json(&["history", root, "--id", run_id, "--bodies"]);
+    assert_eq!(
+        with_bodies["run"]["response"]["body"]["content"],
+        r#"{"users":[]}"#
+    );
+
+    let human = sandbox
+        .facet()
+        .args(["history", root, "--id", run_id])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert_eq!(text.lines().count(), 2, "header plus one row");
+    assert!(text.lines().nth(1).unwrap().starts_with(run_id));
+
+    let (code, error) = sandbox.run_error_json(&["history", root, "--id", UNKNOWN_ULID]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+    assert_golden("error_run_not_found.json", &normalize_error(error));
+
+    let (code, error) =
+        sandbox.run_error_json(&["history", root, "--id", run_id, "--status", "200"]);
+    assert_eq!(code, 2);
+    assert_eq!(error["error"]["category"], "invalid_arguments");
+    let (code, _) = sandbox.run_error_json(&["history", root, "--id", run_id, "--tag", "x"]);
+    assert_eq!(code, 2);
+    let (code, _) = sandbox.run_error_json(&["history", root, "--id", run_id, "--sql", "SELECT 1"]);
+    assert_eq!(code, 2);
+
+    // No store at all: the run cannot exist.
+    let empty = Sandbox::new();
+    let (code, error) =
+        empty.run_error_json(&["history", empty.root().to_str().unwrap(), "--id", run_id]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+}
+
+#[test]
+fn history_session_filter_and_mint_if_missing() {
+    let sandbox = Sandbox::new();
+    let root = sandbox.root().to_str().unwrap();
+    let started = sandbox.run_json(&["session", "start", "--actor", "claude.halo-fullstack"]);
+    let id = started["session"]["id"].as_str().unwrap().to_owned();
+
+    let first = record_run_with(&sandbox, &[("FACET_SESSION", &id)], &[]);
+    let second = record_run_with(&sandbox, &[("FACET_SESSION", &id)], &["--tag", "smoke"]);
+    let outside = record_one_run(&sandbox, &[]);
+    assert_eq!(run_count(&sandbox, &["history", root]), 3);
+
+    let in_session = sandbox.run_json(&["history", root, "--session", &id]);
+    let rows = in_session["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["sessionId"] == id));
+    let ids: Vec<&Value> = rows.iter().map(|row| &row["id"]).collect();
+    assert!(ids.contains(&&first["lattice"]["runId"]));
+    assert!(ids.contains(&&second["lattice"]["runId"]));
+    assert!(!ids.contains(&&outside["lattice"]["runId"]));
+    assert_golden("history_session.json", &normalize(in_session));
+
+    // `current` reads FACET_SESSION; without it the agent gets a clear exit 5.
+    let current = sandbox.run_json_in_session(&id, &["history", root, "--session", "current"]);
+    assert_eq!(current["runs"].as_array().unwrap().len(), 2);
+    let (code, error) = sandbox.run_error_json(&["history", root, "--session", "current"]);
+    assert_eq!(code, 5);
+    assert_eq!(error["error"]["category"], "session_not_set");
+    assert_golden("error_session_not_set.json", &normalize_error(error));
+
+    // With a workspace store under the cwd, sessions report their run count.
+    let shown = sandbox.run_json(&["session", "show", &id]);
+    assert_eq!(shown["session"]["runs"], 2);
+    let listed = sandbox.run_json(&["session", "list"]);
+    assert_eq!(listed["sessions"][0]["runs"], 2);
+
+    // Mint-if-missing: a harness that invents its own FACET_SESSION gets a
+    // session row on the first recorded run, owned by that run's actor.
+    let (code, error) = sandbox.run_error_json(&["session", "show", UNKNOWN_ULID]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "session_not_found");
+    record_run_with(
+        &sandbox,
+        &[("FACET_SESSION", UNKNOWN_ULID), ("FACET_ACTOR", "halo-qa")],
+        &[],
+    );
+    let minted = sandbox.run_json(&["session", "show", UNKNOWN_ULID]);
+    assert_eq!(minted["session"]["id"], UNKNOWN_ULID);
+    assert_eq!(minted["session"]["actor"], "halo-qa");
+    assert!(minted["session"]["endedAt"].is_null());
+    assert!(minted["session"]["meta"].is_null());
+    assert_eq!(minted["session"]["runs"], 1);
+    // A later run under the same id does not rewrite the row.
+    record_run_with(
+        &sandbox,
+        &[
+            ("FACET_SESSION", UNKNOWN_ULID),
+            ("FACET_ACTOR", "someone-else"),
+        ],
+        &[],
+    );
+    let again = sandbox.run_json(&["session", "show", UNKNOWN_ULID]);
+    assert_eq!(again["session"]["actor"], "halo-qa");
+    assert_eq!(
+        again["session"]["startedAt"],
+        minted["session"]["startedAt"]
+    );
+    assert_eq!(again["session"]["runs"], 2);
+    assert_golden("session_show.json", &normalize(again));
+    assert_eq!(
+        run_count(&sandbox, &["history", root, "--session", UNKNOWN_ULID]),
+        2
+    );
+}
+
+#[test]
+fn history_environment_tag_and_hash_filters() {
+    let sandbox = Sandbox::new();
+    let tagged = record_one_run(
+        &sandbox,
+        &[
+            "--tag",
+            "smoke",
+            "--tag",
+            "golden",
+            "--inline-body-max",
+            "0",
+        ],
+    );
+    record_one_run(&sandbox, &[]);
+    let root = sandbox.root().to_str().unwrap();
+    let tagged_id = tagged["lattice"]["runId"].as_str().unwrap();
+    let response_hash = tagged["lattice"]["responseBody"]["hash"].as_str().unwrap();
+    let request_hash = tagged["lattice"]["requestHash"].as_str().unwrap();
+
+    assert_eq!(
+        run_count(&sandbox, &["history", root, "--environment", "local"]),
+        2
+    );
+    assert_eq!(
+        run_count(&sandbox, &["history", root, "--environment", "prod"]),
+        0
+    );
+
+    // --tag repeats and ANDs; untagged runs never match.
+    assert_eq!(run_count(&sandbox, &["history", root, "--tag", "smoke"]), 1);
+    assert_eq!(
+        run_count(
+            &sandbox,
+            &["history", root, "--tag", "smoke", "--tag", "golden"]
+        ),
+        1
+    );
+    assert_eq!(
+        run_count(
+            &sandbox,
+            &["history", root, "--tag", "smoke", "--tag", "nope"]
+        ),
+        0
+    );
+
+    // --hash is column-agnostic; the row says which column hit.
+    let by_response =
+        sandbox.run_json(&["history", root, "--tag", "smoke", "--hash", response_hash]);
+    assert_eq!(by_response["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(by_response["runs"][0]["id"], tagged_id);
+    assert_eq!(by_response["runs"][0]["matchedHash"], "responseBody");
+    assert_golden("history_tag_hash.json", &normalize(by_response));
+
+    // Each run hit a fresh mock server (different port, different URL), so
+    // the resolved-request hash is unique per run; the request body bytes
+    // are identical, so the request-body hash hits both.
+    let by_request = sandbox.run_json(&["history", root, "--hash", request_hash]);
+    let rows = by_request["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], tagged_id);
+    assert_eq!(rows[0]["matchedHash"], "request");
+    let request_body_hash = rows[0]["request"]["body"]["hash"].as_str().unwrap();
+    let by_request_body = sandbox.run_json(&["history", root, "--hash", request_body_hash]);
+    let rows = by_request_body["runs"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["matchedHash"] == "requestBody"));
+
+    // Hashes compare case-insensitively, like `blob`.
+    let upper = sandbox.run_json(&["history", root, "--hash", &response_hash.to_uppercase()]);
+    assert_eq!(upper["runs"].as_array().unwrap().len(), 1);
+    let (code, _) =
+        sandbox.run_error_json(&["history", root, "--hash", "nope", "--sql", "SELECT 1"]);
+    assert_eq!(code, 2);
+
+    // Without --hash the row shape is unchanged.
+    let plain = sandbox.run_json(&["history", root]);
+    assert!(plain["runs"][0].get("matchedHash").is_none());
+    assert_eq!(
+        run_count(&sandbox, &["history", root, "--hash", &"0".repeat(64)]),
+        0
+    );
 }

@@ -1,0 +1,8 @@
+{
+  "error": {
+    "category": "session_not_set",
+    "exitCode": 5,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}

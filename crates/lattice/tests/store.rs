@@ -5,7 +5,8 @@ use std::fs;
 
 use lattice::{
     BodyInput, HistoryQuery, LatticeConfig, LatticeError, MachineStore, NewRun, Retention,
-    SecretConfig, SqlValue, WORKSPACE_SCHEMA_VERSION, WorkspaceStore, now_ms, sha256_hex,
+    SecretConfig, SessionQuery, SqlValue, WORKSPACE_SCHEMA_VERSION, WorkspaceStore, now_ms,
+    sha256_hex,
 };
 
 fn config(threshold: u64) -> LatticeConfig {
@@ -585,4 +586,363 @@ fn environments_round_trip_plain_and_secret() {
             .delete_environment_with(wsid, "local", "API_TOKEN", &key_cfg)
             .unwrap()
     );
+}
+
+#[test]
+fn session_start_end_list_show_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
+
+    let started = machine
+        .start_session(
+            "claude.halo-fullstack",
+            Some(r#"{"herdr":{"tab":"w1:tH"}}"#),
+            1_000,
+        )
+        .unwrap();
+    assert!(lattice::is_ulid(&started.id));
+    assert_eq!(started.actor, "claude.halo-fullstack");
+    assert_eq!(started.started_at, 1_000);
+    assert!(started.ended_at.is_none());
+    assert_eq!(
+        started.meta.as_deref(),
+        Some(r#"{"herdr":{"tab":"w1:tH"}}"#)
+    );
+
+    // show
+    let fetched = machine.session(&started.id).unwrap().unwrap();
+    assert_eq!(fetched, started);
+
+    // list: one open session
+    let open = machine
+        .sessions(&SessionQuery {
+            limit: 10,
+            open_only: true,
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(open, std::slice::from_ref(&started));
+
+    // end is idempotent: ended_at set once, second call leaves it unchanged.
+    let ended = machine.end_session(&started.id, 2_000).unwrap().unwrap();
+    assert_eq!(ended.ended_at, Some(2_000));
+    let again = machine.end_session(&started.id, 9_999).unwrap().unwrap();
+    assert_eq!(
+        again.ended_at,
+        Some(2_000),
+        "second end must not move ended_at"
+    );
+
+    // open_only now excludes it; full list still has it.
+    let open_after = machine
+        .sessions(&SessionQuery {
+            limit: 10,
+            open_only: true,
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert!(open_after.is_empty());
+    let all = machine
+        .sessions(&SessionQuery {
+            limit: 10,
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(all, [ended]);
+
+    // missing id -> None (CLI surfaces session_not_found).
+    assert!(
+        machine
+            .session("01K4NOPE00000000000000000")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        machine
+            .end_session("01K4NOPE00000000000000000", 3_000)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn session_list_filters_by_actor_and_orders_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
+    let a = machine.start_session("agent-a", None, 1_000).unwrap();
+    let b = machine.start_session("agent-b", None, 2_000).unwrap();
+    let c = machine.start_session("agent-a", None, 3_000).unwrap();
+
+    let all = machine
+        .sessions(&SessionQuery {
+            limit: 10,
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
+        [c.id.clone(), b.id.clone(), a.id.clone()]
+    );
+
+    let agent_a = machine
+        .sessions(&SessionQuery {
+            limit: 10,
+            actor: Some("agent-a".into()),
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        agent_a.iter().map(|row| row.started_at).collect::<Vec<_>>(),
+        [3_000, 1_000]
+    );
+
+    let limited = machine
+        .sessions(&SessionQuery {
+            limit: 1,
+            ..SessionQuery::default()
+        })
+        .unwrap();
+    assert_eq!(limited, [c]);
+}
+
+#[test]
+fn ensure_session_is_idempotent_mint_if_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine =
+        MachineStore::open_at(&dir.path().join("machine.db"), &LatticeConfig::default()).unwrap();
+
+    // First call mints the row.
+    let created = machine
+        .ensure_session("01K4ENSURE0000000000000001", "agent-x", 1_000)
+        .unwrap();
+    assert!(created);
+    let row = machine
+        .session("01K4ENSURE0000000000000001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.actor, "agent-x");
+    assert_eq!(row.started_at, 1_000);
+    assert!(row.ended_at.is_none());
+    assert!(row.meta.is_none());
+
+    // Second call with the same id is a no-op: created is false, actor and
+    // started_at are unchanged even when different arguments are passed.
+    let created_again = machine
+        .ensure_session("01K4ENSURE0000000000000001", "someone-else", 9_999)
+        .unwrap();
+    assert!(!created_again);
+    let row_after = machine
+        .session("01K4ENSURE0000000000000001")
+        .unwrap()
+        .unwrap();
+    assert_eq!(row_after.actor, "agent-x");
+    assert_eq!(row_after.started_at, 1_000);
+
+    // A different id mints a new row.
+    let created_other = machine
+        .ensure_session("01K4ENSURE0000000000000002", "agent-x", 2_000)
+        .unwrap();
+    assert!(created_other);
+}
+
+#[test]
+fn history_filters_by_session_environment_tag_and_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    // Tiny threshold so the 5-byte response body lands as a blob and gets a
+    // res_body_hash; request bodies are hash-only regardless of size.
+    let store = WorkspaceStore::open(dir.path(), config(2)).unwrap();
+
+    let req_hash = sha256_hex(b"req-a");
+    let res_hash = sha256_hex(b"res-a");
+    let req_body_hash = sha256_hex(b"reqbody-a");
+
+    let in_session = store
+        .record_run(&NewRun {
+            started_at: 1_000,
+            request_path: "Pets/List",
+            request_hash: &req_hash,
+            environment: Some("local"),
+            method: "GET",
+            url: "http://x/pets",
+            status: Some(200),
+            req_body: BodyInput::Bytes(b"reqbody-a"),
+            res_body: BodyInput::Bytes(b"res-a"),
+            session_id: Some("01K4SESS0000000000000000A"),
+            actor: "agent-x",
+            tags: Some(r#"["smoke","regression"]"#),
+            ..NewRun::default()
+        })
+        .unwrap();
+    assert_eq!(
+        in_session.req_body.hash.as_deref(),
+        Some(req_body_hash.as_str())
+    );
+    assert_eq!(in_session.res_body.hash.as_deref(), Some(res_hash.as_str()));
+
+    let other_session = store
+        .record_run(&NewRun {
+            started_at: 2_000,
+            request_path: "Pets/List",
+            request_hash: "deadbeef",
+            environment: Some("ci"),
+            method: "GET",
+            url: "http://x/pets",
+            status: Some(500),
+            session_id: Some("01K4SESS0000000000000000B"),
+            actor: "agent-x",
+            tags: Some(r#"["smoke"]"#),
+            ..NewRun::default()
+        })
+        .unwrap();
+
+    let no_session = store
+        .record_run(&NewRun {
+            started_at: 3_000,
+            request_path: "Pets/List",
+            request_hash: "deadbeef",
+            environment: Some("local"),
+            method: "GET",
+            url: "http://x/pets",
+            status: Some(200),
+            actor: "human",
+            ..NewRun::default()
+        })
+        .unwrap();
+
+    // session_id filter
+    let session_a = store
+        .history(&HistoryQuery {
+            limit: 10,
+            session_id: Some("01K4SESS0000000000000000A".into()),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        session_a.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // environment filter
+    let local = store
+        .history(&HistoryQuery {
+            limit: 10,
+            environment: Some("local".into()),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(local.len(), 2);
+    assert!(
+        local
+            .iter()
+            .all(|r| r.environment.as_deref() == Some("local"))
+    );
+
+    // tag AND: a run with both smoke and regression
+    let tagged = store
+        .history(&HistoryQuery {
+            limit: 10,
+            tags: vec!["smoke".into(), "regression".into()],
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        tagged.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // tag that only one run has, but the other lacks
+    let regression = store
+        .history(&HistoryQuery {
+            limit: 10,
+            tags: vec!["regression".into()],
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        regression.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // a run with no tags never matches any tag filter
+    let no_tags_match = store
+        .history(&HistoryQuery {
+            limit: 10,
+            tags: vec!["smoke".into()],
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert!(!no_tags_match.iter().any(|r| r.id == no_session.id));
+
+    // hash matches any of the three columns: response body hash
+    let by_res_hash = store
+        .history(&HistoryQuery {
+            limit: 10,
+            hash: Some(res_hash.clone()),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        by_res_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // request body hash
+    let by_req_body_hash = store
+        .history(&HistoryQuery {
+            limit: 10,
+            hash: Some(req_body_hash.clone()),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        by_req_body_hash
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // request hash
+    let by_req_hash = store
+        .history(&HistoryQuery {
+            limit: 10,
+            hash: Some(req_hash.clone()),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        by_req_hash.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    // a hash that no run carries
+    let by_missing_hash = store
+        .history(&HistoryQuery {
+            limit: 10,
+            hash: Some(sha256_hex(b"nowhere")),
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert!(by_missing_hash.is_empty());
+
+    // filters compose: session + tag
+    let session_a_smoke = store
+        .history(&HistoryQuery {
+            limit: 10,
+            session_id: Some("01K4SESS0000000000000000A".into()),
+            tags: vec!["smoke".into()],
+            ..HistoryQuery::default()
+        })
+        .unwrap();
+    assert_eq!(
+        session_a_smoke
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&in_session.id)
+    );
+
+    let _ = other_session;
 }

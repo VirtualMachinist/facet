@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "session": {
+    "actor": "halo-qa",
+    "endedAt": null,
+    "id": "<ulid>",
+    "meta": {
+      "cwd": "<path>",
+      "note": "golden"
+    },
+    "startedAt": "<int>"
+  }
+}

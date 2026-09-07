@@ -192,6 +192,17 @@ pub struct HistoryQuery {
     pub actor: Option<String>,
     /// Only runs started at or after this time.
     pub since: Option<i64>,
+    /// Only runs recorded under this session id.
+    pub session_id: Option<String>,
+    /// Only runs recorded under this environment name.
+    pub environment: Option<String>,
+    /// Only runs carrying every one of these tags (AND). Matched via
+    /// `json_each(tags)`; a run with no tags never matches.
+    pub tags: Vec<String>,
+    /// Only runs whose `request_hash`, `req_body_hash`, or `res_body_hash`
+    /// equals this value. Which column matched is reported by the CLI
+    /// (`matchedHash`), not by the store.
+    pub hash: Option<String>,
 }
 
 /// A blob registry row plus its bytes.
@@ -417,6 +428,29 @@ impl WorkspaceStore {
         if let Some(since) = query.since {
             clauses.push("started_at >= ?");
             values.push(Value::Integer(since));
+        }
+        if let Some(session_id) = &query.session_id {
+            clauses.push("session_id = ?");
+            values.push(Value::Text(session_id.clone()));
+        }
+        if let Some(environment) = &query.environment {
+            clauses.push("environment = ?");
+            values.push(Value::Text(environment.clone()));
+        }
+        for tag in &query.tags {
+            // AND: every tag must appear in the run's tags array. A NULL or
+            // empty tags column yields no rows from json_each, so it never
+            // matches, which is the correct absence semantics.
+            clauses.push("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)");
+            values.push(Value::Text(tag.clone()));
+        }
+        if let Some(hash) = &query.hash {
+            // One column-agnostic flag across the three hash columns.
+            clauses.push("(request_hash = ? OR req_body_hash = ? OR res_body_hash = ?)");
+            let hash_value = Value::Text(hash.clone());
+            values.push(hash_value.clone());
+            values.push(hash_value.clone());
+            values.push(hash_value);
         }
         if !clauses.is_empty() {
             sql.push_str(" WHERE ");
@@ -703,10 +737,7 @@ pub(crate) fn open_connection(
 /// blob files and set `req_body_hash`, so no body is lost. No-op on fresh
 /// stores (no `runs` table or no inline rows) and on stores already at v2
 /// (the column is gone). Idempotent: identical content shares one file.
-fn hydrate_inline_request_bodies(
-    conn: &Connection,
-    blobs_dir: &Path,
-) -> Result<(), LatticeError> {
+fn hydrate_inline_request_bodies(conn: &Connection, blobs_dir: &Path) -> Result<(), LatticeError> {
     // Only meaningful when the v1 `runs` table still has `req_body`.
     let has_req_body: i64 = conn
         .query_row(
@@ -718,8 +749,9 @@ fn hydrate_inline_request_bodies(
     if has_req_body == 0 {
         return Ok(());
     }
-    let mut statement =
-        conn.prepare("SELECT id, req_body FROM runs WHERE req_body IS NOT NULL AND req_body_hash IS NULL")?;
+    let mut statement = conn.prepare(
+        "SELECT id, req_body FROM runs WHERE req_body IS NOT NULL AND req_body_hash IS NULL",
+    )?;
     let rows: Vec<(String, Vec<u8>)> = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .filter_map(Result::ok)
