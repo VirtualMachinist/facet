@@ -110,6 +110,16 @@ request and response headers, bodies, content type, actor, session, tags, and
 a `requestHash` (SHA-256 of a canonical view of the resolved request; bodies
 enter by hash, authentication by scheme only).
 
+Auto-tags ride beside `--tag` in the same `tags` array, no column:
+`git:<sha>` when the workspace root (the directory beside the collection) is
+inside a git repository, `git:<sha>-dirty` when that tree has tracked
+changes (staged or unstaged; untracked files do not count, so a fresh
+`.facet/workspace.toml` does not flag every first run), and `expect:fail`
+on an `--expect` miss. Local only (`git rev-parse HEAD`, `git status
+--porcelain --untracked-files=no`); no `git` binary or no repository means no
+tag, silently. `history --tag git:<sha>` answers "runs against this
+revision"; a replay copies the source's user tags but recomputes auto-tags.
+
 Redaction: `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`,
 `X-Api-Key`, `X-Auth-Token`, `Api-Key`, and `X-Amz-Security-Token` values are
 stored as `<redacted>`. URL userinfo (`user:pass@`) is redacted. Request bodies
