@@ -10,9 +10,10 @@ the upstream Apache-2.0 terms and are not relicensed.
 Facet-original crates are licensed under the MIT License (LICENSE-MIT in
 each crate), Copyright 2026 Hedronite:
 
-  crates/facet      (the `facet` binary)
-  crates/lattice    (run-history store)
-  crates/facet-tui  (terminal UI)
+  crates/facet         (the `facet` binary)
+  crates/facet-record  (shared run-recording path)
+  crates/lattice       (run-history store)
+  crates/facet-tui     (terminal UI)
 
 crates/facet-tui adapts palette values from the upstream desktop theme
 (crates/desktop/src/theme.rs, Apache-2.0).

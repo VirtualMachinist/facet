@@ -10,7 +10,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 const HELP: &str = "Usage: facet tui [--appearance graphite|porcelain] [<path>]\n\
 \n\
 Graphite Honey is the default. Porcelain Honey is the light appearance.\n\
-Keys: j/k move · Enter send · i edit · / search · e env · t theme · q quit\n";
+Keys: j/k move · Enter send · i insert · : command · ? help · q quit\n";
 
 struct Cli {
     appearance: Option<Appearance>,

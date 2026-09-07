@@ -103,7 +103,7 @@ fn print_help() {
         "Usage: facet-tui [--appearance graphite|porcelain] [collection.yml]\n\
          \n\
          Graphite Honey is the default. Porcelain Honey is the light appearance.\n\
-         Keys: j/k move · Enter send · i edit · / search · e env · t theme · q quit"
+         Keys: j/k move · Enter send · i insert · : command · ? help · q quit"
     );
 }
 

@@ -1,6 +1,14 @@
-use std::{error::Error, fmt, io, path::Path, time::Duration};
+use std::{
+    error::Error,
+    fmt, io,
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use lattice::{HistoryQuery, LatticeConfig, SqlValue, WorkspaceStore};
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_environment,
     resolve_request,
@@ -12,7 +20,7 @@ use ratatui::backend::Backend;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-use crate::theme::{Appearance, Theme};
+use crate::theme::{Appearance, Depth, Theme};
 use crate::tree::{Row, TreeView};
 
 /// Top-level TUI error type. Wraps I/O, OpenCollection, and HTTP failures
@@ -60,12 +68,26 @@ pub enum RequestFocus {
     Editor,
 }
 
-/// Editor mode — the URL/header/body/text inputs accept inserts when
-/// `Insert`; navigation keys are inert while editing.
+/// App-wide vim mode (Surface 2, option A). `Normal` is the verb state —
+/// navigation, pane keys, and the flat arrow/enter fallback all live here.
+/// `Insert` is the only place text fields accept input. `Command` is the
+/// `:` command line. The footer shows a three-letter indicator
+/// (NOR/INS/CMD), helix-style.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EditorMode {
+pub enum Mode {
     Normal,
     Insert,
+    Command,
+}
+
+impl Mode {
+    pub fn indicator(self) -> &'static str {
+        match self {
+            Mode::Normal => "NOR",
+            Mode::Insert => "INS",
+            Mode::Command => "CMD",
+        }
+    }
 }
 
 /// Section tab the user is currently inside. Matches the desktop labels
@@ -412,7 +434,17 @@ pub struct App {
     request_focus: RequestFocus,
     theme_state: Theme,
     section: Section,
-    editor_mode: EditorMode,
+    mode: Mode,
+    /// `:` command-line buffer (Command mode).
+    command: String,
+    /// `?` help overlay.
+    help_open: bool,
+    /// `:history` / `:sql` overlay (title + body lines).
+    data_overlay: Option<(String, Vec<String>)>,
+    /// Awaiting the second key of a `Ctrl-W` focus chord.
+    ctrl_w_pending: bool,
+    /// Awaiting a second `g` for `gg`.
+    g_pending: bool,
     editor: Editor,
     editor_snapshot: EditorSnapshot,
     editor_dirty: bool,
@@ -424,7 +456,9 @@ pub struct App {
     response_tab: ResponseTab,
     response: Option<ResponseView>,
     /// Receiver for completion events from background runs.
-    pending: Option<mpsc::Receiver<RunResult>>,
+    pending: Option<mpsc::Receiver<(RunResult, Option<RecordSummary>)>>,
+    /// Lattice outcome of the last send.
+    last_recording: Option<RecordSummary>,
     /// Cancellation signal for an in-flight HTTP request.
     cancel: Option<watch::Sender<bool>>,
     /// Set by quit keys; the run loop breaks on it so the caller can
@@ -445,6 +479,35 @@ pub enum RunResult {
     Err(String),
 }
 
+/// What Lattice did with the last send, for the footer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordSummary {
+    /// Run ULID when the row landed.
+    pub run_id: Option<String>,
+    /// `recorded`, a skip reason, or `unrecorded: <why>`.
+    pub note: String,
+}
+
+impl RecordSummary {
+    #[must_use]
+    pub fn from_recording(recording: &Recording) -> Self {
+        match recording {
+            Recording::Recorded { run, .. } => Self {
+                run_id: Some(run.id.clone()),
+                note: "recorded".to_string(),
+            },
+            Recording::Skipped(reason) => Self {
+                run_id: None,
+                note: (*reason).to_string(),
+            },
+            Recording::Failed(message) => Self {
+                run_id: None,
+                note: format!("unrecorded: {message}"),
+            },
+        }
+    }
+}
+
 impl App {
     /// Loads a workspace from disk (or starts empty when no path is given).
     pub async fn load(path: Option<&Path>) -> Self {
@@ -457,9 +520,16 @@ impl App {
             focus: Focus::Tree,
             searching: false,
             request_focus: RequestFocus::Url,
-            theme_state: Theme::detect_default(),
+            // Graphite Honey is the product default (2b-i). `--appearance`
+            // and `:theme` are the switchers; COLORFGBG does not override.
+            theme_state: Theme::new(Appearance::Dark).with_depth(Depth::from_env()),
             section: Section::Path,
-            editor_mode: EditorMode::Normal,
+            mode: Mode::Normal,
+            command: String::new(),
+            help_open: false,
+            data_overlay: None,
+            ctrl_w_pending: false,
+            g_pending: false,
             editor: Editor::default(),
             editor_snapshot: EditorSnapshot::default(),
             editor_dirty: false,
@@ -471,6 +541,7 @@ impl App {
             response_tab: ResponseTab::Pretty,
             response: None,
             pending: None,
+            last_recording: None,
             cancel: None,
             should_quit: false,
         };
@@ -605,8 +676,9 @@ impl App {
                 return Ok(());
             }
             if let Some(receiver) = self.pending.as_mut()
-                && let Ok(result) = receiver.try_recv()
+                && let Ok((result, recording)) = receiver.try_recv()
             {
+                self.last_recording = recording;
                 self.apply_run_result(result);
                 self.pending = None;
                 self.cancel = None;
@@ -639,6 +711,31 @@ impl App {
         self.draw(terminal)
     }
 
+    /// Marks the app as mid-send so headless harnesses can render the
+    /// running overlay without a network. Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_running(&mut self) {
+        self.status = RunStatus::Running;
+    }
+
+    /// Injects a Lattice outcome for headless renders. Not product API.
+    #[doc(hidden)]
+    pub fn preview_recording(&mut self, summary: Option<RecordSummary>) {
+        self.last_recording = summary;
+    }
+
+    /// Lattice outcome of the last send, if any.
+    pub fn last_recording(&self) -> Option<&RecordSummary> {
+        self.last_recording.as_ref()
+    }
+
+    /// Opens the `?` help overlay for headless harnesses. Not part of the
+    /// product API.
+    #[doc(hidden)]
+    pub fn preview_help(&mut self) {
+        self.help_open = true;
+    }
+
     /// Returns `Ok(true)` when the event was consumed and a redraw is wanted.
     async fn handle_event(&mut self, event: crossterm::event::Event) -> Result<bool, TuiError> {
         use crossterm::event::{Event, KeyEvent, KeyEventKind};
@@ -661,14 +758,42 @@ impl App {
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> Result<bool, TuiError> {
-        if self.editor_mode == EditorMode::Insert {
-            return self.handle_insert_key(code, modifiers);
+        match self.mode {
+            Mode::Insert => return self.handle_insert_key(code, modifiers),
+            Mode::Command => return self.handle_command_key(code).await,
+            Mode::Normal => {}
+        }
+        if self.help_open {
+            return self.handle_help_key(code);
+        }
+        if self.data_overlay.is_some() {
+            return self.handle_data_overlay_key(code);
         }
         if self.env_dropdown_open {
             return self.handle_env_dropdown_key(code);
         }
         if self.searching {
             return self.handle_search_key(code, modifiers);
+        }
+        if self.ctrl_w_pending {
+            self.ctrl_w_pending = false;
+            self.handle_focus_chord(code);
+            return Ok(true);
+        }
+        if self.g_pending {
+            self.g_pending = false;
+            match code {
+                KeyCode::Char('g') => {
+                    self.jump_home();
+                    return Ok(true);
+                }
+                KeyCode::Char('G') => {
+                    self.jump_end();
+                    return Ok(true);
+                }
+                KeyCode::Esc => return Ok(true),
+                _ => {}
+            }
         }
 
         if matches!(code, KeyCode::Esc) && self.cancel.is_some() {
@@ -677,27 +802,37 @@ impl App {
         }
 
         match (code, modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
+            (KeyCode::Char('q'), _) => {
                 self.should_quit = true;
                 Ok(true)
             }
+            // Esc in Normal is a no-op. Overlays, search, env, Insert and
+            // Command consume it above; an in-flight run is cancelled above
+            // that. `q` (or `:q`) quits — never Esc.
+            (KeyCode::Esc, _) => Ok(true),
             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.should_quit = true;
                 Ok(true)
             }
-            (KeyCode::Char('t'), _) => {
-                self.theme_state = self.theme_state.toggle();
+            (KeyCode::Char(':'), _) => {
+                self.mode = Mode::Command;
+                self.command.clear();
                 Ok(true)
             }
-            (KeyCode::Char('a'), _) => {
-                self.theme_state = match self.theme_state.appearance() {
-                    Appearance::Light => {
-                        Theme::new(Appearance::Dark).with_depth(self.theme_state.depth())
-                    }
-                    Appearance::Dark => {
-                        Theme::new(Appearance::Light).with_depth(self.theme_state.depth())
-                    }
-                };
+            (KeyCode::Char('?'), _) => {
+                self.help_open = true;
+                Ok(true)
+            }
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => {
+                self.ctrl_w_pending = true;
+                Ok(true)
+            }
+            (KeyCode::Char('g'), _) => {
+                self.g_pending = true;
+                Ok(true)
+            }
+            (KeyCode::Char('G'), _) => {
+                self.jump_end();
                 Ok(true)
             }
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
@@ -752,9 +887,12 @@ impl App {
                 self.response_scroll = 0;
                 Ok(true)
             }
-            (KeyCode::Char('i'), _) if self.focus == Focus::Request => {
+            // `i` and `a` both enter Insert (our fields append at the end,
+            // so insert *is* append). Appearance moves to `:theme` only —
+            // no appearance verbs leak into Normal mode.
+            (KeyCode::Char('i') | KeyCode::Char('a'), _) if self.focus == Focus::Request => {
                 self.ensure_kv_row();
-                self.editor_mode = EditorMode::Insert;
+                self.mode = Mode::Insert;
                 Ok(true)
             }
             (KeyCode::Char('m'), _) if self.focus == Focus::Request => {
@@ -859,14 +997,14 @@ impl App {
     ) -> Result<bool, TuiError> {
         match code {
             KeyCode::Esc => {
-                self.editor_mode = EditorMode::Normal;
+                self.mode = Mode::Normal;
                 Ok(true)
             }
             KeyCode::Enter => {
                 if let Err(error) = self.save_current() {
                     self.status = RunStatus::Failed(format!("save: {error}"));
                 }
-                self.editor_mode = EditorMode::Normal;
+                self.mode = Mode::Normal;
                 Ok(true)
             }
             KeyCode::Backspace => {
@@ -878,6 +1016,279 @@ impl App {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    /// Second key of the `Ctrl-W` focus chord (vim window style).
+    /// `h`/`l` left-right, `j`/`k` down-up across the stacked right panes,
+    /// `w` cycles like Tab. Any other key just ends the chord.
+    fn handle_focus_chord(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('h') | KeyCode::Left => self.focus = Focus::Tree,
+            KeyCode::Char('k') | KeyCode::Up | KeyCode::Char('l') | KeyCode::Right => {
+                self.focus = Focus::Request;
+            }
+            KeyCode::Char('j') | KeyCode::Down => self.focus = Focus::Response,
+            KeyCode::Char('w') => {
+                self.focus = match self.focus {
+                    Focus::Tree => Focus::Request,
+                    Focus::Request => Focus::Response,
+                    Focus::Response => Focus::Tree,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// `:` command line. Esc cancels, Enter executes, printable chars edit.
+    async fn handle_command_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.command.clear();
+                Ok(true)
+            }
+            KeyCode::Enter => {
+                self.execute_command().await?;
+                Ok(true)
+            }
+            KeyCode::Backspace => {
+                self.command.pop();
+                Ok(true)
+            }
+            KeyCode::Char(ch) => {
+                self.command.push(ch);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Executes the `:` buffer and returns to Normal mode. Command set is
+    /// vim grammar, not aliases: `w`/`q`/`wq`, `send`, `theme`, `history`,
+    /// `sql`, `env`, `help`. Bare `:theme` toggles Graphite ↔ Porcelain.
+    async fn execute_command(&mut self) -> Result<(), TuiError> {
+        let input = self.command.trim().to_string();
+        self.command.clear();
+        self.mode = Mode::Normal;
+        let (name, arg) = match input.split_once(char::is_whitespace) {
+            Some((name, rest)) => (name, rest.trim()),
+            None => (input.as_str(), ""),
+        };
+        match name {
+            "q" | "quit" => self.should_quit = true,
+            "w" | "write" => {
+                if let Err(error) = self.save_current() {
+                    self.status = RunStatus::Failed(format!("save: {error}"));
+                }
+            }
+            "wq" => {
+                if let Err(error) = self.save_current() {
+                    self.status = RunStatus::Failed(format!("save: {error}"));
+                }
+                self.should_quit = true;
+            }
+            "send" => {
+                self.run_selected().await?;
+            }
+            "help" => {
+                self.data_overlay = None;
+                self.help_open = true;
+            }
+            "history" => self.show_history(),
+            "sql" => self.show_sql(arg),
+            "theme" | "appearance" => match arg {
+                "" | "toggle" => {
+                    self.theme_state = self.theme_state.toggle();
+                }
+                "graphite" | "dark" => {
+                    self.theme_state =
+                        Theme::new(Appearance::Dark).with_depth(self.theme_state.depth());
+                }
+                "porcelain" | "light" => {
+                    self.theme_state =
+                        Theme::new(Appearance::Light).with_depth(self.theme_state.depth());
+                }
+                _ => {
+                    self.status =
+                        RunStatus::Failed("usage: :theme [graphite|porcelain]".to_string());
+                }
+            },
+            "env" | "environment" => {
+                if arg.is_empty() {
+                    self.status = RunStatus::Failed("usage: :env <name>|none".to_string());
+                } else if arg.eq_ignore_ascii_case("none") {
+                    self.active_environment = None;
+                } else if let Some(index) = self
+                    .environments
+                    .iter()
+                    .position(|entry| entry.name.eq_ignore_ascii_case(arg))
+                {
+                    self.active_environment = Some(index);
+                } else {
+                    self.status = RunStatus::Failed(format!("no environment named {arg}"));
+                }
+            }
+            "" => {}
+            _ => {
+                self.status = RunStatus::Failed(format!("unknown command :{name}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// `?` help overlay: any of Esc/q/?/Enter closes it.
+    fn handle_help_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
+                self.help_open = false;
+                Ok(true)
+            }
+            _ => Ok(true),
+        }
+    }
+
+    /// `:history` / `:sql` overlay: Esc/q/Enter closes it.
+    fn handle_data_overlay_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        match code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                self.data_overlay = None;
+                Ok(true)
+            }
+            _ => Ok(true),
+        }
+    }
+
+    fn jump_home(&mut self) {
+        match self.focus {
+            Focus::Tree => {
+                self.tree.select_first();
+                self.refresh_editor_from_selection();
+            }
+            Focus::Request => {
+                self.request_focus = RequestFocus::Url;
+                self.kv_index = 0;
+            }
+            Focus::Response => self.response_scroll = 0,
+        }
+    }
+
+    fn jump_end(&mut self) {
+        match self.focus {
+            Focus::Tree => {
+                self.tree.select_last();
+                self.refresh_editor_from_selection();
+            }
+            Focus::Request => {
+                self.request_focus = RequestFocus::Editor;
+                let len = self.kv_len();
+                if len > 0 {
+                    self.kv_index = len - 1;
+                }
+            }
+            Focus::Response => self.response_scroll = 10_000,
+        }
+    }
+
+    fn open_data_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.help_open = false;
+        self.data_overlay = Some((title.into(), lines));
+    }
+
+    fn workspace_root(&self) -> Option<PathBuf> {
+        let source = self.loaded.as_ref()?.source_path()?;
+        if source.is_dir() {
+            Some(source.to_path_buf())
+        } else {
+            source.parent().map(Path::to_path_buf)
+        }
+    }
+
+    fn open_lattice(&self) -> Result<Option<WorkspaceStore>, String> {
+        let Some(root) = self.workspace_root() else {
+            return Ok(None);
+        };
+        WorkspaceStore::open_existing(&root, LatticeConfig::default())
+            .map_err(|error| error.to_string())
+    }
+
+    fn show_history(&mut self) {
+        match self.open_lattice() {
+            Ok(None) => self.open_data_overlay(
+                " history ",
+                vec!["No Lattice store found; run a request first.".to_string()],
+            ),
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("history: {error}"));
+            }
+            Ok(Some(store)) => match store.history(&HistoryQuery {
+                limit: 50,
+                ..HistoryQuery::default()
+            }) {
+                Ok(rows) => {
+                    let mut lines = vec![format!(
+                        "{:<6} {:<6} {:<7} {}",
+                        "STATUS", "MS", "METHOD", "REQUEST"
+                    )];
+                    if rows.is_empty() {
+                        lines.push("(no runs)".to_string());
+                    }
+                    for row in rows {
+                        let status = row
+                            .status
+                            .map(|code| code.to_string())
+                            .unwrap_or_else(|| "ERR".to_string());
+                        let ms = row
+                            .duration_ms
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        lines.push(format!(
+                            "{status:<6} {ms:<6} {:<7} {}",
+                            row.method, row.request_path
+                        ));
+                    }
+                    self.open_data_overlay(" history ", lines);
+                }
+                Err(error) => {
+                    self.status = RunStatus::Failed(format!("history: {error}"));
+                }
+            },
+        }
+    }
+
+    fn show_sql(&mut self, sql: &str) {
+        if sql.is_empty() {
+            self.status = RunStatus::Failed("usage: :sql <query>".to_string());
+            return;
+        }
+        match self.open_lattice() {
+            Ok(None) => self.open_data_overlay(
+                " sql ",
+                vec!["No Lattice store found; run a request first.".to_string()],
+            ),
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("sql: {error}"));
+            }
+            Ok(Some(store)) => match store.query(sql) {
+                Ok(result) => {
+                    let mut lines = vec![result.columns.join("  ")];
+                    if result.rows.is_empty() {
+                        lines.push("(no rows)".to_string());
+                    }
+                    for row in result.rows.iter().take(200) {
+                        lines.push(
+                            row.iter()
+                                .map(sql_value_human)
+                                .collect::<Vec<_>>()
+                                .join("  "),
+                        );
+                    }
+                    self.open_data_overlay(" sql ", lines);
+                }
+                Err(error) => {
+                    self.status = RunStatus::Failed(format!("sql: {error}"));
+                }
+            },
         }
     }
 
@@ -1150,6 +1561,18 @@ impl App {
             base_directory: self.base_directory(),
             response_cache: None,
         };
+        // Facts for Lattice, captured before the task takes the request.
+        let root = self.base_directory();
+        let selector = self
+            .tree
+            .selected_request_key()
+            .and_then(|key| self.loaded.as_ref()?.request_selector(key))
+            .map(str::to_string);
+        let environment = self.active_environment_name().map(str::to_string);
+        let should_record = root.is_some() && !facet_record::recording_disabled();
+        let actor = facet_record::actor_from_env();
+        let session = facet_record::session_from_env();
+
         let (sender, receiver) = mpsc::channel(1);
         let (cancel_sender, mut cancel_signal) = watch::channel(false);
         self.cancel = Some(cancel_sender);
@@ -1157,30 +1580,65 @@ impl App {
         self.status = RunStatus::Running;
         self.response = None;
         self.response_scroll = 0;
+        self.last_recording = None;
 
         tokio::spawn(async move {
-            let result = match HttpEngine::new() {
-                Ok(engine) => {
-                    match engine
-                        .execute_cancellable(&request, &options, async move {
-                            loop {
-                                if *cancel_signal.borrow() {
-                                    return;
-                                }
-                                if cancel_signal.changed().await.is_err() {
-                                    return;
-                                }
-                            }
-                        })
-                        .await
-                    {
-                        Ok(response) => RunResult::Ok(ResponseView::from_response(response)),
-                        Err(error) => RunResult::Err(error.to_string()),
-                    }
+            let started_at = lattice::now_ms();
+            let clock = Instant::now();
+            let engine = match HttpEngine::new() {
+                Ok(engine) => engine,
+                Err(error) => {
+                    let _ = sender.send((RunResult::Err(error.to_string()), None)).await;
+                    return;
                 }
+            };
+            let outcome = engine
+                .execute_cancellable(&request, &options, async move {
+                    loop {
+                        if *cancel_signal.borrow() {
+                            return;
+                        }
+                        if cancel_signal.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                })
+                .await;
+            let elapsed_ms = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
+            // Same recording path as `facet request run`, so TUI and CLI
+            // rows are identical. Store I/O is brief and off the UI loop.
+            let summary = if should_record {
+                let selector = selector.as_deref().unwrap_or("");
+                let recording = record(&RecordRequest {
+                    root: root.as_deref(),
+                    overrides: &ConfigOverrides::default(),
+                    selector,
+                    environment: environment.as_deref(),
+                    request: &request,
+                    started_at,
+                    elapsed_ms,
+                    result: &outcome,
+                    output: None,
+                    tags: &[],
+                    actor: &actor,
+                    session: session.as_deref(),
+                });
+                Some(RecordSummary::from_recording(&recording))
+            } else {
+                Some(RecordSummary {
+                    run_id: None,
+                    note: if root.is_none() {
+                        "no workspace".to_string()
+                    } else {
+                        "disabled".to_string()
+                    },
+                })
+            };
+            let result = match outcome {
+                Ok(response) => RunResult::Ok(ResponseView::from_response(response)),
                 Err(error) => RunResult::Err(error.to_string()),
             };
-            let _ = sender.send(result).await;
+            let _ = sender.send((result, summary)).await;
         });
         Ok(())
     }
@@ -1223,8 +1681,28 @@ impl App {
     }
 
     /// Current editor mode.
-    pub fn editor_mode(&self) -> EditorMode {
-        self.editor_mode
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// The `:` command-line buffer, shown in the footer in Command mode.
+    pub fn command_line(&self) -> &str {
+        &self.command
+    }
+
+    pub fn help_open(&self) -> bool {
+        self.help_open
+    }
+
+    /// `:history` / `:sql` overlay, if open.
+    pub fn data_overlay(&self) -> Option<&(String, Vec<String>)> {
+        self.data_overlay.as_ref()
+    }
+
+    /// Opens a data overlay for headless harnesses. Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_data_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.open_data_overlay(title, lines);
     }
 
     /// Which request-pane field is active.
@@ -1342,18 +1820,11 @@ impl App {
     }
 
     /// Whether a Lattice workspace store exists beside the loaded collection
-    /// (`.facet/lattice.db` in the collection directory). A filesystem check
-    /// only; the TUI does not open the store.
+    /// (`.facet/lattice.db` in the collection directory).
     pub fn lattice_ready(&self) -> bool {
-        let Some(source) = self.loaded.as_ref().and_then(|loaded| loaded.source_path()) else {
-            return false;
-        };
-        let root = if source.is_dir() {
-            source.to_path_buf()
-        } else {
-            source.parent().map(Path::to_path_buf).unwrap_or_default()
-        };
-        root.join(".facet").join("lattice.db").is_file()
+        self.workspace_root()
+            .map(|root| root.join(".facet").join("lattice.db").is_file())
+            .unwrap_or(false)
     }
 
     /// Resolves a folder's display name from its session key.
@@ -1385,6 +1856,16 @@ impl App {
             .filter_map(|folder_key| self.folder_name(*folder_key))
             .collect::<Vec<_>>()
             .join(" › ")
+    }
+}
+
+fn sql_value_human(value: &SqlValue) -> String {
+    match value {
+        SqlValue::Null => "NULL".to_owned(),
+        SqlValue::Integer(number) => number.to_string(),
+        SqlValue::Real(number) => number.to_string(),
+        SqlValue::Text(text) => text.clone(),
+        SqlValue::Blob(bytes) => format!("<blob {} bytes>", bytes.len()),
     }
 }
 
@@ -1482,6 +1963,12 @@ mod tests {
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/opencollection/phase1-bundled.yml")
+    }
+
+    #[tokio::test]
+    async fn load_defaults_to_graphite_honey() {
+        let app = App::load(Some(&fixture())).await;
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
     }
 
     #[tokio::test]
@@ -1587,6 +2074,251 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_line_runs_vim_verbs() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.mode(), Mode::Normal);
+
+        // `:` enters Command mode; typing accumulates; Enter executes.
+        app.handle_key(KeyCode::Char(':'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Command);
+        for ch in "theme porcelain".chars() {
+            app.handle_command_key(KeyCode::Char(ch)).await.unwrap();
+        }
+        assert_eq!(app.command_line(), "theme porcelain");
+        app.handle_command_key(KeyCode::Enter).await.unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+
+        // :env with an unknown name fails loudly; :env none clears.
+        app.command = "env nosuch".to_string();
+        app.execute_command().await.unwrap();
+        assert!(matches!(app.status(), RunStatus::Failed(message) if message.contains("nosuch")));
+        app.command = "env none".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.active_environment.is_none());
+
+        // Unknown command is an error, not a quit.
+        app.command = "frobnicate".to_string();
+        app.execute_command().await.unwrap();
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("unknown command"))
+        );
+        assert!(!app.should_quit);
+
+        // :q quits.
+        app.command = "q".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn command_mode_esc_cancels_without_running() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.handle_key(KeyCode::Char(':'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_command_key(KeyCode::Char('q')).await.unwrap();
+        app.handle_command_key(KeyCode::Esc).await.unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+        assert_eq!(app.command_line(), "");
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn command_send_and_help_verbs() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.command = "help".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.help_open());
+        app.help_open = false;
+
+        app.command = "send".to_string();
+        app.execute_command().await.unwrap();
+        assert!(matches!(app.status(), RunStatus::Running));
+        assert!(app.pending.is_some());
+        app.cancel_run();
+    }
+
+    #[tokio::test]
+    async fn a_enters_insert_and_appearance_has_no_normal_verb() {
+        let mut app = App::load(Some(&fixture())).await;
+        let before = app.theme().appearance();
+        app.focus = Focus::Request;
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Insert);
+        assert_eq!(app.theme().appearance(), before);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        // `t` is unbound in Normal: appearance only moves via :theme.
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.theme().appearance(), before);
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn esc_in_normal_never_quits() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.should_quit);
+        assert_eq!(app.mode(), Mode::Normal);
+        // Overlay first: Esc closes help, still no quit.
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.help_open());
+        assert!(!app.should_quit);
+        // q quits.
+        app.handle_key(KeyCode::Char('q'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn ctrl_w_focus_chord_moves_between_panes() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.focus(), Focus::Tree);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Response);
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Tree);
+        // Ctrl-W w cycles like Tab.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        // An unknown second key just ends the chord.
+        app.handle_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+    }
+
+    #[tokio::test]
+    async fn flat_fallback_arrows_tab_enter_drive_the_flow() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.mode(), Mode::Normal);
+        // Up to the top of the tree, then arrows move the selection.
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Up, KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+        assert_eq!(app.selection(), 0);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 1);
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        // Row 0 is the Pets folder: Enter collapses and re-expands it.
+        let rows_before = app.rows().len();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.rows().len() < rows_before);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.rows().len(), rows_before);
+        // Enter on a request opens the editor.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Request);
+        // Arrows move inside the request pane; Tab cycles focus.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Response);
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.response_scroll(), 1);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.focus(), Focus::Tree);
+        assert_eq!(app.mode(), Mode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn help_overlay_opens_and_closes() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert!(!app.help_open());
+        app.handle_key(KeyCode::Char('?'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.help_open());
+        // Keys are swallowed while help is open (no verbs fire).
+        app.handle_key(KeyCode::Char('t'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.help_open());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.help_open());
+    }
+
+    #[tokio::test]
+    async fn insert_mode_is_the_only_text_mode() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.focus = Focus::Request;
+        app.handle_key(KeyCode::Char('i'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Insert);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.mode(), Mode::Normal);
+    }
+
+    #[tokio::test]
     async fn search_filters_pet_store() {
         let mut app = App::load(Some(&fixture())).await;
         app.tree.set_search("health");
@@ -1599,5 +2331,137 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["Health check".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn bare_theme_toggles_graphite_and_porcelain() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+        app.command = "theme".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        app.command = "theme toggle".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+        app.command = "theme porcelain".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        app.command = "theme graphite".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+    }
+
+    #[tokio::test]
+    async fn gg_and_g_jump_the_tree() {
+        let mut app = App::load(Some(&fixture())).await;
+        assert!(app.rows().len() > 1);
+        app.handle_key(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), app.rows().len() - 1);
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 0);
+        // A lone `g` then Esc does not jump and does not quit.
+        app.handle_key(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), app.rows().len() - 1);
+        assert!(!app.should_quit);
+    }
+
+    #[tokio::test]
+    async fn history_and_sql_open_overlays() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let (title, lines) = app.data_overlay().expect("history overlay");
+        assert!(title.contains("history"), "{title}");
+        assert!(
+            lines.iter().any(|line| line.contains("No Lattice store")),
+            "{lines:?}"
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.data_overlay().is_none());
+
+        app.command = "sql".to_string();
+        app.execute_command().await.unwrap();
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("usage: :sql")),
+            "{:?}",
+            app.status()
+        );
+
+        app.command = "sql SELECT 1".to_string();
+        app.execute_command().await.unwrap();
+        let (title, lines) = app.data_overlay().expect("sql overlay");
+        assert!(title.contains("sql"), "{title}");
+        assert!(
+            lines.iter().any(|line| line.contains("No Lattice store")),
+            "{lines:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_and_sql_read_an_existing_store() {
+        let dir = std::env::temp_dir().join(format!(
+            "facet-tui-s2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml = dir.join("collection.yml");
+        std::fs::copy(fixture(), &yaml).unwrap();
+        let store = WorkspaceStore::open(&dir, LatticeConfig::default()).unwrap();
+        store
+            .record_run(&lattice::NewRun {
+                started_at: lattice::now_ms(),
+                duration_ms: Some(12),
+                request_path: "Pets/List pets",
+                request_hash: "abc",
+                method: "GET",
+                url: "https://example.com/pets",
+                status: Some(200),
+                actor: "human",
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+
+        let mut app = App::load(Some(&yaml)).await;
+        assert!(app.lattice_ready());
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let (_, lines) = app.data_overlay().expect("history overlay");
+        assert!(
+            lines.iter().any(|line| line.contains("Pets/List pets")),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("200")), "{lines:?}");
+
+        app.command = "sql SELECT status, method, request_path FROM runs".to_string();
+        app.execute_command().await.unwrap();
+        let (_, lines) = app.data_overlay().expect("sql overlay");
+        assert!(
+            lines.iter().any(|line| line.contains("List pets")),
+            "{lines:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

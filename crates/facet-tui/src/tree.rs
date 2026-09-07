@@ -167,6 +167,20 @@ impl TreeView {
         self.selection = next as usize;
     }
 
+    /// `gg` — first visible row.
+    pub fn select_first(&mut self) {
+        if !self.visible.is_empty() {
+            self.selection = 0;
+        }
+    }
+
+    /// `G` — last visible row.
+    pub fn select_last(&mut self) {
+        if !self.visible.is_empty() {
+            self.selection = self.visible.len() - 1;
+        }
+    }
+
     /// Returns the request at the current selection, if any.
     pub fn selected_request_key(&self) -> Option<RequestKey> {
         self.visible.get(self.selection).and_then(|row| match row {
@@ -495,5 +509,22 @@ mod tests {
             })
             .collect();
         assert_eq!(counts, vec![5, 3]);
+    }
+
+    #[test]
+    fn select_first_and_last_jump_the_visible_rows() {
+        let workspace = Workspace::from_collection(collection(vec![
+            request("alpha"),
+            request("beta"),
+            request("gamma"),
+        ]));
+        let mut view = TreeView::default();
+        view.reset(workspace);
+        view.move_selection(1);
+        assert_eq!(view.selection(), 1);
+        view.select_last();
+        assert_eq!(view.selection(), 2);
+        view.select_first();
+        assert_eq!(view.selection(), 0);
     }
 }
