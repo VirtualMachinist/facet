@@ -53,6 +53,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.history_grid().is_some() {
         render_history_grid(frame, shell[1], app, styles);
     }
+    if app.env_overlay().is_some() {
+        render_env_overlay(frame, shell[1], app, styles);
+    }
     if let Some((title, lines)) = app.data_overlay() {
         render_data_overlay(frame, shell[1], title, lines, styles);
     }
@@ -97,6 +100,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         })
         .style(styles.sidebar);
     let inner = block.inner(area);
+    app.viewports.tree.set(inner.height);
     frame.render_widget(block, area);
     render_pane_title(frame, area, " Collection ", focused, styles);
 
@@ -423,6 +427,7 @@ fn render_request_pane(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
     if area.height == 0 {
         return;
     }
+    app.viewports.request.set(area.height);
     let show_kinds = app.section() == Section::Body && area.height >= 6;
     let mut constraints = vec![
         Constraint::Length(1), // breadcrumb
@@ -714,6 +719,7 @@ fn render_response_pane(frame: &mut Frame, area: Rect, app: &App, styles: Styles
     if area.height == 0 {
         return;
     }
+    app.viewports.response.set(area.height.saturating_sub(2));
     let focused = app.focus() == Focus::Response;
     let header_style = if focused {
         styles.title_focused
@@ -871,6 +877,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         "help · Esc close".to_string()
     } else if app.history_grid().is_some() {
         "history · Enter hydrate · y yank · / filter · Esc close".to_string()
+    } else if app.env_overlay().is_some() {
+        "env · a add · e set value · d delete · Esc close".to_string()
     } else if app.data_overlay().is_some() {
         "overlay · Esc close".to_string()
     } else if app.searching() {
@@ -1022,8 +1030,9 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
 /// actions in editor text. This is option A's discoverability device —
 /// one overlay, no which-key.
 fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    const KEYS: [(&str, &str); 16] = [
+    const KEYS: [(&str, &str); 18] = [
         ("j/k · arrows", "move (tree, rows, response scroll)"),
+        ("Ctrl-U / Ctrl-D", "half-page up / down (focused pane)"),
         ("gg / G", "first / last row (tree, request, response)"),
         ("Enter", "folder toggle · open · send · :send"),
         ("i / a", "insert (URL or section) · Esc back"),
@@ -1039,6 +1048,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         (
             ":history grid",
             "j/k · Enter hydrate · y yank id · / filter",
+        ),
+        (
+            ":env overlay",
+            "metadata only · a add · e set value · d delete",
         ),
         ("?", "this help · :help"),
         ("q", "quit · Esc cancels run/overlay"),
@@ -1190,6 +1203,7 @@ fn render_history_grid(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
     };
 
     let body_height = inner.height.saturating_sub(2 + sparkline_rows) as usize;
+    app.viewports.grid.set(body_height as u16);
     let offset = if grid.selected >= body_height {
         grid.selected + 1 - body_height
     } else {
@@ -1269,6 +1283,134 @@ fn render_history_grid(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
             Some(row) => format!(" {} · Enter hydrate · y yank · Esc close", row.id),
             None => " Esc close".to_string(),
         }
+    };
+    lines.push(Line::from(Span::styled(
+        cell(&footer, inner.width as usize),
+        styles.muted,
+    )));
+
+    let drawn_height = (lines.len() as u16).min(inner.height);
+    frame.render_widget(
+        Paragraph::new(lines).style(styles.editor),
+        Rect {
+            height: drawn_height,
+            ..inner
+        },
+    );
+}
+
+/// The `:env` overlay (Facet rest 5): environment metadata from the
+/// machine store. Values are never rendered — the set form masks secret
+/// input, and the list shows environment / name / secret / updated only.
+fn render_env_overlay(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
+    use crate::app::{EnvFormStep, format_started};
+
+    let Some(overlay) = app.env_overlay() else {
+        return;
+    };
+
+    const ENV_W: usize = 16;
+    const NAME_W: usize = 28;
+    const SECRET_W: usize = 6;
+    const UPDATED_W: usize = 11; // "MM-DD HH:MM"
+    // 1 leading pad + 3 single-space separators + 1 trailing pad.
+    const CHROME: usize = 1 + 3 + 1;
+    let fixed = ENV_W + NAME_W + SECRET_W + UPDATED_W + CHROME;
+    let width = ((fixed + 8) as u16).clamp(56, 96).min(area.width);
+    let height = (overlay.rows.len().max(1) as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(" env ", styles.brand));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.height < 2 {
+        return;
+    }
+
+    let header = Line::from(Span::styled(
+        format!(
+            " {} {} {} {}",
+            cell("ENVIRONMENT", ENV_W),
+            cell("NAME", NAME_W),
+            cell("SECRET", SECRET_W),
+            cell("UPDATED", UPDATED_W),
+        ),
+        styles.muted,
+    ));
+
+    let body_height = inner.height.saturating_sub(2) as usize;
+    app.viewports.env.set(body_height as u16);
+    let offset = if overlay.selected >= body_height {
+        overlay.selected + 1 - body_height
+    } else {
+        0
+    };
+    let mut lines = vec![header];
+    if overlay.rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (nothing set — `a` adds an entry)",
+            styles.placeholder,
+        )));
+    }
+    for (index, row) in overlay
+        .rows
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(body_height)
+    {
+        let text = format!(
+            " {} {} {} {}",
+            cell(&row.name, ENV_W),
+            cell(&row.key, NAME_W),
+            cell(if row.secret { "yes" } else { "no" }, SECRET_W),
+            cell(&format_started(row.updated_at), UPDATED_W),
+        );
+        if index == overlay.selected {
+            lines.push(Line::from(Span::styled(text, styles.selected_row)));
+        } else {
+            lines.push(Line::from(Span::styled(text, styles.editor)));
+        }
+    }
+
+    // Footer: the set form's field prompt, else the delete confirm, else
+    // the notice, else hints. Secret values render as bullets.
+    let footer = if let Some(form) = &overlay.form {
+        let (label, masked) = match form.step {
+            EnvFormStep::Environment => ("environment", false),
+            EnvFormStep::Name => ("name", false),
+            EnvFormStep::Secret => ("secret? y/N", false),
+            EnvFormStep::Value => ("value", form.secret),
+        };
+        let context = match form.step {
+            EnvFormStep::Environment => " set".to_string(),
+            EnvFormStep::Name => format!(" set {}", form.environment),
+            EnvFormStep::Secret | EnvFormStep::Value => {
+                format!(" set {}/{}", form.environment, form.name)
+            }
+        };
+        let input = if masked {
+            "•".repeat(form.input.chars().count())
+        } else {
+            form.input.clone()
+        };
+        format!("{context} · {label}: {input}▌")
+    } else if overlay.confirm_delete {
+        match overlay.rows.get(overlay.selected) {
+            Some(row) => format!(" delete {}/{}? y/N", row.name, row.key),
+            None => " delete? y/N".to_string(),
+        }
+    } else if let Some(notice) = &overlay.notice {
+        format!(" {notice}")
+    } else {
+        " j/k move · a add · e set value · d delete · Esc close".to_string()
     };
     lines.push(Line::from(Span::styled(
         cell(&footer, inner.width as usize),
@@ -1653,6 +1795,45 @@ mod tests {
         assert!(
             text.lines().last().unwrap().contains("· unrecorded"),
             "{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn env_overlay_lists_metadata_and_masks_secret_input() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_env_overlay(vec![
+            lattice::EnvironmentRow {
+                name: "local".to_string(),
+                key: "token".to_string(),
+                secret: true,
+                updated_at: 0,
+            },
+            lattice::EnvironmentRow {
+                name: "local".to_string(),
+                key: "host".to_string(),
+                secret: false,
+                updated_at: 0,
+            },
+        ]);
+        // Mid-form on a secret value: the footer masks the input.
+        app.preview_env_form(true, "hunter2");
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains(" env "), "title: {text}");
+        assert!(text.contains("ENVIRONMENT"), "header: {text}");
+        assert!(text.contains("token"), "name column: {text}");
+        assert!(text.contains("yes"), "secret column: {text}");
+        assert!(
+            text.contains("set local/token · value: ••••••"),
+            "masked value prompt: {text}"
+        );
+        assert!(
+            !text.contains("hunter2"),
+            "secret value must never render: {text}"
         );
     }
 }

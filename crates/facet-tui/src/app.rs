@@ -1,4 +1,5 @@
 use std::{
+    cell::Cell,
     error::Error,
     fmt, io,
     path::{Path, PathBuf},
@@ -8,7 +9,10 @@ use std::{
 use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use lattice::{HistoryQuery, LatticeConfig, RunRow, SqlValue, WorkspaceStore};
+use lattice::{
+    EnvironmentRow, HistoryQuery, LatticeConfig, MachineStore, RunRow, SecretConfig, SqlValue,
+    WorkspaceStore,
+};
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_request,
 };
@@ -446,6 +450,13 @@ pub struct App {
     data_overlay: Option<(String, Vec<String>)>,
     /// `:history` grid overlay (Goal 2).
     history_grid: Option<HistoryGrid>,
+    /// `:env` overlay (Facet rest 5): machine-store env metadata editor.
+    env_overlay: Option<EnvOverlay>,
+    /// Test hook: redirects the env overlay's machine store away from the
+    /// platform data dir (the workspace lints forbid env-var unsafe).
+    machine_dir: Option<PathBuf>,
+    /// Last frame's pane heights, for `ctrl+u`/`ctrl+d` half-page scroll.
+    pub(crate) viewports: Viewports,
     /// Set when the response pane shows a hydrated Lattice run instead of
     /// a live send; rendered as the pane title (`run 01K… · replayed view`).
     response_origin: Option<String>,
@@ -610,6 +621,91 @@ impl HistoryGrid {
     }
 }
 
+/// `:env` overlay (Facet rest 5): the machine store's environment metadata
+/// for this workspace. Values are never displayed — the list is metadata
+/// only, and the set form masks secret input.
+pub struct EnvOverlay {
+    /// Workspace the entries belong to (machine store key).
+    pub(crate) workspace_id: String,
+    pub(crate) rows: Vec<EnvironmentRow>,
+    pub(crate) selected: usize,
+    /// The `a`/`e` set form, while it is being filled in.
+    pub(crate) form: Option<EnvForm>,
+    /// `d` was pressed; the next `y` confirms the delete.
+    pub(crate) confirm_delete: bool,
+    /// Transient footer line ("local/token set (secret)").
+    pub(crate) notice: Option<String>,
+    /// Awaiting a second `g` for `gg`.
+    pub(crate) g_pending: bool,
+}
+
+impl EnvOverlay {
+    fn new(workspace_id: String, rows: Vec<EnvironmentRow>) -> Self {
+        Self {
+            workspace_id,
+            rows,
+            selected: 0,
+            form: None,
+            confirm_delete: false,
+            notice: None,
+            g_pending: false,
+        }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.rows.len() as isize;
+        if len == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+        self.notice = None;
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.rows.len();
+        self.selected = if len == 0 {
+            0
+        } else {
+            self.selected.min(len - 1)
+        };
+    }
+}
+
+/// The `a`/`e` set form: environment → name → secret? → value, one field
+/// at a time in the overlay footer. Enter advances, Esc cancels.
+pub struct EnvForm {
+    pub(crate) step: EnvFormStep,
+    pub(crate) environment: String,
+    pub(crate) name: String,
+    pub(crate) secret: bool,
+    /// Buffer for the field being edited.
+    pub(crate) input: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnvFormStep {
+    Environment,
+    Name,
+    Secret,
+    Value,
+}
+
+/// Viewport heights in rows, updated by `ui::draw` every frame so
+/// `ctrl+u` / `ctrl+d` can scroll half a page. `Cell` because rendering
+/// borrows `&App`.
+#[derive(Debug, Default)]
+pub(crate) struct Viewports {
+    pub tree: Cell<u16>,
+    pub request: Cell<u16>,
+    pub response: Cell<u16>,
+    pub grid: Cell<u16>,
+    pub env: Cell<u16>,
+}
+
+fn half_page_rows(cell: &Cell<u16>) -> isize {
+    isize::from(cell.get().max(2) as i16) / 2
+}
+
 impl App {
     /// Loads a workspace from disk (or starts empty when no path is given).
     pub async fn load(path: Option<&Path>) -> Self {
@@ -632,6 +728,9 @@ impl App {
             help_open: false,
             data_overlay: None,
             history_grid: None,
+            env_overlay: None,
+            machine_dir: None,
+            viewports: Viewports::default(),
             response_origin: None,
             ctrl_w_pending: false,
             g_pending: false,
@@ -874,7 +973,10 @@ impl App {
             return self.handle_help_key(code);
         }
         if self.history_grid.is_some() {
-            return self.handle_history_key(code);
+            return self.handle_history_key(code, modifiers);
+        }
+        if self.env_overlay.is_some() {
+            return self.handle_env_overlay_key(code, modifiers);
         }
         if self.data_overlay.is_some() {
             return self.handle_data_overlay_key(code);
@@ -1083,6 +1185,15 @@ impl App {
                 self.response_scroll = self.response_scroll.saturating_sub(10);
                 Ok(true)
             }
+            // Half-page scroll in the focused pane (Surface 2 deferral).
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                self.half_page(1);
+                Ok(true)
+            }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.half_page(-1);
+                Ok(true)
+            }
             (KeyCode::Enter, _) if self.focus == Focus::Tree => {
                 if self.tree.selected_folder_key().is_some() {
                     self.toggle_collapse_selected();
@@ -1226,7 +1337,7 @@ impl App {
             },
             "env" | "environment" => {
                 if arg.is_empty() {
-                    self.status = RunStatus::Failed("usage: :env <name>|none".to_string());
+                    self.show_env_overlay();
                 } else if arg.eq_ignore_ascii_case("none") {
                     self.active_environment = None;
                 } else if let Some(index) = self
@@ -1269,6 +1380,352 @@ impl App {
         }
     }
 
+    // ── `:env` overlay (Facet rest 5) ─────────────────────────────────
+    //
+    // Metadata only: the list comes from `MachineStore::environments`,
+    // which never returns values. `a`/`e` open the set form (environment
+    // → name → secret? → value, secret values masked), `d` deletes after
+    // a `y` confirm. The value is passed to the machine store and dropped;
+    // it is never rendered after entry.
+
+    fn show_env_overlay(&mut self) {
+        match self.open_lattice() {
+            Ok(None) => self.open_data_overlay(
+                " env ",
+                vec!["No Lattice store found; run a request first.".to_string()],
+            ),
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("env: {error}"));
+            }
+            Ok(Some(store)) => {
+                let workspace_id = store.workspace_id().to_string();
+                match self.list_env(&workspace_id) {
+                    Ok(rows) => {
+                        self.help_open = false;
+                        self.data_overlay = None;
+                        self.history_grid = None;
+                        self.env_overlay = Some(EnvOverlay::new(workspace_id, rows));
+                    }
+                    Err(error) => {
+                        self.status = RunStatus::Failed(format!("env: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn env_machine(&self) -> Result<MachineStore, String> {
+        match &self.machine_dir {
+            Some(dir) => {
+                std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+                MachineStore::open_at(&dir.join(lattice::DB_FILE), &LatticeConfig::default())
+                    .map_err(|error| error.to_string())
+            }
+            None => {
+                MachineStore::open(&LatticeConfig::default()).map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    fn list_env(&self, workspace_id: &str) -> Result<Vec<EnvironmentRow>, String> {
+        self.env_machine()?
+            .environments(workspace_id)
+            .map_err(|error| error.to_string())
+    }
+
+    fn refresh_env_overlay(&mut self) {
+        let Some(workspace_id) = self
+            .env_overlay
+            .as_ref()
+            .map(|overlay| overlay.workspace_id.clone())
+        else {
+            return;
+        };
+        match self.list_env(&workspace_id) {
+            Ok(rows) => {
+                let overlay = self.env_overlay.as_mut().expect("overlay");
+                overlay.rows = rows;
+                overlay.clamp_selection();
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("env: {error}"));
+            }
+        }
+    }
+
+    fn handle_env_overlay_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool, TuiError> {
+        // The set form captures input before anything else.
+        if self
+            .env_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.form.is_some())
+        {
+            return self.handle_env_form_key(code);
+        }
+        // The delete confirm captures the next key.
+        if self
+            .env_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.confirm_delete)
+        {
+            let overlay = self.env_overlay.as_mut().expect("overlay");
+            overlay.confirm_delete = false;
+            if matches!(code, KeyCode::Char('y') | KeyCode::Char('Y')) {
+                self.env_delete_selected();
+            }
+            return Ok(true);
+        }
+        // `gg`.
+        {
+            let overlay = self.env_overlay.as_mut().expect("overlay");
+            if overlay.g_pending {
+                overlay.g_pending = false;
+                match code {
+                    KeyCode::Char('g') => {
+                        overlay.selected = 0;
+                        overlay.notice = None;
+                        return Ok(true);
+                    }
+                    KeyCode::Char('G') => {
+                        overlay.selected = overlay.rows.len().saturating_sub(1);
+                        overlay.notice = None;
+                        return Ok(true);
+                    }
+                    KeyCode::Esc => return Ok(true),
+                    _ => {}
+                }
+            }
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.env_overlay = None;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.env_overlay.as_mut().expect("overlay").move_selection(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.env_overlay.as_mut().expect("overlay").move_selection(-1);
+            }
+            KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
+                let rows = half_page_rows(&self.viewports.env);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(rows);
+            }
+            KeyCode::Char('u') if modifiers == KeyModifiers::CONTROL => {
+                let rows = half_page_rows(&self.viewports.env);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(-rows);
+            }
+            KeyCode::Char('g') => {
+                self.env_overlay.as_mut().expect("overlay").g_pending = true;
+            }
+            KeyCode::Char('G') => {
+                let overlay = self.env_overlay.as_mut().expect("overlay");
+                overlay.selected = overlay.rows.len().saturating_sub(1);
+                overlay.notice = None;
+            }
+            KeyCode::Char('a') => self.env_form_start(false),
+            KeyCode::Char('e') | KeyCode::Enter => self.env_form_start(true),
+            KeyCode::Char('d') => {
+                let overlay = self.env_overlay.as_mut().expect("overlay");
+                if overlay.rows.is_empty() {
+                    overlay.notice = Some("nothing to delete".to_string());
+                } else {
+                    overlay.confirm_delete = true;
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// Opens the set form. `edit` targets the selected row (secret flag
+    /// prefilled, straight to the secret step); otherwise the form starts
+    /// at the environment step with the active environment prefilled.
+    fn env_form_start(&mut self, edit: bool) {
+        let active = self
+            .active_environment
+            .and_then(|index| self.environments.get(index))
+            .map(|entry| entry.name.clone());
+        let overlay = self.env_overlay.as_mut().expect("overlay");
+        let form = if edit {
+            let Some(row) = overlay.rows.get(overlay.selected) else {
+                overlay.notice = Some("nothing to edit".to_string());
+                return;
+            };
+            EnvForm {
+                step: EnvFormStep::Secret,
+                environment: row.name.clone(),
+                name: row.key.clone(),
+                secret: row.secret,
+                input: String::new(),
+            }
+        } else {
+            let environment = active.unwrap_or_default();
+            EnvForm {
+                step: EnvFormStep::Environment,
+                input: environment,
+                environment: String::new(),
+                name: String::new(),
+                secret: false,
+            }
+        };
+        overlay.form = Some(form);
+        overlay.notice = None;
+    }
+
+    fn handle_env_form_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        // Phase 1: decide against the form; phase 2 acts on `self`
+        // (submit and reject need the whole app, not the form borrow).
+        enum Step {
+            Cancel,
+            Next,
+            Submit,
+            Reject(&'static str),
+            Ignore,
+        }
+        let step = {
+            let overlay = self.env_overlay.as_mut().expect("overlay");
+            let form = overlay.form.as_mut().expect("form");
+            match code {
+                KeyCode::Esc => Step::Cancel,
+                KeyCode::Backspace => {
+                    form.input.pop();
+                    Step::Ignore
+                }
+                KeyCode::Enter => match form.step {
+                    EnvFormStep::Environment => {
+                        let value = form.input.trim().to_string();
+                        if value.is_empty() {
+                            Step::Reject("environment must not be empty")
+                        } else {
+                            form.environment = value;
+                            form.input.clear();
+                            form.step = EnvFormStep::Name;
+                            Step::Next
+                        }
+                    }
+                    EnvFormStep::Name => {
+                        let value = form.input.trim().to_string();
+                        if value.is_empty() {
+                            Step::Reject("name must not be empty")
+                        } else {
+                            form.name = value;
+                            form.input.clear();
+                            form.step = EnvFormStep::Secret;
+                            Step::Next
+                        }
+                    }
+                    EnvFormStep::Secret => {
+                        form.secret =
+                            matches!(form.input.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+                        form.input.clear();
+                        form.step = EnvFormStep::Value;
+                        Step::Next
+                    }
+                    EnvFormStep::Value => Step::Submit,
+                },
+                KeyCode::Char(ch) if !ch.is_control() => {
+                    form.input.push(ch);
+                    Step::Ignore
+                }
+                _ => Step::Ignore,
+            }
+        };
+        match step {
+            Step::Cancel => {
+                self.env_overlay.as_mut().expect("overlay").form = None;
+            }
+            Step::Submit => self.env_form_submit(),
+            Step::Reject(message) => {
+                self.env_overlay.as_mut().expect("overlay").notice = Some(message.to_string());
+            }
+            Step::Next | Step::Ignore => {}
+        }
+        Ok(true)
+    }
+
+    /// Writes the form's value to the machine store. The value leaves the
+    /// form buffer for `set_environment` and is never shown again.
+    fn env_form_submit(&mut self) {
+        let (workspace_id, form) = {
+            let overlay = self.env_overlay.as_mut().expect("overlay");
+            let form = overlay.form.take().expect("form");
+            (overlay.workspace_id.clone(), form)
+        };
+        let value = form.input.clone();
+        if form.secret
+            && let Err(error) = SecretConfig::from_env()
+        {
+            self.status = RunStatus::Failed(format!("env: {error}"));
+            return;
+        }
+        let result = self.env_machine().and_then(|machine| {
+            machine
+                .set_environment(
+                    &workspace_id,
+                    &form.environment,
+                    &form.name,
+                    &value,
+                    form.secret,
+                )
+                .map_err(|error| error.to_string())
+        });
+        drop(value);
+        match result {
+            Ok(()) => {
+                let overlay = self.env_overlay.as_mut().expect("overlay");
+                overlay.notice = Some(format!(
+                    "{}/{} set ({})",
+                    form.environment,
+                    form.name,
+                    if form.secret { "secret" } else { "plain" },
+                ));
+                self.refresh_env_overlay();
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("env: {error}"));
+            }
+        }
+    }
+
+    fn env_delete_selected(&mut self) {
+        let (workspace_id, environment, name) = {
+            let overlay = self.env_overlay.as_ref().expect("overlay");
+            let Some(row) = overlay.rows.get(overlay.selected) else {
+                return;
+            };
+            (
+                overlay.workspace_id.clone(),
+                row.name.clone(),
+                row.key.clone(),
+            )
+        };
+        let result = self.env_machine().and_then(|machine| {
+            machine
+                .delete_environment(&workspace_id, &environment, &name)
+                .map_err(|error| error.to_string())
+        });
+        match result {
+            Ok(_) => {
+                let overlay = self.env_overlay.as_mut().expect("overlay");
+                overlay.notice = Some(format!("{environment}/{name} deleted"));
+                self.refresh_env_overlay();
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("env: {error}"));
+            }
+        }
+    }
+
     fn jump_home(&mut self) {
         match self.focus {
             Focus::Tree => {
@@ -1280,6 +1737,30 @@ impl App {
                 self.kv_index = 0;
             }
             Focus::Response => self.response_scroll = 0,
+        }
+    }
+
+    /// `ctrl+d` / `ctrl+u`: half-page in the focused pane. Tree and
+    /// request move the cursor; the response pane scrolls.
+    fn half_page(&mut self, direction: isize) {
+        match self.focus {
+            Focus::Tree => {
+                let rows = half_page_rows(&self.viewports.tree);
+                self.tree.move_selection(rows * direction);
+                self.refresh_editor_from_selection();
+            }
+            Focus::Request => {
+                let rows = half_page_rows(&self.viewports.request);
+                self.move_request_cursor(rows * direction);
+            }
+            Focus::Response => {
+                let rows = half_page_rows(&self.viewports.response);
+                self.response_scroll = if direction > 0 {
+                    self.response_scroll.saturating_add(rows as u16)
+                } else {
+                    self.response_scroll.saturating_sub(rows as u16)
+                };
+            }
         }
     }
 
@@ -1442,14 +1923,22 @@ impl App {
 
     /// Normal-mode keys while the `:history` grid is open. Esc closes the
     /// grid (or exits the `/` input); it never quits the app.
-    fn handle_history_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
-        let consumed = self.handle_history_key_inner(code)?;
+    fn handle_history_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool, TuiError> {
+        let consumed = self.handle_history_key_inner(code, modifiers)?;
         // Paint follows the focus; no-op unless the focused selector moved.
         self.refresh_sparkline();
         Ok(consumed)
     }
 
-    fn handle_history_key_inner(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+    fn handle_history_key_inner(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool, TuiError> {
         // Phase 1: the `/` filter input captures everything printable.
         {
             let grid = self.history_grid.as_mut().expect("grid");
@@ -1506,6 +1995,7 @@ impl App {
         enum Action {
             Close,
             Move(isize),
+            HalfPage(isize),
             First,
             Last,
             Filter,
@@ -1521,6 +2011,8 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => Action::Close,
                 KeyCode::Char('j') | KeyCode::Down => Action::Move(1),
                 KeyCode::Char('k') | KeyCode::Up => Action::Move(-1),
+                KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => Action::HalfPage(1),
+                KeyCode::Char('u') if modifiers == KeyModifiers::CONTROL => Action::HalfPage(-1),
                 KeyCode::Home => Action::First,
                 KeyCode::End => Action::Last,
                 KeyCode::Char('g') => {
@@ -1555,6 +2047,13 @@ impl App {
                     .as_mut()
                     .expect("grid")
                     .move_selection(delta);
+            }
+            Action::HalfPage(direction) => {
+                let rows = half_page_rows(&self.viewports.grid);
+                self.history_grid
+                    .as_mut()
+                    .expect("grid")
+                    .move_selection(rows * direction);
             }
             Action::First => {
                 let grid = self.history_grid.as_mut().expect("grid");
@@ -2167,6 +2666,35 @@ impl App {
         }
     }
 
+    /// Redirects the env overlay's machine store into `dir` (tests).
+    /// Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_machine_dir(&mut self, dir: PathBuf) {
+        self.machine_dir = Some(dir);
+    }
+
+    /// Installs an env overlay for headless renders, without a machine
+    /// store. Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_env_overlay(&mut self, rows: Vec<EnvironmentRow>) {
+        self.env_overlay = Some(EnvOverlay::new("preview-workspace".to_string(), rows));
+    }
+
+    /// Opens the env overlay's set form mid-flight for headless renders.
+    /// Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_env_form(&mut self, secret: bool, input: &str) {
+        if let Some(overlay) = self.env_overlay.as_mut() {
+            overlay.form = Some(EnvForm {
+                step: EnvFormStep::Value,
+                environment: "local".to_string(),
+                name: "token".to_string(),
+                secret,
+                input: input.to_string(),
+            });
+        }
+    }
+
     /// Opens a data overlay for headless harnesses. Not part of the product API.
     #[doc(hidden)]
     pub fn preview_data_overlay(&mut self, title: impl Into<String>, lines: Vec<String>) {
@@ -2278,6 +2806,11 @@ impl App {
     /// Current run status.
     pub fn status(&self) -> &RunStatus {
         &self.status
+    }
+
+    /// The `:env` overlay, when open.
+    pub fn env_overlay(&self) -> Option<&EnvOverlay> {
+        self.env_overlay.as_ref()
     }
 
     /// Available environment entries.
@@ -3002,6 +3535,158 @@ mod tests {
         app.command = "theme graphite".to_string();
         app.execute_command().await.unwrap();
         assert_eq!(app.theme().appearance(), Appearance::Dark);
+    }
+
+    async fn type_str(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn env_overlay_edits_machine_store_metadata_only() {
+        let (dir, mut app) = app_with_store().await;
+        // The workspace lints forbid env-var unsafe, so the machine store
+        // is redirected by hook instead of FACET_DATA_DIR. The encrypted
+        // secrets backend needs no keyring; set_environment_with uses
+        // SecretConfig::from_env, which defaults to keyring — so exercise
+        // the plain path here and leave secret storage to lattice's tests.
+        app.preview_machine_dir(dir.join("machine"));
+
+        // Bare :env opens the overlay on this workspace's entries.
+        app.command = "env".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.env_overlay().is_some());
+        assert!(app.env_overlay().unwrap().rows.is_empty());
+
+        // `a` → environment → name → secret? → value.
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        type_str(&mut app, "local").await;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        type_str(&mut app, "token").await;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        // Empty answer at "secret? y/N" means plain.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        type_str(&mut app, "hunter2").await;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        let overlay = app.env_overlay().expect("overlay after set");
+        assert_eq!(overlay.rows.len(), 1);
+        assert_eq!(overlay.rows[0].name, "local");
+        assert_eq!(overlay.rows[0].key, "token");
+        assert!(!overlay.rows[0].secret);
+        // The notice carries metadata only — never the value.
+        assert_eq!(
+            overlay.notice.as_deref(),
+            Some("local/token set (plain)")
+        );
+
+        // `d` then anything-but-y keeps the row; `d` then `y` deletes.
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(app.env_overlay().unwrap().rows.len(), 1);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        let overlay = app.env_overlay().unwrap();
+        assert!(overlay.rows.is_empty());
+        assert_eq!(overlay.notice.as_deref(), Some("local/token deleted"));
+
+        // Esc closes.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.env_overlay().is_none());
+    }
+
+    #[tokio::test]
+    async fn ctrl_d_and_ctrl_u_scroll_half_a_page() {
+        let (_dir, mut app) = app_with_store().await;
+
+        // Tree: half of a 10-row viewport is 5 rows (clamped at the ends).
+        app.viewports.tree.set(10);
+        let len = app.rows().len();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 0, "ctrl+u clamps at the top");
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 5.min(len - 1));
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.selection(), 0);
+
+        // Response pane scrolls by half its viewport.
+        app.focus = Focus::Response;
+        app.viewports.response.set(10);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.response_scroll, 5);
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.response_scroll, 0);
+        app.focus = Focus::Tree;
+
+        // History grid: viewport 2 → half-page is one row.
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        app.viewports.grid.set(2);
+        assert_eq!(app.history_grid().unwrap().selected, 0);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.history_grid().unwrap().selected, 1);
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.history_grid().unwrap().selected, 0);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        // Env overlay: viewport 4 → half-page is two rows.
+        let rows = (0..10)
+            .map(|index| EnvironmentRow {
+                name: "local".to_string(),
+                key: format!("key-{index}"),
+                secret: false,
+                updated_at: 0,
+            })
+            .collect();
+        app.preview_env_overlay(rows);
+        app.viewports.env.set(4);
+        app.handle_key(KeyCode::Char('d'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.env_overlay().unwrap().selected, 2);
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL)
+            .await
+            .unwrap();
+        assert_eq!(app.env_overlay().unwrap().selected, 0);
     }
 
     #[tokio::test]
