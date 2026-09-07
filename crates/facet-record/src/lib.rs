@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod diff;
+mod hydrate;
 
 use std::path::Path;
 
@@ -14,6 +15,7 @@ pub use diff::{
     BodyDiff, BodySide, FieldChange, PROVENANCE_FIELDS, RunDiff, compare, diff_request_bodies,
     diff_response_bodies, unified_diff,
 };
+pub use hydrate::{HydrateError, Hydration, overlay_secrets};
 
 use lattice::{
     BodyInput, LatticeConfig, LatticeError, MachineStore, NewRun, Retention, RunRow,
@@ -206,6 +208,9 @@ pub struct RecordRequest<'a> {
     /// Names of the `--var` overrides used at resolve time. Names only;
     /// values are never written anywhere in Lattice.
     pub var_names: &'a [String],
+    /// Secret values to scrub from stored text (URL, header values, error
+    /// text) before the row is written. See [`Hydration::redact`].
+    pub redact: &'a [String],
 }
 
 /// Records one run in the workspace store beside the collection, then
@@ -228,6 +233,7 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
         session,
         replayed_from,
         var_names,
+        redact,
     } = *req;
     let Some(root) = root else {
         return Recording::Skipped("stdin_workspace");
@@ -239,12 +245,17 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
 
     let req_body_bytes = request_body_bytes(request);
     let request_hash = request_hash(request, req_body_bytes.as_deref());
-    let req_headers = request_headers_json(&request.headers).to_string();
-    let error_text = result.as_ref().err().map(ToString::to_string);
-    let res_headers = result
+    let req_headers = scrub(&request_headers_json(&request.headers).to_string(), redact);
+    let error_text = result
         .as_ref()
-        .ok()
-        .map(|response| response_headers_json(&response.headers).to_string());
+        .err()
+        .map(|error| scrub(&error.to_string(), redact));
+    let res_headers = result.as_ref().ok().map(|response| {
+        scrub(
+            &response_headers_json(&response.headers).to_string(),
+            redact,
+        )
+    });
     let content_type = result.as_ref().ok().and_then(|response| {
         response
             .headers
@@ -257,7 +268,7 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
     } else {
         Some(json!(tags).to_string())
     };
-    let redacted_url = redact_url(request.url.as_deref().unwrap_or(""));
+    let redacted_url = scrub(&redact_url(request.url.as_deref().unwrap_or("")), redact);
     // Always written post-0003 so `[]` (none) stays distinct from NULL (unknown).
     let var_names_json = json!(var_names).to_string();
 
@@ -449,6 +460,25 @@ fn response_headers_json(headers: &[ResponseHeader]) -> Value {
     )
 }
 
+/// Shortest secret value that is scrubbed from stored text. Shorter values
+/// would mangle unrelated text (and are not secrets in any useful sense).
+pub const MIN_REDACT_LEN: usize = 4;
+
+/// Replaces every occurrence of each known secret value with `<redacted>`.
+/// Applied to stored URL, header JSON, and error text so a secret the YAML
+/// interpolates into a query string or a custom header never lands in
+/// Lattice. Bodies are content-addressed blobs and are not rewritten.
+#[must_use]
+pub fn scrub(text: &str, secrets: &[String]) -> String {
+    let mut out = text.to_owned();
+    for secret in secrets {
+        if secret.len() >= MIN_REDACT_LEN && out.contains(secret.as_str()) {
+            out = out.replace(secret.as_str(), REDACTED);
+        }
+    }
+    out
+}
+
 /// Strips `user:password@` from a URL's authority.
 fn redact_url(url: &str) -> String {
     let Some(scheme_end) = url.find("://") else {
@@ -474,7 +504,7 @@ fn redact_url(url: &str) -> String {
 mod tests {
     use probe_core::{Header, HttpRequest};
 
-    use super::{form_encode, redact_url, request_hash, request_headers_json, url_encode};
+    use super::{form_encode, redact_url, request_hash, request_headers_json, scrub, url_encode};
 
     fn request(url: &str) -> HttpRequest {
         HttpRequest {
@@ -524,6 +554,16 @@ mod tests {
         assert_eq!(first, same);
         assert_ne!(first, other);
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn scrubs_known_secret_values_but_not_tiny_ones() {
+        let secrets = vec!["hunter2".to_owned(), "ab".to_owned()];
+        assert_eq!(
+            scrub("http://x/?t=hunter2&u=ab", &secrets),
+            "http://x/?t=<redacted>&u=ab"
+        );
+        assert_eq!(scrub("clean", &secrets), "clean");
     }
 
     #[test]

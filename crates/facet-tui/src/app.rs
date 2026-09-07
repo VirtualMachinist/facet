@@ -10,8 +10,7 @@ use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 use crossterm::event::{KeyCode, KeyModifiers};
 use lattice::{HistoryQuery, LatticeConfig, RunRow, SqlValue, WorkspaceStore};
 use probe_core::{
-    FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_environment,
-    resolve_request,
+    FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_request,
 };
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use probe_opencollection::{LoadedWorkspace, SaveError, load_workspace};
@@ -1872,7 +1871,9 @@ impl App {
         }
     }
 
-    fn prepared_request(&self) -> Result<HttpRequest, String> {
+    /// The request to send plus the secret values hydrated into it, which the
+    /// recorder scrubs from stored text.
+    fn prepared_request_with_redact(&self) -> Result<(HttpRequest, Vec<String>), String> {
         let Some((_, request)) = self.selected_request() else {
             return Err("no request selected".to_string());
         };
@@ -1880,24 +1881,40 @@ impl App {
         build_update(&self.method, &self.editor).apply(&mut prepared);
         if let Some(index) = self.active_environment {
             let Some(entry) = self.environments.get(index) else {
-                return Ok(prepared);
+                return Ok((prepared, Vec::new()));
             };
             let Some(loaded) = self.loaded.as_ref() else {
-                return Ok(prepared);
+                return Ok((prepared, Vec::new()));
             };
-            let resolved = resolve_environment(loaded.workspace().environments(), &entry.name)
-                .map_err(|error| error.to_string())?;
+            // Secret hydration (Goal 5): Lattice environment values overlay
+            // as overrides before resolve, same path as the CLI.
+            let base = self.base_directory();
+            let hydration = facet_record::overlay_secrets(
+                base.as_deref(),
+                Some(&entry.name),
+                &prepared,
+                loaded.workspace().environments(),
+                &[],
+            )
+            .map_err(|error| error.to_string())?;
+            let resolved = probe_core::resolve_environment_with_overrides(
+                loaded.workspace().environments(),
+                Some(&entry.name),
+                &hydration.overrides,
+            )
+            .map_err(|error| error.to_string())?;
             prepared = resolve_request(&prepared, &resolved).map_err(|error| error.to_string())?;
+            return Ok((prepared, hydration.redact));
         }
-        Ok(prepared)
+        Ok((prepared, Vec::new()))
     }
 
     async fn run_selected(&mut self) -> Result<(), TuiError> {
         if self.pending.is_some() {
             return Ok(());
         }
-        let request = match self.prepared_request() {
-            Ok(request) => request,
+        let (request, redact) = match self.prepared_request_with_redact() {
+            Ok(prepared) => prepared,
             Err(message) => {
                 self.status = RunStatus::Failed(message);
                 return Ok(());
@@ -1971,6 +1988,7 @@ impl App {
                     session: session.as_deref(),
                     replayed_from: None,
                     var_names: &[],
+                    redact: &redact,
                 });
                 Some(RecordSummary::from_recording(&recording))
             } else {
