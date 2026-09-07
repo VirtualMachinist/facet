@@ -513,9 +513,12 @@ impl RecordSummary {
     }
 }
 
-/// Bodies over this size are not pulled into the response pane on hydrate;
-/// the grid shows `blob <hash> · omitted` instead (same cap as the CLI).
-const HYDRATE_BODY_CAP: u64 = 16 * 1024 * 1024;
+/// Bodies over the engine's in-memory cap are not pulled into the response
+/// pane on hydrate; the grid shows `blob <hash> · omitted` instead (same
+/// cap as the CLI's `--bodies` path).
+fn hydrate_body_cap() -> u64 {
+    u64::try_from(probe_http::MAX_IN_MEMORY_RESPONSE_BYTES).unwrap_or(u64::MAX)
+}
 
 /// `:history` grid state (Goal 2). A navigable table of Lattice runs —
 /// not a text dump. Keys live in Normal mode inside the overlay:
@@ -2226,7 +2229,7 @@ impl App {
 /// Stored response body for the replayed view: inline bytes or the blob,
 /// capped at 16 MiB; over that the pane says `blob <hash> · omitted`.
 fn hydrated_body(store: &WorkspaceStore, row: &RunRow) -> String {
-    if row.res_body.len.is_some_and(|len| len > HYDRATE_BODY_CAP) {
+    if row.res_body.len.is_some_and(|len| len > hydrate_body_cap()) {
         let hash = row.res_body.hash.as_deref().unwrap_or("?");
         return format!("blob {hash} · omitted");
     }
