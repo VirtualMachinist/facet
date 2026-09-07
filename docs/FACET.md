@@ -152,9 +152,9 @@ in the Lapis vault.
 
 1. *Replay truth = current YAML + recorded env.* `--frozen` is opt-in refuse-on-hash-change. Frozen stored bytes are a trap (secrets redacted; auth is scheme-only in the hash).
 2. *Overlay secrets now,* do not wait for an upstream provider hook. Missing Lattice secret + OpenCollection `Secret` → `secret_variable_unavailable` (exit 5), never empty substitution.
-3. *`--expect` is exit 6* (`expect_failed`). Do not renumber 0–9; do not invent 10.
-4. *MCP after items 1–6.* Shell-out is enough for week 1.
-5. *Git HEAD stamp: skip this train, or 0003 column if it rides along.* Auto-tag `git:<sha>` needs no migration but is worse to query. Not a blocker for 1–6.
+3. *`--expect` exit code.* First pass: **6** (`expect_failed`). Explore pass: **1**, so agents do not retry assertion misses (6 stays network/timeout). Do not invent 10; do not renumber 0–5 / 7–9.
+4. *MCP after items 1–6.* Shell-out is enough for week 1. Teach harnesses with skill/rule files before freezing MCP tools.
+5. *Git HEAD stamp: skip this train.* Explore pass: auto-tag `git:<sha>` rather than 0003; spend 0003 on `replayed_from` + `var_names` if anything.
 
 Not this train: Thread A protocols, `ctrl+u`/`ctrl+d`, collection-in-Lattice, a writer daemon, kitchen-sink MCP, a JS test runner.
 
