@@ -311,7 +311,13 @@ body hash (OSC 52), `/` filters by selector, `s` toggles runs from
 `$FACET_SESSION` only, Esc closes. Under the header, a sparkline paints
 the last ≤24 statuses of the focused row's selector (oldest → newest,
 palette status buckets, stone for unrecorded) — paint, not a verb.
-`:sql <query>` opens a read-only overlay. `?` lists the rest.
+Bare `:env` opens the environment editor over the machine store —
+metadata only (environment, name, secret flag, updated; values are never
+shown): `a` adds an entry (environment → name → secret? → value, secret
+input masked), `e` re-sets the selected row's value, `d` deletes after a
+`y` confirm. `ctrl+u` / `ctrl+d` scroll half a page in the focused pane,
+the history grid, and the env overlay. `:sql <query>` opens a read-only
+overlay. `?` lists the rest.
 
 Roadmap (Probe's public list, folded): HTTP live; user-defined theme files
 live (`facet-tui`, see [Theme files](#theme-files)); next WebSocket, GraphQL,
