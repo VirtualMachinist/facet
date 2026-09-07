@@ -22,6 +22,16 @@ libsql = { version = "0.9", optional = true }
 # `bundled` builds libduckdb from source (heavy C++ build) so the crate is
 # self-contained on apiary.
 duckdb = { version = "1.10505.0", optional = true, features = ["bundled"] }
+# HedronDB knowledge-graph engine (complement to Turso; apiary-only for the
+# smoke). `hedron-core` is a separate repo (publish = false), pulled as a git
+# dep only when `lattice-hedron` is on, pinned to the `facet-pin-align` proposal
+# branch which bumps `rusqlite` to 0.40 (bundled) to match this crate's 0.40
+# (bundled) — both engines share one `libsqlite3-sys` and coexist in one binary
+# (the `links = "sqlite3"` blocker is resolved by the alignment, not patched).
+# Not the default engine; never in lathe default-members. See
+# `agents/backend/notes/2026-09-07-evaluate-hedrondb.md` and `docs/FACET.md`
+# § Engines.
+hedron-core = { git = "https://github.com/VirtualMachinist/hedrondb", rev = "c7210486f915b19d6b1cb9a8d9e0bea25782bb1c", optional = true }
 rand = "0.9"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
@@ -47,6 +57,14 @@ lattice-turso = ["dep:libsql"]
 # lattice file externally for analytics (see the `lattice-duckdb` smoke test
 # and `agents/backend/notes/`). Heavy native build; only compile on apiary.
 lattice-duckdb = ["dep:duckdb"]
+# HedronDB knowledge-graph engine (complement to Turso). APIARY-ONLY: never
+# enabled in lathe default members. `hedron-core` is a separate-schema store
+# (nodes/edges/desired_states/events, HQL — not SQL over `lattice.db`), so it
+# is a projection complement, not a same-file read engine like Turso. The
+# gated smoke proves coexistence (hedron-core + this crate's rusqlite 0.40 link
+# and run in one binary); the projection mapping is a later slice. Not the
+# default engine. See `docs/FACET.md` § Engines.
+lattice-hedron = ["dep:hedron-core"]
 
 # Feature-gated Turso smoke test: only built when `lattice-turso` is on, so a
 # default `cargo test -p lattice` (feature off) never pulls libsql/tokio.
@@ -59,6 +77,16 @@ required-features = ["lattice-turso"]
 [[test]]
 name = "duckdb"
 required-features = ["lattice-duckdb"]
+
+# Feature-gated HedronDB smoke test: only built when `lattice-hedron` is on.
+# Never run on lathe (apiary-only). Proves hedron-core can open its own store
+# and answer an HQL read inside the lattice test binary that also links
+# rusqlite 0.40 (the default engine) — i.e. the two bundled-SQLite engines
+# coexist. It does NOT open `lattice.db` (hedron-core's Store bootstraps its
+# own schema; see the evaluate note).
+[[test]]
+name = "hedron"
+required-features = ["lattice-hedron"]
 
 [lints]
 workspace = true
