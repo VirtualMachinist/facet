@@ -1,6 +1,7 @@
 //! Facet error contract. Categories and exit codes for delegated behavior
 //! mirror `probe-cli`'s `error.rs` exactly; Facet adds `lattice_*`,
-//! `blob_not_found`, `invalid_sql`, and `sql_read_only`.
+//! `blob_not_found`, `run_not_found`, `session_not_found`, `session_not_set`,
+//! `invalid_sql`, and `sql_read_only`.
 
 use lattice::LatticeError;
 use probe_core::EnvironmentResolutionError;
@@ -63,6 +64,36 @@ impl FacetError {
             "blob_not_found",
             format!("blob not found: {hash}"),
             REQUEST_NOT_FOUND_EXIT_CODE,
+        )
+    }
+
+    /// `history --id` with an unknown run id. Extends "not found" (exit 4)
+    /// the same way `blob_not_found` does.
+    pub(crate) fn run_not_found(id: &str) -> Self {
+        Self::new(
+            "run_not_found",
+            format!("run not found: {id}"),
+            REQUEST_NOT_FOUND_EXIT_CODE,
+        )
+    }
+
+    /// `session end|show <id>` with an unknown session id (exit 4).
+    pub(crate) fn session_not_found(id: &str) -> Self {
+        Self::new(
+            "session_not_found",
+            format!("session not found: {id}"),
+            REQUEST_NOT_FOUND_EXIT_CODE,
+        )
+    }
+
+    /// `--session current` or `session end` with no `FACET_SESSION` in the
+    /// environment. Configuration family (exit 5): the caller fixes inputs.
+    pub(crate) fn session_not_set() -> Self {
+        Self::new(
+            "session_not_set",
+            "FACET_SESSION is not set; run `export FACET_SESSION=$(facet session start)` \
+             or pass an explicit session id",
+            CONFIGURATION_EXIT_CODE,
         )
     }
 

@@ -7,6 +7,7 @@
 //! - `request run` executes through the same core and HTTP engine as Probe,
 //!   then records the run in the workspace Lattice store.
 //! - `history`, `blob`, and `gc` read and maintain that store.
+//! - `session` starts, ends, lists, and shows agent sessions in the machine store.
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -22,6 +23,7 @@ mod error;
 mod history;
 mod presentation;
 mod run;
+mod session;
 mod tui;
 mod workspace;
 
@@ -138,22 +140,33 @@ pub const fn help() -> &'static str {
         "Commands:\n",
         "  request run <path> <selector>       Execute an HTTP request and record it in Lattice\n",
         "  history [<path>]                    List recorded runs, newest first (metadata only)\n",
+        "  history [<path>] --id <ulid>        Show one recorded run by id\n",
         "  history [<path>] --sql <query>      Run read-only SQL against the workspace store\n",
+        "  session start                       Start a session; prints its ULID (use with FACET_SESSION)\n",
+        "  session end [<id>|current]          End a session (default: $FACET_SESSION); idempotent\n",
+        "  session list                        List sessions, newest first\n",
+        "  session show <id>|current           Show one session\n",
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
         "  tui [<path>]                        Open the terminal UI\n",
         "\n",
         "Options:\n",
         "      --no-record             Execute without writing to Lattice\n",
-        "      --tag <tag>             Tag the recorded run; may be repeated\n",
+        "      --tag <tag>             Tag the recorded run, or filter history by tag (AND); may be repeated\n",
         "      --inline-body-max <n>   Inline bodies at or under this size (e.g. 64KiB)\n",
         "      --history-retention <r> Retention window for gc (unlimited or e.g. 30d)\n",
         "      --limit <n>             Maximum history rows (default 50)\n",
         "      --request <selector>    Only history for one request\n",
         "      --status <code>         Only history with one HTTP status\n",
-        "      --actor <name>          Only history by one actor\n",
+        "      --actor <name>          Only history or sessions by one actor; session start actor\n",
         "      --since <unix-ms>       Only history started at or after this time\n",
+        "      --session <id>|current  Only history recorded in one session\n",
+        "      --environment <name>    Only history resolved with one environment\n",
+        "      --hash <sha256>         Only history whose request, request body, or response body hash matches\n",
+        "      --id <ulid>             One run by id (exclusive with the filters above)\n",
         "      --bodies                Include inline bodies in history JSON\n",
+        "      --meta <json>           Session metadata object (session start)\n",
+        "      --open                  Only sessions still open (session list)\n",
         "      --output <file>         Write a blob to a file instead of stdout\n",
         "      --yes                   Apply gc deletions (default is a dry run)\n",
         "      --appearance <name>     TUI appearance: graphite or porcelain\n",
@@ -198,7 +211,9 @@ where
 
     let owned = match args.first().map(String::as_str) {
         None => true,
-        Some("history" | "blob" | "gc" | "tui" | "-V" | "--version" | "-h" | "--help") => true,
+        Some(
+            "history" | "session" | "blob" | "gc" | "tui" | "-V" | "--version" | "-h" | "--help",
+        ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
     };
@@ -241,6 +256,7 @@ where
     let result = match args[0].as_str() {
         "request" => run::run(&args[2..], stdin),
         "history" => history::history(&args[1..]),
+        "session" => session::session(&args[1..]),
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(

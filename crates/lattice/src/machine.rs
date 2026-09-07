@@ -206,12 +206,7 @@ impl MachineStore {
     /// exists yet. Returns `true` when a row was created, `false` when one
     /// already existed (in which case nothing is written). Used by
     /// `facet-record` when `FACET_SESSION` is set on a run.
-    pub fn ensure_session(
-        &self,
-        id: &str,
-        actor: &str,
-        now: i64,
-    ) -> Result<bool, LatticeError> {
+    pub fn ensure_session(&self, id: &str, actor: &str, now: i64) -> Result<bool, LatticeError> {
         let inserted = self.conn.execute(
             "INSERT OR IGNORE INTO sessions (id, actor, started_at, ended_at, meta) \
              VALUES (?1, ?2, ?3, NULL, NULL)",
@@ -262,7 +257,9 @@ impl MachineStore {
             sql.push_str(&clauses.join(" AND "));
         }
         sql.push_str(" ORDER BY started_at DESC, id DESC LIMIT ?");
-        values.push(Value::Integer(i64::try_from(query.limit as u64).unwrap_or(i64::MAX)));
+        values.push(Value::Integer(
+            i64::try_from(query.limit as u64).unwrap_or(i64::MAX),
+        ));
 
         let mut statement = self.conn.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values))?;
@@ -376,7 +373,12 @@ impl MachineStore {
             "SELECT value, secret_ref FROM environments \
              WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
             params![workspace_id, name, key],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
         ) {
             Ok(pair) => Some(pair),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -386,9 +388,7 @@ impl MachineStore {
             return Ok(None);
         };
         match secret_ref {
-            Some(reference) if !reference.is_empty() => {
-                Ok(get_secret_with(&reference, config)?)
-            }
+            Some(reference) if !reference.is_empty() => Ok(get_secret_with(&reference, config)?),
             _ => Ok(value),
         }
     }
