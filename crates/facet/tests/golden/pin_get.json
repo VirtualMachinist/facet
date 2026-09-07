@@ -1,0 +1,10 @@
+{
+  "pin": {
+    "dangling": false,
+    "name": "auth-ok",
+    "pinnedAt": "<int>",
+    "runId": "<ulid>",
+    "workspaceId": "<ulid>"
+  },
+  "schemaVersion": 1
+}
