@@ -1,0 +1,10 @@
+# Fixture: a valid v1 theme file extending Graphite Honey.
+version = 1
+name = "midnight-honey"
+extends = "graphite"
+
+[colors]
+accent = "#e7821b"
+window_bg = "#101012"
+text_primary = "#e9e6e0"
+method_get = "#7fd1b9"

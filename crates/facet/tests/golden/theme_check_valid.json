@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "theme": {
+    "extends": "graphite",
+    "name": "midnight-honey",
+    "overrides": 4,
+    "path": "<path>",
+    "valid": true
+  }
+}

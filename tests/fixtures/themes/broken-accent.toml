@@ -1,0 +1,8 @@
+# Fixture: invalid color literal — the TUI falls back to Graphite Honey
+# and `facet theme check` exits 1 naming colors.accent.
+version = 1
+name = "broken-accent"
+extends = "graphite"
+
+[colors]
+accent = "red"

@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use crate::theme::{Appearance, Depth, Theme};
+use crate::theme_file::{self, ThemeFile};
 use crate::tree::{Row, TreeView};
 
 /// Top-level TUI error type. Wraps I/O, OpenCollection, and HTTP failures
@@ -432,6 +433,9 @@ pub struct App {
     searching: bool,
     request_focus: RequestFocus,
     theme_state: Theme,
+    /// Name of the active theme file (`:theme <name>` / `--theme`), when
+    /// the palette came from disk instead of a built-in.
+    custom_theme: Option<String>,
     section: Section,
     mode: Mode,
     /// `:` command-line buffer (Command mode).
@@ -621,6 +625,7 @@ impl App {
             // Graphite Honey is the product default (2b-i). `--appearance`
             // and `:theme` are the switchers; COLORFGBG does not override.
             theme_state: Theme::new(Appearance::Dark).with_depth(Depth::from_env()),
+            custom_theme: None,
             section: Section::Path,
             mode: Mode::Normal,
             command: String::new(),
@@ -1205,19 +1210,19 @@ impl App {
             "theme" | "appearance" => match arg {
                 "" | "toggle" => {
                     self.theme_state = self.theme_state.toggle();
+                    self.custom_theme = None;
                 }
                 "graphite" | "dark" => {
                     self.theme_state =
                         Theme::new(Appearance::Dark).with_depth(self.theme_state.depth());
+                    self.custom_theme = None;
                 }
                 "porcelain" | "light" => {
                     self.theme_state =
                         Theme::new(Appearance::Light).with_depth(self.theme_state.depth());
+                    self.custom_theme = None;
                 }
-                _ => {
-                    self.status =
-                        RunStatus::Failed("usage: :theme [graphite|porcelain]".to_string());
-                }
+                other => self.apply_theme_file(other),
             },
             "env" | "environment" => {
                 if arg.is_empty() {
@@ -2227,6 +2232,33 @@ impl App {
     /// and `--appearance` overrides).
     pub fn apply_theme(&mut self, theme: Theme) {
         self.theme_state = theme;
+        self.custom_theme = None;
+    }
+
+    /// `:theme <name|path>` / `--theme`: load a theme file and paint with
+    /// it. On any error the built-in for the current appearance stays (or
+    /// is restored, reverting a previously applied file) and the footer
+    /// names the file and field — invalid files never take the chrome down.
+    pub fn apply_theme_file(&mut self, argument: &str) {
+        let result = theme_file::resolve_theme_path(argument).and_then(|path| ThemeFile::load(&path));
+        match result {
+            Ok(file) => {
+                let name = file.name().to_string();
+                self.theme_state = file.theme(self.theme_state.depth());
+                self.custom_theme = Some(name);
+            }
+            Err(error) => {
+                self.theme_state = Theme::new(self.theme_state.appearance())
+                    .with_depth(self.theme_state.depth());
+                self.custom_theme = None;
+                self.status = RunStatus::Failed(format!("theme: {error}"));
+            }
+        }
+    }
+
+    /// The active theme file's name, when one is applied.
+    pub fn custom_theme_name(&self) -> Option<&str> {
+        self.custom_theme.as_deref()
     }
 
     /// Response pane scroll offset.
@@ -2914,6 +2946,59 @@ mod tests {
         app.command = "theme porcelain".to_string();
         app.execute_command().await.unwrap();
         assert_eq!(app.theme().appearance(), Appearance::Light);
+        app.command = "theme graphite".to_string();
+        app.execute_command().await.unwrap();
+        assert_eq!(app.theme().appearance(), Appearance::Dark);
+    }
+
+    #[tokio::test]
+    async fn theme_file_command_applies_and_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = dir.path().join("midnight-honey.toml");
+        std::fs::write(
+            &valid,
+            "version = 1\nname = \"midnight-honey\"\nextends = \"porcelain\"\n\
+             [colors]\naccent = \"#ff0000\"\n",
+        )
+        .unwrap();
+        let broken = dir.path().join("broken.toml");
+        std::fs::write(&broken, "version = 2\nextends = \"graphite\"\n").unwrap();
+
+        let mut app = App::load(Some(&fixture())).await;
+        app.command = format!("theme {}", valid.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(app.custom_theme_name(), Some("midnight-honey"));
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        assert_eq!(
+            app.theme().palette().accent,
+            ratatui::style::Color::Rgb(255, 0, 0)
+        );
+
+        // Invalid → back to the built-in for the current appearance, with
+        // the file and field named in the footer.
+        app.command = format!("theme {}", broken.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(app.custom_theme_name(), None);
+        assert_eq!(app.theme().appearance(), Appearance::Light);
+        assert_eq!(
+            app.theme().palette().accent,
+            crate::theme::Palette::porcelain_honey().accent
+        );
+        match app.status() {
+            RunStatus::Failed(message) => {
+                assert!(message.contains("broken.toml"), "{message}");
+                assert!(message.contains("version"), "{message}");
+            }
+            other => panic!("expected failure status, got {other:?}"),
+        }
+
+        // A missing file fails the same way and keeps the built-in.
+        app.command = format!("theme {}", dir.path().join("nope.toml").display());
+        app.execute_command().await.unwrap();
+        assert_eq!(app.custom_theme_name(), None);
+        assert!(matches!(app.status(), RunStatus::Failed(_)));
+
+        // Built-ins still win back the chrome afterwards.
         app.command = "theme graphite".to_string();
         app.execute_command().await.unwrap();
         assert_eq!(app.theme().appearance(), Appearance::Dark);
