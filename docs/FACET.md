@@ -248,6 +248,7 @@ file format:
 | --- | --- | --- |
 | `lattice-turso` | Turso / libSQL (local mode) | Same file format as rusqlite (libSQL is a SQLite fork); flipping the flag requires no migration. Smoke: `crates/lattice/tests/turso.rs` (open/write/read a workspace store through libSQL). The smoke is libsql-only: rusqlite and libsql both bundle SQLite and cannot coexist in one binary (libsql's `sqlite3_config(SERIALIZED)` returns `SQLITE_MISUSE` after rusqlite initializes SQLite; `skip_safety_assert` is `unsafe` and the workspace forbids it). Verified still true 2026-09-06 (libsql 0.9.30). |
 | `lattice-duckdb` | DuckDB in-process (bundled) | **Apiary-only; never in lathe default members.** ATTACHes the SQLite lattice file for analytics. Smoke: `crates/lattice/tests/duckdb.rs`. Heavy native build. |
+| `lattice-hedron` | HedronDB knowledge-graph (`hedron-core`, bundled rusqlite) | **Apiary-only; never in lathe default members.** A **projection complement** to Turso, not a same-file read engine: `hedron-core::Store::open` bootstraps its own schema (`nodes`/`edges`/`desired_states`/`events`, HQL) and cannot read `lattice.db`. The smoke proves coexistence — `hedron-core` (rusqlite 0.32, bundled) and this crate's default engine (rusqlite 0.40, bundled) link and run in one binary (same coexistence class as `lattice-turso`). Smoke: `crates/lattice/tests/hedron.rs`. The Lattice→HedronDB projection mapping is a later slice. |
 
 The primary analytics path is the **`duckdb` CLI** attaching the SQLite
 file externally (no Rust, no feature flag). Durable smoke:
@@ -262,6 +263,13 @@ duckdb -c "INSTALL sqlite; LOAD sqlite; \
 `INSTALL sqlite` downloads the `sqlite` extension on first use (network
 needed once). The in-process `lattice-duckdb` feature is a convenience
 for embedding the same ATTACH in Rust; it is not required for analytics.
+
+`lattice-hedron` is a **complement**, not a peer, to Turso: Turso reads the
+same `lattice.db` (libSQL is a SQLite fork); HedronDB is a separate-schema
+knowledge graph (HQL, not SQL) that a future projection will feed from
+Lattice run history. It is apiary-only until the projection and the
+`hedron-core` rusqlite-version coexistence are settled. See
+`agents/backend/notes/2026-09-07-evaluate-hedrondb.md` for the evaluation.
 
 Feature-gated tests use `required-features` in `crates/lattice/Cargo.toml`,
 so a default `cargo test -p lattice` (features off) never pulls libsql,
