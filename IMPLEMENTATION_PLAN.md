@@ -78,23 +78,36 @@ designed against the event shape.
 | 06 | Git integration | Optional status/diff/commit in TUI; filesystem stays the Git boundary | No provider coupling in core |
 | 07 | Secret storage (rest) | Already in Lattice; wire TUI env editor to the machine store | Probe desktop |
 
-### Facet-only (not on Probe's list)
+### Facet-only — next slice (*and more*)
 
-- Lattice engines: rusqlite default; `lattice-turso` feature; analytics via
-  external DuckDB ATTACH (`scripts/duckdb-attach-demo.sh`). In-process
-  `lattice-duckdb` is apiary-only, never lathe.
-- TUI depth: collections browser, run inspector, vim-modal polish. `ctrl+u` /
-  `ctrl+d` deferred.
-- MCP / harness adapter over Lattice (must not parse CLI output). Sketch lives
-  with fullstack's 2026-09-07 "and more" note.
-- Public docs/brand seating and release tagging aligned with workspace version.
+Probe's last public item is open-ended. Facet's is Lattice doing work:
+send → see → compare → send again, with a ULID an agent can hold. Canonical
+write-up: [docs/FACET.md](docs/FACET.md#next-slice). Product note:
+`agents/fullstack/notes/2026-09-07-and-more.md` in the Lapis vault.
 
-### Exploring (*and more*)
+**Ship next** (ranked):
 
-Probe's last roadmap item is open-ended. Facet explores it as agent-harness
-integration, run replay, and Lattice-powered recall — not a second desktop
-Postman. See `agents/fullstack/notes/2026-09-07-and-more.md` in the Lapis vault
-once it lands.
+1. Session lifecycle — `facet session start/end`, mint-if-missing, `history --session`
+2. Recall — `history --id` plus `--session/--environment/--tag/--hash`; TUI history grid hydrates the response pane
+3. Replay — current YAML at the recorded env; warn on hash change; `--frozen` refuses
+4. Hash-first diff — `facet diff <a> <b>`; exit 1 on mismatch
+5. Secret hydration — Lattice env as `--var` before resolve
+6. Dry-run + `--expect` — upstream-first; `--expect` is exit 6 `expect_failed`
+
+**Load-bearing picks** for that slice: replay = current YAML; overlay secrets
+now; MCP after 1–6. Still open: `--expect` exit **6 vs 1** (explore pass
+argues 1 so agents do not retry assertion misses); git HEAD skip / auto-tag
+rather than 0003.
+
+MCP / harness adapter over Lattice must not parse CLI output. Engines stay
+rusqlite default; DuckDB ATTACH is `scripts/duckdb-attach-demo.sh`. TUI
+`ctrl+u` / `ctrl+d` deferred.
+
+### Facet-only (later)
+
+- TUI depth: collections browser, run inspector, vim-modal polish
+- Public docs/brand seating and release tagging aligned with workspace version
+- `history --follow --jsonl`, fixtures from blobs, watch, FTS5
 
 ### Inherited notes (still load-bearing)
 

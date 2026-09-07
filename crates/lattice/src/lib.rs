@@ -12,8 +12,14 @@
 //!   environments, preferences.
 //!
 //! Decisions and defaults come from `FACET_HANDOFF_BRIEF.md` (Surfaces 1,
-//! 3, 4, 5). Engine order: bundled SQLite now, Turso behind a feature later,
-//! never DuckDB in the binary.
+//! 3, 4, 5). Engine order: bundled SQLite now, Turso behind a feature later.
+//! DuckDB ATTACHes the SQLite file out of process (`scripts/duckdb-attach-demo.sh`);
+//! the in-process `lattice-duckdb` feature is apiary-only, never lathe.
+//!
+//! **Next slice** (sessions, recall, replay, hash-diff, secret hydration,
+//! `--expect`): `docs/FACET.md` § Next slice. The `sessions` table and
+//! [`WorkspaceStore::run`] exist; they have no CLI yet. `FACET_SESSION` is
+//! written onto the run row without minting a parent session.
 
 #![forbid(unsafe_code)]
 
