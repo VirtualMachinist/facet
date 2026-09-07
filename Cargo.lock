@@ -2393,12 +2393,14 @@ dependencies = [
  "probe-core",
  "probe-http",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
 name = "facet-tui"
 version = "0.5.7"
 dependencies = [
+ "base64 0.23.1",
  "crossterm 0.29.0",
  "facet-record",
  "lattice",
@@ -2407,7 +2409,9 @@ dependencies = [
  "probe-opencollection",
  "ratatui",
  "serde_json",
+ "tempfile",
  "tokio",
+ "toml 1.1.4+spec-1.1.0",
  "unicode-width",
 ]
 

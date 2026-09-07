@@ -7,13 +7,16 @@ use std::{io, path::PathBuf};
 use facet_tui::{App, Appearance, Depth, Theme};
 use ratatui::{Terminal, backend::CrosstermBackend};
 
-const HELP: &str = "Usage: facet tui [--appearance graphite|porcelain] [<path>]\n\
+const HELP: &str = "Usage: facet tui [--appearance graphite|porcelain] [--theme <name|path>] [<path>]\n\
 \n\
 Graphite Honey is the default. Porcelain Honey is the light appearance.\n\
+--theme loads a theme file from <config dir>/themes/<name>.toml (or an explicit\n\
+path); an invalid file falls back to the built-in for the current appearance.\n\
 Keys: j/k move · Enter send · i insert · : command · ? help · q quit\n";
 
 struct Cli {
     appearance: Option<Appearance>,
+    theme: Option<String>,
     path: Option<PathBuf>,
 }
 
@@ -58,6 +61,11 @@ pub fn run_tui(args: &[String]) -> u8 {
         if let Some(appearance) = cli.appearance {
             app.apply_theme(Theme::new(appearance).with_depth(Depth::from_env()));
         }
+        if let Some(theme) = &cli.theme {
+            // Invalid files fall back to the built-in and name the field
+            // in the footer; the TUI never fails to start over a theme.
+            app.apply_theme_file(theme);
+        }
         match app.run(&mut terminal).await {
             Ok(()) => 0,
             Err(error) => {
@@ -75,6 +83,7 @@ pub fn run_tui(args: &[String]) -> u8 {
 
 fn parse_args(args: &[String]) -> Result<Cli, String> {
     let mut appearance = None;
+    let mut theme = None;
     let mut path = None;
     let mut iter = args.iter();
     while let Some(argument) = iter.next() {
@@ -86,9 +95,17 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
                     .ok_or_else(|| "--appearance requires graphite or porcelain".to_owned())?;
                 appearance = Some(parse_appearance(value)?);
             }
+            "--theme" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--theme requires a theme name or path".to_owned())?;
+                theme = Some(value.clone());
+            }
             other => {
                 if let Some(value) = other.strip_prefix("--appearance=") {
                     appearance = Some(parse_appearance(value)?);
+                } else if let Some(value) = other.strip_prefix("--theme=") {
+                    theme = Some(value.to_owned());
                 } else if path.is_none() && !other.starts_with('-') {
                     path = Some(PathBuf::from(other));
                 } else {
@@ -97,7 +114,11 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
             }
         }
     }
-    Ok(Cli { appearance, path })
+    Ok(Cli {
+        appearance,
+        theme,
+        path,
+    })
 }
 
 fn parse_appearance(value: &str) -> Result<Appearance, String> {

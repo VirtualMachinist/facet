@@ -1,0 +1,12 @@
+{
+  "error": {
+    "category": "theme_invalid",
+    "details": {
+      "field": "colors.accent",
+      "path": "<path>"
+    },
+    "exitCode": 1,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}
