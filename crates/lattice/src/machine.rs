@@ -287,6 +287,53 @@ impl MachineStore {
         Ok(out)
     }
 
+    // ----- Preferences (pins first; TUI-private state later) -------------
+
+    /// Sets one preference. `value` is JSON text; the caller owns its shape.
+    pub fn set_preference(&self, key: &str, value: &str) -> Result<(), LatticeError> {
+        self.conn.execute(
+            "INSERT INTO preferences (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Reads one preference's JSON text, or `None`.
+    pub fn preference(&self, key: &str) -> Result<Option<String>, LatticeError> {
+        match self.conn.query_row(
+            "SELECT value FROM preferences WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(value) => Ok(Some(value)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// All `(key, value)` pairs whose key starts with `prefix`, sorted by key.
+    pub fn preferences(&self, prefix: &str) -> Result<Vec<(String, String)>, LatticeError> {
+        let mut statement = self.conn.prepare(
+            "SELECT key, value FROM preferences WHERE substr(key, 1, ?1) = ?2 ORDER BY key",
+        )?;
+        let rows = statement
+            .query_map(
+                params![i64::try_from(prefix.len()).unwrap_or(i64::MAX), prefix],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Deletes one preference; `false` when it was not set.
+    pub fn delete_preference(&self, key: &str) -> Result<bool, LatticeError> {
+        let removed = self
+            .conn
+            .execute("DELETE FROM preferences WHERE key = ?1", params![key])?;
+        Ok(removed > 0)
+    }
+
     // ----- Environments (Surface 3) --------------------------------------
 
     /// Sets one environment value for a workspace. When `secret` is true the

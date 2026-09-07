@@ -89,6 +89,36 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
         ));
     }
 
+    let (query, hash) = parse_filters(&parsed)?;
+
+    let Some(root) = root else {
+        return Ok(CommandOutput::new(
+            "No Lattice store found; run a request with facet first.\n",
+            json!({ "workspace": Value::Null, "runs": [] }),
+        ));
+    };
+    let store = open_store(&root, &ConfigOverrides::default())?;
+    let rows = store.history(&query).map_err(FacetError::lattice)?;
+
+    let mut lines = vec![HISTORY_HEADER.to_owned()];
+    let mut runs = Vec::with_capacity(rows.len());
+    for row in &rows {
+        lines.push(history_line(row));
+        let mut run = run_json(&store, row, include_bodies)?;
+        if let Some(hash) = &hash {
+            run["matchedHash"] = matched_hash(row, hash);
+        }
+        runs.push(run);
+    }
+    Ok(CommandOutput::new(
+        format!("{}\n", lines.join("\n")),
+        json!({ "workspace": workspace_json(&store), "runs": runs }),
+    ))
+}
+
+/// The query-side filters shared by `history` and `last`, plus the
+/// lowercased `--hash` argument for `matchedHash`.
+fn parse_filters(parsed: &args::Parsed) -> Result<(HistoryQuery, Option<String>), FacetError> {
     let hash = parsed
         .value("--hash")?
         .map(|value| value.trim().to_ascii_lowercase());
@@ -115,29 +145,46 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
     if query.limit == 0 {
         return Err(FacetError::invalid_arguments("--limit must be at least 1"));
     }
+    Ok((query, hash))
+}
 
-    let Some(root) = root else {
-        return Ok(CommandOutput::new(
-            "No Lattice store found; run a request with facet first.\n",
-            json!({ "workspace": Value::Null, "runs": [] }),
-        ));
-    };
+/// `facet last [<path>] [filters]`: the newest matching run. Human mode
+/// prints the bare ULID, so `facet replay $(facet last --status 500)` is a
+/// one-liner; JSON is the `history --id` shape (`{ workspace, run }`).
+/// No match (or no store) is `run_not_found`, exit 4, so a shell
+/// substitution never yields an empty id.
+pub(crate) fn last(args: &[String]) -> Result<CommandOutput, FacetError> {
+    const LAST_VALUE_FLAGS: &[&str] = &[
+        "--request",
+        "--status",
+        "--actor",
+        "--since",
+        "--session",
+        "--environment",
+        "--tag",
+        "--hash",
+    ];
+    let parsed = args::parse(args, LAST_VALUE_FLAGS, &["--bodies"])?;
+    let path = single_optional_path(parsed.positionals(), "last")?;
+    let (mut query, hash) = parse_filters(&parsed)?;
+    query.limit = 1;
+    let (_, root) = locate_root(path);
+    let none = || FacetError::run_not_found("no run matches");
+    let root = root.ok_or_else(none)?;
     let store = open_store(&root, &ConfigOverrides::default())?;
-    let rows = store.history(&query).map_err(FacetError::lattice)?;
-
-    let mut lines = vec![HISTORY_HEADER.to_owned()];
-    let mut runs = Vec::with_capacity(rows.len());
-    for row in &rows {
-        lines.push(history_line(row));
-        let mut run = run_json(&store, row, include_bodies)?;
-        if let Some(hash) = &hash {
-            run["matchedHash"] = matched_hash(row, hash);
-        }
-        runs.push(run);
+    let row = store
+        .history(&query)
+        .map_err(FacetError::lattice)?
+        .into_iter()
+        .next()
+        .ok_or_else(none)?;
+    let mut run = run_json(&store, &row, parsed.switch("--bodies"))?;
+    if let Some(hash) = &hash {
+        run["matchedHash"] = matched_hash(&row, hash);
     }
     Ok(CommandOutput::new(
-        format!("{}\n", lines.join("\n")),
-        json!({ "workspace": workspace_json(&store), "runs": runs }),
+        format!("{}\n", row.id),
+        json!({ "workspace": workspace_json(&store), "run": run }),
     ))
 }
 

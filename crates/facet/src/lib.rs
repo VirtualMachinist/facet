@@ -30,6 +30,7 @@ mod error;
 mod expect;
 mod history;
 mod mcp;
+mod pin;
 mod presentation;
 mod replay;
 mod run;
@@ -197,6 +198,10 @@ pub const fn help() -> &'static str {
         "      [--expect <codes>] [--dry-run]  Assert the status (exit 1 on miss) or preview only\n",
         "  history [<path>]                    List recorded runs, newest first (metadata only)\n",
         "  history [<path>] --id <ulid>        Show one recorded run by id\n",
+        "  last [<path>] [filters]             Newest matching run; prints its ULID (same filters as history)\n",
+        "  pin <runId> --as <name> [<path>]    Name a run in the machine store\n",
+        "  pin get <name> [<path>]             Print a pinned run id (dangling reported in JSON)\n",
+        "  pin list [<path>] | pin delete <name>\n",
         "  history [<path>] --sql <query>      Run read-only SQL against the workspace store\n",
         "  session start                       Start a session; prints its ULID (use with FACET_SESSION)\n",
         "  session end [<id>|current]          End a session (default: $FACET_SESSION); idempotent\n",
@@ -281,8 +286,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "mcp" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc"
-            | "tui" | "-V" | "--version" | "-h" | "--help",
+            "history" | "last" | "pin" | "mcp" | "session" | "replay" | "diff" | "env" | "doctor"
+            | "blob" | "gc" | "tui" | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -326,6 +331,8 @@ where
     let result = match args[0].as_str() {
         "request" => run::run(&args[2..], stdin),
         "history" => history::history(&args[1..]),
+        "last" => history::last(&args[1..]),
+        "pin" => pin::pin(&args[1..]),
         "session" => session::session(&args[1..]),
         "replay" => replay::replay(&args[1..], stdin),
         "diff" => diff::diff(&args[1..]),
