@@ -543,6 +543,13 @@ pub struct HistoryGrid {
     pub(crate) g_pending: bool,
     /// Footer notice (`yanked 01K…`, hydrate errors). Cleared on move.
     pub(crate) notice: Option<String>,
+    /// Last ≤24 statuses of the focused row's selector, oldest → newest.
+    /// Sparkline paint only — refreshed when the focused selector changes,
+    /// never on a timer, never a verb.
+    pub(crate) sparkline: Vec<Option<i64>>,
+    /// Selector the sparkline was queried for. Dedupes requeries when
+    /// `j`/`k` moves between two rows of the same request.
+    pub(crate) sparkline_selector: Option<String>,
 }
 
 impl HistoryGrid {
@@ -556,6 +563,8 @@ impl HistoryGrid {
             session_only: false,
             g_pending: false,
             notice: None,
+            sparkline: Vec::new(),
+            sparkline_selector: None,
         }
     }
 
@@ -1324,6 +1333,7 @@ impl App {
                         self.help_open = false;
                         self.data_overlay = None;
                         self.history_grid = Some(HistoryGrid::new(root, rows));
+                        self.refresh_sparkline();
                     }
                     Err(error) => {
                         self.status = RunStatus::Failed(format!("history: {error}"));
@@ -1376,9 +1386,65 @@ impl App {
         }
     }
 
+    /// Runs the last-≤24-statuses query for the focused row's selector.
+    /// No-op when the grid is closed or the focused selector is unchanged,
+    /// so callers can invoke it after every grid key without thinking.
+    fn refresh_sparkline(&mut self) {
+        const SPARKLINE_RUNS: usize = 24;
+        let Some(grid) = self.history_grid.as_ref() else {
+            return;
+        };
+        let selector = grid.selected_row().map(|row| row.request_path.clone());
+        if selector == grid.sparkline_selector {
+            return;
+        }
+        let Some(selector) = selector else {
+            let grid = self.history_grid.as_mut().expect("grid");
+            grid.sparkline.clear();
+            grid.sparkline_selector = None;
+            return;
+        };
+        let root = grid.root.clone();
+        let session_only = grid.session_only;
+        // Newest-first from the store; reversed so the sparkline reads
+        // oldest → newest, rightmost cell = latest run.
+        let statuses = WorkspaceStore::open_existing(&root, LatticeConfig::default())
+            .ok()
+            .flatten()
+            .and_then(|store| {
+                store
+                    .history(&HistoryQuery {
+                        limit: SPARKLINE_RUNS,
+                        request_path: Some(selector.clone()),
+                        session_id: if session_only {
+                            facet_record::session_from_env()
+                        } else {
+                            None
+                        },
+                        ..HistoryQuery::default()
+                    })
+                    .ok()
+            })
+            .map(|rows| rows.iter().map(|row| row.status).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .rev()
+            .collect();
+        let grid = self.history_grid.as_mut().expect("grid");
+        grid.sparkline = statuses;
+        grid.sparkline_selector = Some(selector);
+    }
+
     /// Normal-mode keys while the `:history` grid is open. Esc closes the
     /// grid (or exits the `/` input); it never quits the app.
     fn handle_history_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        let consumed = self.handle_history_key_inner(code)?;
+        // Paint follows the focus; no-op unless the focused selector moved.
+        self.refresh_sparkline();
+        Ok(consumed)
+    }
+
+    fn handle_history_key_inner(&mut self, code: KeyCode) -> Result<bool, TuiError> {
         // Phase 1: the `/` filter input captures everything printable.
         {
             let grid = self.history_grid.as_mut().expect("grid");
@@ -2084,6 +2150,16 @@ impl App {
         self.help_open = false;
         self.data_overlay = None;
         self.history_grid = Some(HistoryGrid::new(PathBuf::from("."), rows));
+    }
+
+    /// Paints a canned sparkline onto the open grid for headless renders.
+    /// Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_sparkline(&mut self, statuses: Vec<Option<i64>>) {
+        if let Some(grid) = self.history_grid.as_mut() {
+            grid.sparkline_selector = grid.selected_row().map(|row| row.request_path.clone());
+            grid.sparkline = statuses;
+        }
     }
 
     /// Opens a data overlay for headless harnesses. Not part of the product API.
@@ -3145,6 +3221,67 @@ mod tests {
             );
             assert!(!grid.session_only);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_sparkline_follows_the_focused_selector() {
+        let (dir, mut app) = app_with_store().await;
+        // Two more "Pets/List pets" runs: a 500 and a transport error, so
+        // that selector has a three-cell line ending in stone.
+        let store = WorkspaceStore::open(&dir, LatticeConfig::default()).unwrap();
+        for (status, offset) in [(Some(500), 10), (None, 20)] {
+            store
+                .record_run(&lattice::NewRun {
+                    started_at: lattice::now_ms() + offset,
+                    duration_ms: Some(5),
+                    request_path: "Pets/List pets",
+                    request_hash: "abc",
+                    method: "GET",
+                    url: "https://example.com/pets",
+                    status,
+                    error: status.is_none().then_some("connection refused"),
+                    actor: "human",
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        drop(store);
+
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        // Newest run overall is the error run of "Pets/List pets".
+        let grid = app.history_grid().expect("grid");
+        assert_eq!(grid.sparkline_selector.as_deref(), Some("Pets/List pets"));
+        assert_eq!(
+            grid.sparkline,
+            vec![Some(200), Some(500), None],
+            "oldest → newest, None = unrecorded"
+        );
+
+        // j within the same selector keeps the line; the next j lands on
+        // "Pets/Create pet" and repaints.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.history_grid().unwrap().sparkline,
+            vec![Some(200), Some(500), None],
+            "same selector: no requery, no repaint"
+        );
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        let grid = app.history_grid().unwrap();
+        assert_eq!(grid.sparkline_selector.as_deref(), Some("Pets/Create pet"));
+        assert_eq!(grid.sparkline, vec![Some(500)]);
+
+        // Closing the grid clears nothing but never queries either.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.history_grid().is_none());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
