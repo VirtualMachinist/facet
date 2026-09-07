@@ -50,6 +50,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.help_open() {
         render_help_overlay(frame, shell[1], styles);
     }
+    if app.history_grid().is_some() {
+        render_history_grid(frame, shell[1], app, styles);
+    }
     if let Some((title, lines)) = app.data_overlay() {
         render_data_overlay(frame, shell[1], title, lines, styles);
     }
@@ -715,7 +718,9 @@ fn render_response_pane(frame: &mut Frame, area: Rect, app: &App, styles: Styles
         styles.muted
     };
     let lines: Vec<Line> = match app.response() {
-        Some(response) => response_lines(response, app, styles, header_style),
+        Some(response) => {
+            response_lines(response, app, styles, header_style, app.response_origin())
+        }
         None => match app.status() {
             RunStatus::Running => vec![Line::from(Span::styled(
                 "  Sending… / waiting for the server",
@@ -745,12 +750,16 @@ fn response_lines<'a>(
     app: &'a App,
     styles: Styles,
     header_style: ratatui::style::Style,
+    origin: Option<&'a str>,
 ) -> Vec<Line<'a>> {
     let palette = app.theme().palette();
     let status_color = palette.response_status(response.status);
     let mut lines = Vec::new();
+    // A hydrated run names itself (`run 01K… · replayed view`); a live
+    // send keeps the plain label.
+    let label = origin.unwrap_or("Response");
     lines.push(Line::from(vec![
-        Span::styled("  Response  ", header_style),
+        Span::styled(format!("  {label}  "), header_style),
         Span::styled(
             format!("{} {}", response.status, response.reason),
             styles.base.fg(status_color),
@@ -857,6 +866,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         "insert · Esc normal · Enter save".to_string()
     } else if app.help_open() {
         "help · Esc close".to_string()
+    } else if app.history_grid().is_some() {
+        "history · Enter hydrate · y yank · / filter · Esc close".to_string()
     } else if app.data_overlay().is_some() {
         "overlay · Esc close".to_string()
     } else if app.searching() {
@@ -1005,7 +1016,7 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
 /// actions in editor text. This is option A's discoverability device —
 /// one overlay, no which-key.
 fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    const KEYS: [(&str, &str); 15] = [
+    const KEYS: [(&str, &str); 16] = [
         ("j/k · arrows", "move (tree, rows, response scroll)"),
         ("gg / G", "first / last row (tree, request, response)"),
         ("Enter", "folder toggle · open · send · :send"),
@@ -1019,6 +1030,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         ("Ctrl-W h/j/k/l", "focus pane · Ctrl-W w cycles"),
         ("Ctrl-S", "save to disk · :w"),
         (":", "command line (:w :q :send :theme :history :sql)"),
+        (
+            ":history grid",
+            "j/k · Enter hydrate · y yank id · / filter",
+        ),
         ("?", "this help · :help"),
         ("q", "quit · Esc cancels run/overlay"),
     ];
@@ -1044,6 +1059,194 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         styles.muted,
     )));
     frame.render_widget(Paragraph::new(lines).block(block), overlay);
+}
+
+/// Fixed-width cell: exact fits pass through, longer text truncates from
+/// the right with `…`, shorter text space-pads.
+fn cell(text: &str, width: usize) -> String {
+    let text_width = UnicodeWidthStr::width(text);
+    if text_width == width {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    if text_width < width {
+        out.push_str(text);
+        used = text_width;
+    } else {
+        for ch in text.chars() {
+            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+            if used + ch_width > width.saturating_sub(1) {
+                break;
+            }
+            out.push(ch);
+            used += ch_width;
+        }
+        out.push('…');
+        used += 1;
+    }
+    while used < width {
+        out.push(' ');
+        used += 1;
+    }
+    out
+}
+
+/// `:history` grid (Goal 2): one row per Lattice run, run id visible.
+/// Column order is fixed — `STARTED STATUS MS METHOD REQUEST ACTOR ID` —
+/// with REQUEST taking the slack. The focused row's full ULID is on the
+/// overlay footer so `y` is discoverable.
+#[allow(clippy::too_many_lines)]
+fn render_history_grid(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
+    use crate::app::format_started;
+
+    let Some(grid) = app.history_grid() else {
+        return;
+    };
+    let palette = app.theme().palette();
+    let visible = grid.visible_indices();
+
+    const STARTED_W: usize = 11; // "MM-DD HH:MM"
+    const STATUS_W: usize = 6;
+    const MS_W: usize = 6;
+    const METHOD_W: usize = 7;
+    const ACTOR_W: usize = 12;
+    const ID_W: usize = 8;
+    const REQUEST_MIN: usize = 12;
+    // 1 leading pad + 6 single-space separators + 1 trailing pad.
+    const CHROME: usize = 1 + 6 + 1;
+    let fixed = STARTED_W + STATUS_W + MS_W + METHOD_W + ACTOR_W + ID_W + CHROME + REQUEST_MIN;
+    let width = ((fixed + 12) as u16).clamp(64, 110).min(area.width);
+    let height = (visible.len().max(1) as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let overlay = centered(area, width, height);
+    frame.render_widget(Clear, overlay);
+
+    let mut title = " history ".to_string();
+    if grid.session_only {
+        title = " history · this session ".to_string();
+    }
+    if !grid.filter.is_empty() {
+        title = format!("{}· /{} ", title.trim_end(), grid.filter);
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(title, styles.brand));
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+    if inner.height < 2 {
+        return;
+    }
+
+    let request_w = (inner.width as usize).saturating_sub(fixed - REQUEST_MIN);
+    let header = Line::from(Span::styled(
+        format!(
+            " {} {} {} {} {} {} {}",
+            cell("STARTED", STARTED_W),
+            cell("STATUS", STATUS_W),
+            cell("MS", MS_W),
+            cell("METHOD", METHOD_W),
+            cell("REQUEST", request_w),
+            cell("ACTOR", ACTOR_W),
+            cell("ID", ID_W),
+        ),
+        styles.muted,
+    ));
+
+    let body_height = inner.height.saturating_sub(2) as usize; // header + footer
+    let offset = if grid.selected >= body_height {
+        grid.selected + 1 - body_height
+    } else {
+        0
+    };
+    let mut lines = vec![header];
+    if visible.is_empty() {
+        let empty = if grid.filter.is_empty() {
+            " (no runs)"
+        } else {
+            " (no runs match the filter)"
+        };
+        lines.push(Line::from(Span::styled(empty, styles.placeholder)));
+    }
+    for (row_index, &run_index) in visible.iter().enumerate().skip(offset).take(body_height) {
+        let row = &grid.rows[run_index];
+        let selected = row_index == grid.selected;
+        let status_text = row
+            .status
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "ERR".to_string());
+        let ms = row
+            .duration_ms
+            .map(|value| format!("{value:>6}"))
+            .unwrap_or_else(|| "     -".to_string());
+        let id8: String = row.id.chars().take(ID_W).collect();
+        if selected {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " {} {} {} {} {} {} {}",
+                    cell(&format_started(row.started_at), STARTED_W),
+                    cell(&status_text, STATUS_W),
+                    ms,
+                    cell(&row.method, METHOD_W),
+                    cell(&row.request_path, request_w),
+                    cell(&row.actor, ACTOR_W),
+                    cell(&id8, ID_W),
+                ),
+                styles.selected_row,
+            )));
+        } else {
+            let status_style = match row.status {
+                Some(code) => styles
+                    .base
+                    .fg(palette.response_status(u16::try_from(code).unwrap_or(0))),
+                None => styles.status_error,
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {}", cell(&format_started(row.started_at), STARTED_W)),
+                    styles.editor,
+                ),
+                Span::styled(format!(" {}", cell(&status_text, STATUS_W)), status_style),
+                Span::styled(format!(" {ms} "), styles.editor),
+                Span::styled(cell(&row.method, METHOD_W), styles.editor),
+                Span::styled(
+                    format!(" {}", cell(&row.request_path, request_w)),
+                    styles.editor,
+                ),
+                Span::styled(format!(" {}", cell(&row.actor, ACTOR_W)), styles.editor),
+                Span::styled(format!(" {}", cell(&id8, ID_W)), styles.muted),
+            ]));
+        }
+    }
+
+    // Footer: the `/` input while filtering, else the notice, else the
+    // focused run's full ULID so `y` is discoverable.
+    let footer = if grid.filtering {
+        format!(" /{}▌", grid.filter)
+    } else if let Some(notice) = &grid.notice {
+        format!(" {notice}")
+    } else {
+        match grid.selected_row() {
+            Some(row) => format!(" {} · Enter hydrate · y yank · Esc close", row.id),
+            None => " Esc close".to_string(),
+        }
+    };
+    lines.push(Line::from(Span::styled(
+        cell(&footer, inner.width as usize),
+        styles.muted,
+    )));
+
+    let drawn_height = (lines.len() as u16).min(inner.height);
+    frame.render_widget(
+        Paragraph::new(lines).style(styles.editor),
+        Rect {
+            height: drawn_height,
+            ..inner
+        },
+    );
 }
 
 fn render_data_overlay(
@@ -1311,25 +1514,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn history_overlay_renders_rows() {
+    async fn history_grid_renders_rows_with_run_ids() {
         let mut app = App::load(Some(&fixture())).await;
         app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
-        app.preview_data_overlay(
-            " history ",
-            vec![
-                "STATUS  MS     METHOD  REQUEST".to_string(),
-                "200     12     GET     Pets/List pets".to_string(),
-            ],
-        );
+        app.preview_history_grid(vec![lattice::RunRow {
+            id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string(),
+            started_at: 1_757_250_000_123,
+            duration_ms: Some(12),
+            request_path: "Pets/List pets".to_string(),
+            request_hash: "9f86d081".to_string(),
+            environment: None,
+            method: "GET".to_string(),
+            url: "https://example.com/pets".to_string(),
+            status: Some(200),
+            error: None,
+            req_headers: None,
+            res_headers: None,
+            req_body: lattice::BodyRef::default(),
+            res_body: lattice::BodyRef::default(),
+            res_content_type: None,
+            session_id: None,
+            actor: "claude.halo-fullstack".to_string(),
+            tags: None,
+        }]);
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).expect("backend");
         app.render_to(&mut terminal).expect("render");
         let text = dump(terminal.backend().buffer());
         assert!(text.contains("history"), "title: {text}");
+        assert!(text.contains("STARTED"), "header: {text}");
+        assert!(text.contains("STATUS"), "{text}");
         assert!(text.contains("Pets/List pets"), "{text}");
+        // The grid shows the id fragment in-row and the full ULID on the
+        // overlay footer so `y` is discoverable.
+        assert!(text.contains("01ARZ3ND"), "id fragment: {text}");
         assert!(
-            text.contains("overlay · Esc close") || text.contains("Esc close"),
-            "{text}"
+            text.contains("01ARZ3NDEKTSV4RRFFQ69G5FAV · Enter hydrate"),
+            "footer id: {text}"
+        );
+        assert!(
+            text.contains("history · Enter hydrate · y yank"),
+            "footer hints: {text}"
         );
     }
 

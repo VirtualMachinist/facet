@@ -8,7 +8,7 @@ use std::{
 use facet_record::{ConfigOverrides, RecordRequest, Recording, record};
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use lattice::{HistoryQuery, LatticeConfig, SqlValue, WorkspaceStore};
+use lattice::{HistoryQuery, LatticeConfig, RunRow, SqlValue, WorkspaceStore};
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_environment,
     resolve_request,
@@ -439,8 +439,13 @@ pub struct App {
     command: String,
     /// `?` help overlay.
     help_open: bool,
-    /// `:history` / `:sql` overlay (title + body lines).
+    /// `:sql` overlay (title + body lines). `:history` is the grid below.
     data_overlay: Option<(String, Vec<String>)>,
+    /// `:history` grid overlay (Goal 2).
+    history_grid: Option<HistoryGrid>,
+    /// Set when the response pane shows a hydrated Lattice run instead of
+    /// a live send; rendered as the pane title (`run 01K… · replayed view`).
+    response_origin: Option<String>,
     /// Awaiting the second key of a `Ctrl-W` focus chord.
     ctrl_w_pending: bool,
     /// Awaiting a second `g` for `gg`.
@@ -508,6 +513,91 @@ impl RecordSummary {
     }
 }
 
+/// Bodies over the engine's in-memory cap are not pulled into the response
+/// pane on hydrate; the grid shows `blob <hash> · omitted` instead (same
+/// cap as the CLI's `--bodies` path).
+fn hydrate_body_cap() -> u64 {
+    u64::try_from(probe_http::MAX_IN_MEMORY_RESPONSE_BYTES).unwrap_or(u64::MAX)
+}
+
+/// `:history` grid state (Goal 2). A navigable table of Lattice runs —
+/// not a text dump. Keys live in Normal mode inside the overlay:
+/// `j`/`k`/arrows move, `gg`/`G` jump, Enter hydrates the response pane
+/// from the store, `y` yanks the run id (OSC 52), `Y` yanks the response
+/// body hash, `/` filters by selector substring, `s` toggles
+/// "this session only", Esc/`q` closes.
+pub struct HistoryGrid {
+    /// Workspace root the store was opened from; reopened per hydrate so
+    /// the grid never holds a SQLite handle across the UI loop.
+    pub(crate) root: PathBuf,
+    /// Newest-first runs as last queried.
+    pub(crate) rows: Vec<RunRow>,
+    /// Selection index into the *filtered* view, not `rows`.
+    pub(crate) selected: usize,
+    /// `/` selector substring filter.
+    pub(crate) filter: String,
+    /// True while the `/` input is capturing keys.
+    pub(crate) filtering: bool,
+    /// `s` — restrict to runs recorded under `$FACET_SESSION`.
+    pub(crate) session_only: bool,
+    /// Awaiting the second `g` of `gg`.
+    pub(crate) g_pending: bool,
+    /// Footer notice (`yanked 01K…`, hydrate errors). Cleared on move.
+    pub(crate) notice: Option<String>,
+}
+
+impl HistoryGrid {
+    fn new(root: PathBuf, rows: Vec<RunRow>) -> Self {
+        Self {
+            root,
+            rows,
+            selected: 0,
+            filter: String::new(),
+            filtering: false,
+            session_only: false,
+            g_pending: false,
+            notice: None,
+        }
+    }
+
+    /// Indices into `rows` that pass the `/` filter, in display order.
+    pub(crate) fn visible_indices(&self) -> Vec<usize> {
+        let needle = self.filter.to_lowercase();
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                needle.is_empty() || row.request_path.to_lowercase().contains(&needle)
+            })
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The focused row, if any survive the filter.
+    pub(crate) fn selected_row(&self) -> Option<&RunRow> {
+        let visible = self.visible_indices();
+        visible.get(self.selected).map(|&index| &self.rows[index])
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.visible_indices().len();
+        self.selected = if len == 0 {
+            0
+        } else {
+            self.selected.min(len - 1)
+        };
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.visible_indices().len() as isize;
+        if len == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+        self.notice = None;
+    }
+}
+
 impl App {
     /// Loads a workspace from disk (or starts empty when no path is given).
     pub async fn load(path: Option<&Path>) -> Self {
@@ -528,6 +618,8 @@ impl App {
             command: String::new(),
             help_open: false,
             data_overlay: None,
+            history_grid: None,
+            response_origin: None,
             ctrl_w_pending: false,
             g_pending: false,
             editor: Editor::default(),
@@ -610,6 +702,7 @@ impl App {
             self.editor_snapshot = EditorSnapshot::default();
             self.editor_dirty = false;
             self.response = None;
+            self.response_origin = None;
             self.status = RunStatus::Idle;
             self.kv_index = 0;
             return;
@@ -619,6 +712,7 @@ impl App {
         self.editor_snapshot = snapshot;
         self.editor_dirty = false;
         self.response = None;
+        self.response_origin = None;
         self.status = RunStatus::Idle;
         self.response_scroll = 0;
         self.kv_index = 0;
@@ -765,6 +859,9 @@ impl App {
         }
         if self.help_open {
             return self.handle_help_key(code);
+        }
+        if self.history_grid.is_some() {
+            return self.handle_history_key(code);
         }
         if self.data_overlay.is_some() {
             return self.handle_data_overlay_key(code);
@@ -1221,39 +1318,288 @@ impl App {
             Err(error) => {
                 self.status = RunStatus::Failed(format!("history: {error}"));
             }
-            Ok(Some(store)) => match store.history(&HistoryQuery {
-                limit: 50,
-                ..HistoryQuery::default()
-            }) {
+            Ok(Some(store)) => {
+                let root = self.workspace_root().expect("a store implies a root");
+                match Self::query_history(&store, false) {
+                    Ok(rows) => {
+                        self.help_open = false;
+                        self.data_overlay = None;
+                        self.history_grid = Some(HistoryGrid::new(root, rows));
+                    }
+                    Err(error) => {
+                        self.status = RunStatus::Failed(format!("history: {error}"));
+                    }
+                }
+            }
+        }
+    }
+
+    fn query_history(
+        store: &WorkspaceStore,
+        session_only: bool,
+    ) -> Result<Vec<RunRow>, lattice::LatticeError> {
+        store.history(&HistoryQuery {
+            limit: 50,
+            session_id: if session_only {
+                facet_record::session_from_env()
+            } else {
+                None
+            },
+            ..HistoryQuery::default()
+        })
+    }
+
+    /// Re-runs the grid query after the `s` session toggle, preserving the
+    /// `/` filter and clamping the selection.
+    fn refresh_history_grid(&mut self) {
+        let Some(grid) = self.history_grid.as_mut() else {
+            return;
+        };
+        let session_only = grid.session_only;
+        match WorkspaceStore::open_existing(&grid.root, LatticeConfig::default()) {
+            Ok(Some(store)) => match Self::query_history(&store, session_only) {
                 Ok(rows) => {
-                    let mut lines = vec![format!(
-                        "{:<6} {:<6} {:<7} {}",
-                        "STATUS", "MS", "METHOD", "REQUEST"
-                    )];
-                    if rows.is_empty() {
-                        lines.push("(no runs)".to_string());
-                    }
-                    for row in rows {
-                        let status = row
-                            .status
-                            .map(|code| code.to_string())
-                            .unwrap_or_else(|| "ERR".to_string());
-                        let ms = row
-                            .duration_ms
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string());
-                        lines.push(format!(
-                            "{status:<6} {ms:<6} {:<7} {}",
-                            row.method, row.request_path
-                        ));
-                    }
-                    self.open_data_overlay(" history ", lines);
+                    let grid = self.history_grid.as_mut().expect("grid");
+                    grid.rows = rows;
+                    grid.clamp_selection();
                 }
                 Err(error) => {
                     self.status = RunStatus::Failed(format!("history: {error}"));
                 }
             },
+            Ok(None) => {
+                self.history_grid = None;
+                self.status = RunStatus::Failed("history: store went away".to_string());
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("history: {error}"));
+            }
         }
+    }
+
+    /// Normal-mode keys while the `:history` grid is open. Esc closes the
+    /// grid (or exits the `/` input); it never quits the app.
+    fn handle_history_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        // Phase 1: the `/` filter input captures everything printable.
+        {
+            let grid = self.history_grid.as_mut().expect("grid");
+            if grid.filtering {
+                match code {
+                    KeyCode::Esc => {
+                        grid.filtering = false;
+                        grid.filter.clear();
+                        grid.clamp_selection();
+                    }
+                    KeyCode::Enter => {
+                        grid.filtering = false;
+                    }
+                    KeyCode::Backspace => {
+                        grid.filter.pop();
+                        grid.selected = 0;
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        grid.filter.push(ch);
+                        grid.selected = 0;
+                    }
+                    _ => {}
+                }
+                return Ok(true);
+            }
+        }
+
+        // Phase 2: the `gg` chord. A non-`g` second key ends the chord and
+        // falls through to be handled on its own, mirroring the tree.
+        {
+            let grid = self.history_grid.as_mut().expect("grid");
+            if grid.g_pending {
+                grid.g_pending = false;
+                match code {
+                    KeyCode::Char('g') => {
+                        grid.selected = 0;
+                        grid.notice = None;
+                        return Ok(true);
+                    }
+                    KeyCode::Char('G') => {
+                        let len = grid.visible_indices().len();
+                        grid.selected = len.saturating_sub(1);
+                        grid.notice = None;
+                        return Ok(true);
+                    }
+                    KeyCode::Esc => return Ok(true),
+                    _ => {}
+                }
+            }
+        }
+
+        // Phase 3: decide the action against the grid, then act on `self`
+        // (hydrate and yank need the store / stdout, not the grid borrow).
+        enum Action {
+            Close,
+            Move(isize),
+            First,
+            Last,
+            Filter,
+            ToggleSession,
+            YankId(String),
+            YankBodyHash(Option<String>),
+            Hydrate(String),
+            Ignored,
+        }
+        let action = {
+            let grid = self.history_grid.as_mut().expect("grid");
+            match code {
+                KeyCode::Esc | KeyCode::Char('q') => Action::Close,
+                KeyCode::Char('j') | KeyCode::Down => Action::Move(1),
+                KeyCode::Char('k') | KeyCode::Up => Action::Move(-1),
+                KeyCode::Home => Action::First,
+                KeyCode::End => Action::Last,
+                KeyCode::Char('g') => {
+                    grid.g_pending = true;
+                    Action::Ignored
+                }
+                KeyCode::Char('G') => Action::Last,
+                KeyCode::Char('/') => Action::Filter,
+                KeyCode::Char('s') => Action::ToggleSession,
+                KeyCode::Char('y') => grid
+                    .selected_row()
+                    .map(|row| Action::YankId(row.id.clone()))
+                    .unwrap_or(Action::Ignored),
+                KeyCode::Char('Y') => grid
+                    .selected_row()
+                    .map(|row| Action::YankBodyHash(row.res_body.hash.clone()))
+                    .unwrap_or(Action::Ignored),
+                KeyCode::Enter => grid
+                    .selected_row()
+                    .map(|row| Action::Hydrate(row.id.clone()))
+                    .unwrap_or(Action::Ignored),
+                _ => Action::Ignored,
+            }
+        };
+
+        match action {
+            Action::Close => {
+                self.history_grid = None;
+            }
+            Action::Move(delta) => {
+                self.history_grid
+                    .as_mut()
+                    .expect("grid")
+                    .move_selection(delta);
+            }
+            Action::First => {
+                let grid = self.history_grid.as_mut().expect("grid");
+                grid.selected = 0;
+                grid.notice = None;
+            }
+            Action::Last => {
+                let grid = self.history_grid.as_mut().expect("grid");
+                let len = grid.visible_indices().len();
+                grid.selected = len.saturating_sub(1);
+                grid.notice = None;
+            }
+            Action::Filter => {
+                self.history_grid.as_mut().expect("grid").filtering = true;
+            }
+            Action::ToggleSession => {
+                if facet_record::session_from_env().is_some() {
+                    let grid = self.history_grid.as_mut().expect("grid");
+                    grid.session_only = !grid.session_only;
+                    grid.selected = 0;
+                    self.refresh_history_grid();
+                } else {
+                    let grid = self.history_grid.as_mut().expect("grid");
+                    grid.notice = Some("FACET_SESSION not set".to_string());
+                }
+            }
+            Action::YankId(id) => {
+                osc52_yank(&id);
+                let grid = self.history_grid.as_mut().expect("grid");
+                grid.notice = Some(format!("yanked {id}"));
+            }
+            Action::YankBodyHash(hash) => {
+                let grid = self.history_grid.as_mut().expect("grid");
+                match hash {
+                    Some(hash) => {
+                        osc52_yank(&hash);
+                        grid.notice =
+                            Some(format!("yanked body hash {}", &hash[..8.min(hash.len())]));
+                    }
+                    None => {
+                        grid.notice = Some("no response body hash on this run".to_string());
+                    }
+                }
+            }
+            Action::Hydrate(id) => self.hydrate_from_history(&id),
+            Action::Ignored => {}
+        }
+        Ok(true)
+    }
+
+    /// Enter on a grid row: load the run and its stored response body from
+    /// Lattice into the response pane, then close the grid so the replayed
+    /// view is visible. The pane title names the run.
+    fn hydrate_from_history(&mut self, run_id: &str) {
+        let Some(grid) = self.history_grid.as_ref() else {
+            return;
+        };
+        let root = grid.root.clone();
+        let store = match WorkspaceStore::open_existing(&root, LatticeConfig::default()) {
+            Ok(Some(store)) => store,
+            Ok(None) => {
+                self.history_grid = None;
+                self.status = RunStatus::Failed("history: store went away".to_string());
+                return;
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("history: {error}"));
+                return;
+            }
+        };
+        let row = match store.run(run_id) {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                let grid = self.history_grid.as_mut().expect("grid");
+                grid.notice = Some(format!("run {run_id} not found"));
+                return;
+            }
+            Err(error) => {
+                self.status = RunStatus::Failed(format!("history: {error}"));
+                return;
+            }
+        };
+        let body = hydrated_body(&store, &row);
+        let status = row
+            .status
+            .and_then(|code| u16::try_from(code).ok())
+            .unwrap_or(0);
+        let reason = match row.status {
+            Some(_) => reason_phrase(status).to_string(),
+            // Transport failures have no status; the error text is the reason.
+            None => row.error.clone().unwrap_or_default(),
+        };
+        let view = ResponseView {
+            status,
+            reason,
+            url: row.url.clone(),
+            duration: Duration::from_millis(
+                row.duration_ms
+                    .and_then(|ms| u64::try_from(ms).ok())
+                    .unwrap_or(0),
+            ),
+            headers: parse_stored_headers(row.res_headers.as_deref()),
+            body_len: row
+                .res_body
+                .len
+                .and_then(|len| usize::try_from(len).ok())
+                .unwrap_or(body.len()),
+            body,
+        };
+        self.response = Some(view);
+        self.response_origin = Some(format!("run {} · replayed view", row.id));
+        self.response_scroll = 0;
+        self.response_tab = ResponseTab::Pretty;
+        self.history_grid = None;
+        self.focus = Focus::Response;
     }
 
     fn show_sql(&mut self, sql: &str) {
@@ -1579,6 +1925,7 @@ impl App {
         self.pending = Some(receiver);
         self.status = RunStatus::Running;
         self.response = None;
+        self.response_origin = None;
         self.response_scroll = 0;
         self.last_recording = None;
 
@@ -1652,6 +1999,7 @@ impl App {
                     status: view.status,
                     duration: view.duration,
                 };
+                self.response_origin = None;
                 self.response = Some(view);
             }
             RunResult::Err(message) => {
@@ -1694,9 +2042,28 @@ impl App {
         self.help_open
     }
 
-    /// `:history` / `:sql` overlay, if open.
+    /// `:sql` overlay, if open.
     pub fn data_overlay(&self) -> Option<&(String, Vec<String>)> {
         self.data_overlay.as_ref()
+    }
+
+    /// `:history` grid, if open.
+    pub fn history_grid(&self) -> Option<&HistoryGrid> {
+        self.history_grid.as_ref()
+    }
+
+    /// Pane title override when the response is a hydrated Lattice run.
+    pub fn response_origin(&self) -> Option<&str> {
+        self.response_origin.as_deref()
+    }
+
+    /// Opens a history grid over canned rows for headless harnesses.
+    /// Not part of the product API.
+    #[doc(hidden)]
+    pub fn preview_history_grid(&mut self, rows: Vec<RunRow>) {
+        self.help_open = false;
+        self.data_overlay = None;
+        self.history_grid = Some(HistoryGrid::new(PathBuf::from("."), rows));
     }
 
     /// Opens a data overlay for headless harnesses. Not part of the product API.
@@ -1857,6 +2224,111 @@ impl App {
             .collect::<Vec<_>>()
             .join(" › ")
     }
+}
+
+/// Stored response body for the replayed view: inline bytes or the blob,
+/// capped at 16 MiB; over that the pane says `blob <hash> · omitted`.
+fn hydrated_body(store: &WorkspaceStore, row: &RunRow) -> String {
+    if row.res_body.len.is_some_and(|len| len > hydrate_body_cap()) {
+        let hash = row.res_body.hash.as_deref().unwrap_or("?");
+        return format!("blob {hash} · omitted");
+    }
+    match store.response_body(row) {
+        Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+        Ok(None) => match &row.res_body.hash {
+            Some(hash) => format!("blob {hash} · not in store"),
+            None => String::new(),
+        },
+        Err(error) => format!("body unreadable: {error}"),
+    }
+}
+
+/// Stored response headers are a JSON array of `{"name", "value"}`.
+fn parse_stored_headers(json: Option<&str>) -> Vec<(String, String)> {
+    let Some(json) = json else {
+        return Vec::new();
+    };
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(json) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            Some((
+                item.get("name")?.as_str()?.to_string(),
+                item.get("value")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Canonical reason phrase for the codes a replayed view is likely to
+/// show. Lattice stores the status, not the phrase; unknown codes render
+/// as the bare number.
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Content",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    }
+}
+
+/// Yanks text to the system clipboard via OSC 52 — no clipboard crate.
+/// Terminals that ignore OSC 52 just swallow the sequence.
+fn osc52_yank(text: &str) {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let mut out = std::io::stdout();
+    let _ = out.write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes());
+    let _ = out.flush();
+}
+
+/// `MM-DD HH:MM` UTC for the grid's STARTED column.
+pub(crate) fn format_started(unix_ms: i64) -> String {
+    let seconds = unix_ms.div_euclid(1000);
+    let days = seconds.div_euclid(86_400);
+    let day_seconds = seconds.rem_euclid(86_400);
+    let (_, month, day) = civil_from_days(days);
+    format!(
+        "{month:02}-{day:02} {:02}:{:02}",
+        day_seconds / 3600,
+        (day_seconds % 3600) / 60,
+    )
+}
+
+/// Howard Hinnant's days-from-civil inverse; same math the CLI's
+/// `format_utc` uses, duplicated so the TUI takes no date dependency.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 fn sql_value_human(value: &SqlValue) -> String {
@@ -2414,8 +2886,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn history_and_sql_read_an_existing_store() {
+    /// Temp collection dir with a Lattice store holding two runs; the
+    /// first has an inline response body for the hydrate path.
+    async fn app_with_store() -> (std::path::PathBuf, App) {
         let dir = std::env::temp_dir().join(format!(
             "facet-tui-s2-{}-{}",
             std::process::id(),
@@ -2437,23 +2910,227 @@ mod tests {
                 method: "GET",
                 url: "https://example.com/pets",
                 status: Some(200),
+                res_headers: Some(r#"[{"name":"content-type","value":"application/json"}]"#),
+                res_body: lattice::BodyInput::Bytes(b"{\"pets\":[]}"),
+                res_content_type: Some("application/json"),
                 actor: "human",
                 ..Default::default()
             })
             .unwrap();
+        store
+            .record_run(&lattice::NewRun {
+                started_at: lattice::now_ms() + 1,
+                duration_ms: Some(40),
+                request_path: "Pets/Create pet",
+                request_hash: "def",
+                method: "POST",
+                url: "https://example.com/pets",
+                status: Some(500),
+                actor: "claude.halo-fullstack",
+                ..Default::default()
+            })
+            .unwrap();
         drop(store);
+        let app = App::load(Some(&yaml)).await;
+        (dir, app)
+    }
 
-        let mut app = App::load(Some(&yaml)).await;
+    #[tokio::test]
+    async fn history_opens_a_grid_with_run_ids() {
+        let (dir, mut app) = app_with_store().await;
         assert!(app.lattice_ready());
         app.command = "history".to_string();
         app.execute_command().await.unwrap();
-        let (_, lines) = app.data_overlay().expect("history overlay");
-        assert!(
-            lines.iter().any(|line| line.contains("Pets/List pets")),
-            "{lines:?}"
-        );
-        assert!(lines.iter().any(|line| line.contains("200")), "{lines:?}");
+        assert!(app.data_overlay().is_none(), "grid replaced the dump");
+        let grid = app.history_grid().expect("history grid");
+        assert_eq!(grid.rows.len(), 2);
+        // Newest first: the POST 500 is row zero.
+        let row = grid.selected_row().expect("row");
+        assert_eq!(row.request_path, "Pets/Create pet");
+        assert!(!row.id.is_empty(), "run id visible");
 
+        // j/k move, gg/G jump, Esc closes without quitting.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.history_grid()
+                .unwrap()
+                .selected_row()
+                .unwrap()
+                .request_path,
+            "Pets/List pets"
+        );
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('G'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.history_grid()
+                .unwrap()
+                .selected_row()
+                .unwrap()
+                .request_path,
+            "Pets/List pets"
+        );
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Char('g'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.history_grid()
+                .unwrap()
+                .selected_row()
+                .unwrap()
+                .request_path,
+            "Pets/Create pet"
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.history_grid().is_none());
+        assert!(!app.should_quit);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_enter_hydrates_the_response_pane() {
+        let (dir, mut app) = app_with_store().await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        // Move to the 200 run with the inline body and hydrate it.
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert!(app.history_grid().is_none(), "hydrate closes the grid");
+        assert_eq!(app.focus(), Focus::Response);
+        let response = app.response().expect("hydrated response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.reason, "OK");
+        assert_eq!(response.url, "https://example.com/pets");
+        assert_eq!(response.body, "{\"pets\":[]}");
+        assert_eq!(
+            response.headers,
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
+        let origin = app.response_origin().expect("replayed title");
+        assert!(origin.starts_with("run 01"), "{origin}");
+        assert!(origin.ends_with("· replayed view"), "{origin}");
+
+        // A live send result supersedes the replayed view's title.
+        app.apply_run_result(RunResult::Ok(ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "https://example.com/pets".to_string(),
+            duration: Duration::from_millis(3),
+            headers: Vec::new(),
+            body: "{}".to_string(),
+            body_len: 2,
+        }));
+        assert!(app.response_origin().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_y_yanks_the_run_id() {
+        let (dir, mut app) = app_with_store().await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let id = app
+            .history_grid()
+            .unwrap()
+            .selected_row()
+            .unwrap()
+            .id
+            .clone();
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        let grid = app.history_grid().expect("grid still open");
+        assert_eq!(
+            grid.notice.as_deref(),
+            Some(format!("yanked {id}").as_str())
+        );
+
+        // Y on a run without a blob body says so instead of yanking.
+        app.handle_key(KeyCode::Char('Y'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        let grid = app.history_grid().unwrap();
+        assert!(
+            grid.notice
+                .as_deref()
+                .is_some_and(|note| note.contains("no response body hash")),
+            "{:?}",
+            grid.notice
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_slash_filters_by_selector() {
+        let (dir, mut app) = app_with_store().await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        for ch in "create".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        let grid = app.history_grid().unwrap();
+        assert_eq!(grid.visible_indices().len(), 1);
+        assert_eq!(grid.selected_row().unwrap().request_path, "Pets/Create pet");
+        // Esc while not filtering closes the grid.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.history_grid().is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn history_session_toggle_needs_facet_session() {
+        let (dir, mut app) = app_with_store().await;
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        // The test harness scrubs FACET_SESSION, so `s` explains itself.
+        if facet_record::session_from_env().is_none() {
+            app.handle_key(KeyCode::Char('s'), KeyModifiers::NONE)
+                .await
+                .unwrap();
+            let grid = app.history_grid().unwrap();
+            assert_eq!(
+                grid.notice.as_deref(),
+                Some("FACET_SESSION not set"),
+                "{:?}",
+                grid.notice
+            );
+            assert!(!grid.session_only);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sql_reads_an_existing_store() {
+        let (dir, mut app) = app_with_store().await;
         app.command = "sql SELECT status, method, request_path FROM runs".to_string();
         app.execute_command().await.unwrap();
         let (_, lines) = app.data_overlay().expect("sql overlay");
