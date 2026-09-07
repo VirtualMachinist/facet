@@ -1382,3 +1382,115 @@ fn plain_lattice_values_hydrate_silently_and_yaml_only_runs_are_unchanged() {
     let none = sandbox.run_json(&["env", "list", ws, "--environment", "prod"]);
     assert_eq!(none["entries"], json!([]));
 }
+
+#[test]
+fn doctor_reports_stores_secrets_backend_and_env_presence() {
+    let sandbox = Sandbox::new();
+    // Recording a run lays down `.facet`, so the workspace store is found.
+    record_one_run(&sandbox, &[]);
+
+    let doctor = sandbox.run_json(&["doctor"]);
+    assert_eq!(doctor["doctor"]["machine"]["opened"], true);
+    assert!(doctor["doctor"]["machine"]["schemaVersion"].as_i64().is_some());
+    assert_eq!(doctor["doctor"]["workspace"]["found"], true);
+    assert!(doctor["doctor"]["workspace"]["id"].as_str().is_some());
+    assert_eq!(doctor["doctor"]["workspace"]["schemaVersion"], 3);
+    // Sandbox sets FACET_SECRET_KEY (encrypted backend); no other FACET_*.
+    assert_eq!(doctor["doctor"]["secrets"]["backend"], "encrypted");
+    assert_eq!(doctor["doctor"]["secrets"]["usable"], Value::Null);
+    assert_eq!(doctor["doctor"]["secrets"]["probe"], false);
+    assert_eq!(doctor["doctor"]["env"]["FACET_ACTOR"], false);
+    assert_eq!(doctor["doctor"]["env"]["FACET_SESSION"], false);
+    assert_eq!(doctor["doctor"]["env"]["FACET_DATA_DIR"], true);
+    assert_eq!(doctor["doctor"]["env"]["FACET_CONFIG_DIR"], true);
+    assert_eq!(doctor["doctor"]["env"]["FACET_NO_RECORD"], false);
+    assert_eq!(doctor["doctor"]["env"]["FACET_SECRET_KEY"], true);
+    assert_golden("doctor.json", &normalize(doctor));
+
+    // No warnings in the sandbox: healthy, exit 0.
+    let human = sandbox.facet().args(["doctor"]).output().unwrap();
+    assert_eq!(human.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&human.stdout).contains("healthy"),
+        "{}",
+        String::from_utf8_lossy(&human.stdout)
+    );
+    // No value or ref is ever printed.
+    let human_text = String::from_utf8_lossy(&human.stdout);
+    assert!(!human_text.contains("test-master-key"));
+}
+
+#[test]
+fn doctor_probe_round_trips_a_secret_and_marks_the_backend_usable() {
+    let sandbox = Sandbox::new();
+    record_one_run(&sandbox, &[]);
+
+    let doctor = sandbox.run_json(&["doctor", "--probe"]);
+    assert_eq!(doctor["doctor"]["secrets"]["backend"], "encrypted");
+    assert_eq!(doctor["doctor"]["secrets"]["usable"], true);
+    assert_eq!(doctor["doctor"]["secrets"]["probe"], true);
+    // The probe must not leave the probe value anywhere in the output.
+    assert!(!doctor.to_string().contains("facet-doctor-probe-not-a-real-secret"));
+    assert_golden("doctor_probe.json", &normalize(doctor));
+}
+
+#[test]
+fn history_sql_cannot_reach_the_machine_store_or_any_secret_ref() {
+    let sandbox = Sandbox::new();
+    record_one_run(&sandbox, &[]);
+    let root = sandbox.root().to_str().unwrap();
+    // Put a real secret in the machine store so `environments.secret_ref` exists.
+    sandbox.run_json(&[
+        "env",
+        "set",
+        root,
+        "--environment",
+        "local",
+        "--name",
+        "token",
+        "--value",
+        "probe-secret-value",
+        "--secret",
+    ]);
+
+    // The machine store lives under FACET_DATA_DIR (sandbox/machine/lattice.db).
+    // `--sql` must not be able to ATTACH it.
+    let machine_db = sandbox.root().join("machine").join("lattice.db");
+    assert!(machine_db.is_file(), "machine store exists at {}", machine_db.display());
+    let attach = format!("ATTACH 'file:{}' AS machine", machine_db.to_string_lossy());
+    let (attach_code, attach_error) = sandbox.run_error_json(&["history", root, "--sql", &attach]);
+    assert_eq!(attach_code, 2);
+    let category = attach_error["error"]["category"].as_str().unwrap();
+    assert!(
+        category == "invalid_sql" || category == "sql_read_only",
+        "ATTACH of the machine store must be refused, got {category}"
+    );
+
+    // The workspace store has no `environments` table (it lives in the
+    // machine store); a query for it must fail.
+    let (env_code, env_error) =
+        sandbox.run_error_json(&["history", root, "--sql", "SELECT count(*) FROM environments"]);
+    assert_eq!(env_code, 2);
+    assert_eq!(env_error["error"]["category"], "invalid_sql");
+
+    // The workspace `runs` table has no `secret_ref` column (that lives in
+    // the machine store `environments`), so it cannot be selected.
+    let (col_code, col_error) =
+        sandbox.run_error_json(&["history", root, "--sql", "SELECT secret_ref FROM runs"]);
+    assert_eq!(col_code, 2);
+    assert_eq!(col_error["error"]["category"], "invalid_sql");
+
+    // And a full dump of the workspace runs never exposes a secret_ref.
+    let dump = sandbox.run_json(&["history", root, "--sql", "SELECT * FROM runs"]);
+    assert!(
+        !dump["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("secret_ref")),
+        "secret_ref must not be a column in the workspace store"
+    );
+    assert!(!dump.to_string().contains("probe-secret-value"));
+    assert!(!dump.to_string().contains("enc:v1:"));
+    assert!(!dump.to_string().contains("kr:"));
+}
