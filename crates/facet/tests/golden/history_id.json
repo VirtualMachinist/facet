@@ -6,6 +6,7 @@
     "error": null,
     "id": "<ulid>",
     "method": "POST",
+    "replayedFrom": null,
     "request": {
       "body": {
         "hash": "<sha256>",
@@ -48,7 +49,8 @@
     "startedAt": "<int>",
     "status": 200,
     "tags": [],
-    "url": "<url>"
+    "url": "<url>",
+    "varNames": []
   },
   "schemaVersion": 1,
   "workspace": {

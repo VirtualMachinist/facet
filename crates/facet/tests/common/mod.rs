@@ -120,6 +120,20 @@ impl Sandbox {
         (exit_code, value)
     }
 
+    /// Rewrites `duration_ms` for one run so `diff` output is deterministic.
+    pub(crate) fn set_duration_ms(&self, run_id: &str, duration_ms: i64) {
+        let db = std::path::absolute(self.root().join(".facet/lattice.db"))
+            .expect("workspace store path");
+        let conn = rusqlite::Connection::open(&db).expect("open workspace store");
+        let updated = conn
+            .execute(
+                "UPDATE runs SET duration_ms = ?1 WHERE id = ?2",
+                rusqlite::params![duration_ms, run_id],
+            )
+            .expect("set duration");
+        assert_eq!(updated, 1, "set duration for one run");
+    }
+
     /// Rewrites `started_at` for one run in the workspace store (test helper).
     pub(crate) fn backdate_run(&self, run_id: &str, started_at_ms: i64) {
         let db = std::path::absolute(self.root().join(".facet/lattice.db"))
@@ -143,7 +157,18 @@ pub(crate) fn fixture(path: &str) -> PathBuf {
 }
 
 pub(crate) fn serve_once(body: Vec<u8>, content_type: &str) -> (String, JoinHandle<Vec<u8>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
+    serve_once_at("127.0.0.1:0", body, content_type)
+}
+
+/// Serves one request again on the address a previous [`serve_once`] used,
+/// so a replay resolves to the identical URL (and request hash).
+pub(crate) fn serve_again(url: &str, body: Vec<u8>) -> JoinHandle<Vec<u8>> {
+    let address = url.trim_start_matches("http://");
+    serve_once_at(address, body, "application/json").1
+}
+
+fn serve_once_at(bind: &str, body: Vec<u8>, content_type: &str) -> (String, JoinHandle<Vec<u8>>) {
+    let listener = TcpListener::bind(bind).expect("mock server should bind");
     let address = listener.local_addr().unwrap();
     let content_type = content_type.to_owned();
     let handle = thread::spawn(move || {
@@ -202,13 +227,24 @@ pub(crate) fn normalize(value: Value) -> Value {
                     let replaced = match key.as_str() {
                         "version" | "probeVersion" => json!("<version>"),
                         "id" | "runId" | "workspaceId" => json!("<ulid>"),
-                        "sessionId" if value.is_string() => json!("<ulid>"),
+                        "sessionId" | "replayedFrom" if value.is_string() => json!("<ulid>"),
                         "startedAt" | "durationMs" => json!("<int>"),
                         "endedAt" if value.is_number() => json!("<int>"),
-                        "requestHash" => json!("<sha256>"),
+                        "requestHash" | "recordedHash" | "currentHash" => json!("<sha256>"),
                         "hash" if value.is_string() => json!("<sha256>"),
-                        "path" | "outputPath" | "cwd" if value.is_string() => json!("<path>"),
+                        "path" | "outputPath" | "cwd" | "workspacePath" if value.is_string() => {
+                            json!("<path>")
+                        }
                         "url" if value.is_string() => json!("<url>"),
+                        // `diff` change rows and hash pairs: `{ "a": …, "b": … }`.
+                        "a" | "b" if is_sha256(&value) => json!("<sha256>"),
+                        "a" | "b"
+                            if value
+                                .as_str()
+                                .is_some_and(|text| text.starts_with("http://")) =>
+                        {
+                            json!("<url>")
+                        }
                         _ => normalize(value),
                     };
                     (key, replaced)
@@ -218,6 +254,12 @@ pub(crate) fn normalize(value: Value) -> Value {
         Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
         other => other,
     }
+}
+
+fn is_sha256(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|text| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
 /// Pretty JSON with sorted keys regardless of serde_json's map feature.

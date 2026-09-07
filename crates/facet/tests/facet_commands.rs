@@ -13,6 +13,22 @@ fn record_one_run(sandbox: &Sandbox, extra: &[&str]) -> Value {
     record_run_with(sandbox, &[], extra)
 }
 
+/// A run whose mock server answers with `body` instead of [`ECHO_BODY`].
+fn record_run_body(sandbox: &Sandbox, body: &[u8]) -> Value {
+    let (url, server) = serve_once(body.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let value = sandbox.run_json(&[
+        "request",
+        "run",
+        workspace.to_str().unwrap(),
+        "items/0",
+        "--environment",
+        "local",
+    ]);
+    server.join().unwrap();
+    value
+}
+
 /// `request run … --json` against a one-shot echo server, with extra
 /// environment variables (`FACET_SESSION`, `FACET_ACTOR`) as a harness sets them.
 fn record_run_with(sandbox: &Sandbox, env: &[(&str, &str)], extra: &[&str]) -> Value {
@@ -761,4 +777,293 @@ fn history_environment_tag_and_hash_filters() {
         run_count(&sandbox, &["history", root, "--hash", &"0".repeat(64)]),
         0
     );
+}
+
+#[test]
+fn replay_uses_current_yaml_and_records_lineage() {
+    let sandbox = Sandbox::new();
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let original = sandbox.run_json(&[
+        "request",
+        "run",
+        ws,
+        "items/0",
+        "--environment",
+        "local",
+        "--tag",
+        "smoke",
+    ]);
+    server.join().unwrap();
+    let run_id = original["lattice"]["runId"].as_str().unwrap().to_owned();
+
+    // Same URL live again: the current YAML resolves to the recorded hash.
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let replayed = sandbox.run_json(&["replay", &run_id, ws, "--tag", "again"]);
+    assert_eq!(again.join().unwrap(), br#"{"source":"cli"}"#);
+    assert_eq!(replayed["response"]["status"], 200);
+    assert_eq!(replayed["lattice"]["recorded"], true);
+    assert_eq!(replayed["lattice"]["replayedFrom"], run_id);
+    assert_eq!(replayed["lattice"]["hashChanged"], false);
+    assert_eq!(
+        replayed["lattice"]["requestHash"],
+        original["lattice"]["requestHash"]
+    );
+    assert_golden("replay.json", &normalize(replayed.clone()));
+    let replay_id = replayed["lattice"]["runId"].as_str().unwrap().to_owned();
+
+    let row = sandbox.run_json(&["history", ws, "--id", &replay_id]);
+    assert_eq!(row["run"]["replayedFrom"], run_id);
+    assert_eq!(row["run"]["tags"], json!(["smoke", "again"]));
+    assert_eq!(row["run"]["varNames"], json!([]));
+    assert_eq!(row["run"]["environment"], "local");
+    let source = sandbox.run_json(&["history", ws, "--id", &run_id]);
+    assert!(source["run"]["replayedFrom"].is_null());
+    let lineage = sandbox.run_json(&[
+        "history",
+        ws,
+        "--sql",
+        &format!("SELECT count(*) FROM runs WHERE replayed_from = '{run_id}'"),
+    ]);
+    assert_eq!(lineage["rows"][0][0], 1);
+
+    // Human mode names the lineage.
+    let human = sandbox
+        .facet()
+        .args(["replay", &run_id, ws, "--no-record"])
+        .output();
+    // (no server: transport failure is fine, we only care that it parsed)
+    assert!(human.is_ok());
+
+    // A changed request: --var moves the URL, so the hash differs. --frozen
+    // refuses before any network and writes no row.
+    let (moved_url, moved) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let var = format!("serverUrl={moved_url}");
+    let before = run_count(&sandbox, &["history", ws]);
+    let (code, error) = sandbox.run_error_json(&["replay", &run_id, ws, "--var", &var, "--frozen"]);
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["category"], "replay_changed");
+    assert_eq!(error["error"]["details"]["replayedFrom"], run_id);
+    assert_ne!(
+        error["error"]["details"]["recordedHash"],
+        error["error"]["details"]["currentHash"]
+    );
+    assert_golden("error_replay_changed.json", &normalize_error(error));
+    assert_eq!(
+        run_count(&sandbox, &["history", ws]),
+        before,
+        "no row on refuse"
+    );
+
+    // Without --frozen it sends, warns, and records varNames (names only).
+    let output = sandbox
+        .facet()
+        .args(["replay", &run_id, ws, "--var", &var, "--json"])
+        .output()
+        .unwrap();
+    moved.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: request changed since"),
+        "{stderr}"
+    );
+    let changed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(changed["lattice"]["hashChanged"], true);
+    assert_eq!(changed["lattice"]["replayedFrom"], run_id);
+    let changed_id = changed["lattice"]["runId"].as_str().unwrap().to_owned();
+    let changed_row = sandbox.run_json(&["history", ws, "--id", &changed_id]);
+    assert_eq!(changed_row["run"]["varNames"], json!(["serverUrl"]));
+    let dump = sandbox.run_json(&["history", ws, "--sql", "SELECT var_names FROM runs"]);
+    let text = dump.to_string();
+    assert!(
+        !text.contains(&moved_url),
+        "--var values must never persist"
+    );
+
+    // Replaying the changed run without its --var warns about the names.
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let output = sandbox
+        .facet()
+        .args(["replay", &changed_id, ws, "--json"])
+        .output()
+        .unwrap();
+    again.join().unwrap();
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("was recorded with --var serverUrl"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("request changed since"), "{stderr}");
+
+    // Unknown run, and a run that lives in another workspace (breadcrumb).
+    let (code, error) = sandbox.run_error_json(&["replay", UNKNOWN_ULID, ws]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+    assert!(error["error"].get("details").is_none());
+    let other_dir = sandbox.root().join("other");
+    fs::create_dir_all(&other_dir).unwrap();
+    let source = fs::read_to_string(fixture("phase5-http.yml")).unwrap();
+    let other_ws = other_dir.join("workspace.yml");
+    let (other_url, other_server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    fs::write(&other_ws, source.replace("__SERVER_URL__", &other_url)).unwrap();
+    let other_run = sandbox.run_json(&[
+        "request",
+        "run",
+        other_ws.to_str().unwrap(),
+        "items/0",
+        "--environment",
+        "local",
+    ]);
+    other_server.join().unwrap();
+    let other_id = other_run["lattice"]["runId"].as_str().unwrap();
+    let (code, error) = sandbox.run_error_json(&["replay", other_id, ws]);
+    assert_eq!(code, 4);
+    assert_eq!(
+        error["error"]["details"]["workspaceId"],
+        other_run["lattice"]["workspaceId"]
+    );
+    assert_golden("error_replay_run_elsewhere.json", &normalize_error(error));
+
+    // No store beside the collection at all.
+    let empty = Sandbox::new();
+    let empty_ws = empty.workspace("http://127.0.0.1:9");
+    let (code, error) = empty.run_error_json(&["replay", &run_id, empty_ws.to_str().unwrap()]);
+    assert_eq!(code, 9);
+    assert_eq!(error["error"]["category"], "lattice_not_found");
+    let (code, _) = sandbox.run_error_json(&["replay"]);
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn diff_is_hash_first_and_exit_1_when_different() {
+    let sandbox = Sandbox::new();
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let a = sandbox.run_json(&["request", "run", ws, "items/0", "--environment", "local"]);
+    server.join().unwrap();
+    let id_a = a["lattice"]["runId"].as_str().unwrap().to_owned();
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let b = sandbox.run_json(&["replay", &id_a, ws, "--tag", "retry"]);
+    again.join().unwrap();
+    let id_b = b["lattice"]["runId"].as_str().unwrap().to_owned();
+    sandbox.set_duration_ms(&id_a, 10);
+    sandbox.set_duration_ms(&id_b, 20);
+
+    // Same request, same bytes: equal, even though duration and tags
+    // (provenance) differ; both are still reported.
+    let equal = sandbox.run_json(&["diff", &id_a, &id_b, ws]);
+    assert_eq!(equal["equal"], true);
+    assert_eq!(
+        equal["changes"],
+        json!([
+            { "field": "durationMs", "a": 10, "b": 20 },
+            { "field": "tags", "a": [], "b": ["retry"] },
+        ])
+    );
+    assert_eq!(equal["request"]["hash"]["equal"], true);
+    assert_eq!(equal["request"]["body"]["equal"], true);
+    assert_eq!(equal["response"]["body"]["equal"], true);
+    assert_eq!(equal["response"]["body"]["a"]["retention"], "inline");
+    assert!(
+        equal["response"]["body"]["a"]["hash"].is_string(),
+        "inline bodies are hashed"
+    );
+    assert_golden("diff_equal.json", &normalize(equal));
+    let status = sandbox
+        .facet()
+        .args(["diff", &id_a, &id_b, ws])
+        .output()
+        .unwrap();
+    assert_eq!(status.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&status.stdout).contains("response body: equal"));
+
+    // A different response (and a different port, so url + requestHash move).
+    let c = record_run_body(&sandbox, br#"{"users":[1]}"#);
+    let id_c = c["lattice"]["runId"].as_str().unwrap().to_owned();
+    sandbox.set_duration_ms(&id_c, 30);
+    let output = sandbox
+        .facet()
+        .args(["diff", &id_a, &id_c, ws, "--bodies", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let changed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(changed["equal"], false);
+    let fields: Vec<&str> = changed["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|change| change["field"].as_str().unwrap())
+        .collect();
+    assert!(
+        fields.contains(&"url") && fields.contains(&"requestHash"),
+        "{fields:?}"
+    );
+    assert!(
+        fields.contains(&"response.headers"),
+        "content-length moved: {fields:?}"
+    );
+    assert!(!fields.contains(&"status"));
+    assert_eq!(changed["request"]["hash"]["equal"], false);
+    assert_eq!(
+        changed["request"]["body"]["equal"], true,
+        "same request body blob"
+    );
+    assert_eq!(changed["response"]["body"]["equal"], false);
+    let text = changed["response"]["body"]["text"]
+        .as_str()
+        .expect("unified diff");
+    assert!(text.starts_with("--- a\n+++ b\n@@ "), "{text}");
+    assert!(
+        text.contains("-{\"users\":[]}\n+{\"users\":[1]}\n"),
+        "{text}"
+    );
+    assert_golden("diff_changed.json", &normalize(changed));
+
+    // Without --bodies there is no text; the human view still says differs.
+    let terse = sandbox
+        .facet()
+        .args(["diff", &id_a, &id_c, ws, "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(terse.status.code(), Some(1));
+    let terse: Value = serde_json::from_slice(&terse.stdout).unwrap();
+    assert!(terse["response"]["body"]["text"].is_null());
+    let human = sandbox
+        .facet()
+        .args(["diff", &id_a, &id_c, ws])
+        .output()
+        .unwrap();
+    assert_eq!(human.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("response body: differs"), "{text}");
+    let quiet = sandbox
+        .facet()
+        .args(["diff", &id_a, &id_c, ws, "--quiet"])
+        .output()
+        .unwrap();
+    assert_eq!(quiet.status.code(), Some(1));
+    assert!(quiet.stdout.is_empty());
+
+    // Missing runs are exit 4 with the ids listed; no store is exit 9.
+    let (code, error) = sandbox.run_error_json(&["diff", &id_a, UNKNOWN_ULID, ws]);
+    assert_eq!(code, 4);
+    assert_eq!(error["error"]["category"], "run_not_found");
+    assert_eq!(error["error"]["details"]["missing"], json!([UNKNOWN_ULID]));
+    assert_golden("error_diff_run_not_found.json", &normalize_error(error));
+    let empty = Sandbox::new();
+    let (code, error) =
+        empty.run_error_json(&["diff", &id_a, &id_b, empty.root().to_str().unwrap()]);
+    assert_eq!(code, 9);
+    assert_eq!(error["error"]["category"], "lattice_not_found");
+    let (code, _) = sandbox.run_error_json(&["diff", &id_a]);
+    assert_eq!(code, 2);
 }
