@@ -1,0 +1,31 @@
+{
+  "doctor": {
+    "env": {
+      "FACET_ACTOR": false,
+      "FACET_CONFIG_DIR": true,
+      "FACET_DATA_DIR": true,
+      "FACET_NO_RECORD": false,
+      "FACET_SECRET_KEY": true,
+      "FACET_SESSION": false
+    },
+    "machine": {
+      "configDir": "<path>",
+      "dataDir": "<path>",
+      "dbPath": "<path>",
+      "opened": true,
+      "schemaVersion": 2
+    },
+    "secrets": {
+      "backend": "encrypted",
+      "probe": true,
+      "usable": true
+    },
+    "workspace": {
+      "found": true,
+      "id": "<ulid>",
+      "path": "<path>",
+      "schemaVersion": 3
+    }
+  },
+  "schemaVersion": 1
+}

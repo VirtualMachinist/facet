@@ -565,6 +565,20 @@ impl WorkspaceStore {
         )?;
         conn.busy_timeout(Duration::from_millis(self.config.busy_timeout_ms))?;
         conn.pragma_update(None, "query_only", true)?;
+        // `--sql` is read-only against the workspace store only. `ATTACH` opens
+        // another database (e.g. the machine store, which holds `environments`
+        // and `secret_ref`) and `sqlite3_stmt_readonly` reports ATTACH as
+        // read-only because it does not touch the main db file. Refuse it
+        // explicitly so `--sql` can never reach the machine store.
+        if sql
+            .trim()
+            .split_ascii_whitespace()
+            .next()
+            .map(|token| token.eq_ignore_ascii_case("ATTACH"))
+            .unwrap_or(false)
+        {
+            return Err(LatticeError::ReadOnlyQuery);
+        }
         let mut statement = conn.prepare(sql)?;
         if !statement.readonly() {
             return Err(LatticeError::ReadOnlyQuery);

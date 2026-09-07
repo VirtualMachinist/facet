@@ -247,7 +247,10 @@ pub(crate) fn normalize(value: Value) -> Value {
                         "endedAt" if value.is_number() => json!("<int>"),
                         "requestHash" | "recordedHash" | "currentHash" => json!("<sha256>"),
                         "hash" if value.is_string() => json!("<sha256>"),
-                        "path" | "outputPath" | "cwd" | "workspacePath" if value.is_string() => {
+                        "path" | "outputPath" | "cwd" | "workspacePath" | "dataDir"
+                        | "configDir" | "dbPath"
+                            if value.is_string() =>
+                        {
                             json!("<path>")
                         }
                         "url" if value.is_string() => json!("<url>"),

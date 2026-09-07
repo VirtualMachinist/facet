@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 
 mod args;
 mod diff;
+mod doctor;
 mod env;
 mod error;
 mod history;
@@ -176,6 +177,7 @@ pub const fn help() -> &'static str {
         "                                      Store a value in the Facet machine store (hydrated at resolve)\n",
         "  env list [<path>] [--environment <e>] List stored values (metadata only, never values)\n",
         "  env delete [<path>] --environment <e> --name <k>\n",
+        "  doctor [--probe]                   Preflight: machine/workspace stores, secret backend, FACET_* env\n",
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
         "  tui [<path>]                        Open the terminal UI\n",
@@ -245,8 +247,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "session" | "replay" | "diff" | "env" | "blob" | "gc" | "tui" | "-V"
-            | "--version" | "-h" | "--help",
+            "history" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc"
+            | "tui" | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -294,6 +296,7 @@ where
         "replay" => replay::replay(&args[1..], stdin),
         "diff" => diff::diff(&args[1..]),
         "env" => env::env(&args[1..]),
+        "doctor" => doctor::doctor(&args[1..]),
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(

@@ -148,6 +148,14 @@ impl SecretConfig {
             None => Backend::Keyring,
         }
     }
+
+    /// Whether this config selects the encrypted backend (a `FACET_SECRET_KEY`
+    /// was provided) versus the OS keyring. Used by `facet doctor` to report
+    /// which backend is in use without inspecting private fields.
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.master_key.is_some()
+    }
 }
 
 impl Default for SecretConfig {
