@@ -11,7 +11,7 @@ apply to every code change and routes task-specific work here.
 | [Development](DEVELOPMENT.md) | Rust ownership, async work, dependencies, pinned GPUI guidance, tests, and completion checks | Implementing code or changing dependencies |
 | [Errors and logging](ERRORS_AND_LOGGING.md) | Typed-error ownership and interface logging boundaries | Adding or mapping failures and diagnostics |
 | [Performance](PERFORMANCE.md) | Benchmark commands, fixtures, measurement policy, and reference results | Measuring or optimizing performance |
-| [Facet](FACET.md) | Facet fork: the `facet` binary, Lattice run history, `history`/`blob`/`gc` contracts, exit code 9, upstream boundary and license. Next slice (sessions, recall, replay, diff, secret hydration, `--expect`) is under [Next slice](FACET.md#next-slice) | Working on any Facet-only command or crate |
+| [Facet](FACET.md) | Facet fork: the `facet` binary, Lattice run history, session/recall/replay/diff/env/`--expect` contracts, exit codes 1 and 9, upstream boundary and license. Shipped 2026-09-07 under [Shipped](FACET.md#shipped-2026-09-07-and-more); remaining work under [Next slice](FACET.md#next-slice) | Working on any Facet-only command or crate |
 | [Roadmap](../IMPLEMENTATION_PLAN.md) | Implemented foundation and explicitly deferred product work | Planning scope or starting a deferred feature |
 
 [README.md](../README.md) is the user-facing product, installation, and development
