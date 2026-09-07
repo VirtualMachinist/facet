@@ -94,9 +94,10 @@ write-up: [docs/FACET.md](docs/FACET.md#next-slice). Product note:
 5. Secret hydration — Lattice env as `--var` before resolve
 6. Dry-run + `--expect` — upstream-first; `--expect` is exit 6 `expect_failed`
 
-**Load-bearing picks** for that slice (recommended): replay = current YAML;
-overlay secrets now; `--expect` = exit 6; MCP after 1–6; git HEAD stamp skip
-or 0003 column, not a blocker.
+**Load-bearing picks** for that slice: replay = current YAML; overlay secrets
+now; MCP after 1–6. Still open: `--expect` exit **6 vs 1** (explore pass
+argues 1 so agents do not retry assertion misses); git HEAD skip / auto-tag
+rather than 0003.
 
 MCP / harness adapter over Lattice must not parse CLI output. Engines stay
 rusqlite default; DuckDB ATTACH is `scripts/duckdb-attach-demo.sh`. TUI
