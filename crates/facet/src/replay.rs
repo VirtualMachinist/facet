@@ -214,11 +214,16 @@ pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOu
     })
 }
 
-/// Recorded tags first, then `--tag` additions, without duplicates.
+/// Recorded user tags first, then `--tag` additions, without duplicates.
 fn merged_tags(recorded: Option<&str>, extra: &[String]) -> Vec<String> {
+    // The source's own tags carry over; Facet's auto-tags (`git:`,
+    // `expect:`) describe that run and are recomputed for this one.
     let mut tags: Vec<String> = recorded
-        .and_then(|text| serde_json::from_str(text).ok())
-        .unwrap_or_default();
+        .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tag| !facet_record::is_auto_tag(tag))
+        .collect();
     for tag in extra {
         if !tags.contains(tag) {
             tags.push(tag.clone());

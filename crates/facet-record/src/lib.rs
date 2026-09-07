@@ -263,10 +263,18 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
             .find(|header| header.name.eq_ignore_ascii_case("content-type"))
             .map(|header| header.value.clone())
     });
-    let tags_json = if tags.is_empty() {
+    // Auto-tags ride beside the caller's tags: `git:<sha>[-dirty]` for the
+    // workspace's repository, best effort, never a column.
+    let mut all_tags: Vec<String> = tags.to_vec();
+    if let Some(tag) = git_tag(root)
+        && !all_tags.contains(&tag)
+    {
+        all_tags.push(tag);
+    }
+    let tags_json = if all_tags.is_empty() {
         None
     } else {
-        Some(json!(tags).to_string())
+        Some(json!(all_tags).to_string())
     };
     let redacted_url = scrub(&redact_url(request.url.as_deref().unwrap_or("")), redact);
     // Always written post-0003 so `[]` (none) stays distinct from NULL (unknown).
@@ -510,6 +518,53 @@ fn response_headers_json(headers: &[ResponseHeader]) -> Value {
     )
 }
 
+/// Prefixes of tags Facet writes itself (`git:<sha>[-dirty]`, `expect:fail`).
+/// They describe one run and are never copied onto a replay.
+pub const AUTO_TAG_PREFIXES: &[&str] = &["git:", "expect:"];
+
+/// Whether `tag` is one Facet wrote itself.
+#[must_use]
+pub fn is_auto_tag(tag: &str) -> bool {
+    AUTO_TAG_PREFIXES
+        .iter()
+        .any(|prefix| tag.starts_with(prefix))
+}
+
+/// `git:<sha>` or `git:<sha>-dirty` for the repository containing `dir`
+/// (the workspace root, beside the collection), or `None` outside a
+/// repository, without `git`, or on any failure. Local only: `rev-parse
+/// HEAD` plus `status --porcelain --untracked-files=no`, so "dirty" means
+/// tracked changes (staged or unstaged); untracked files do not count, or a
+/// fresh `.facet/workspace.toml` would flag every first run.
+#[must_use]
+pub fn git_tag(dir: &Path) -> Option<String> {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let sha = git(&["rev-parse", "HEAD"])?;
+    let sha = sha.trim();
+    if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let dirty = !git(&["status", "--porcelain", "--untracked-files=no"])?
+        .trim()
+        .is_empty();
+    Some(if dirty {
+        format!("git:{sha}-dirty")
+    } else {
+        format!("git:{sha}")
+    })
+}
+
 /// Shortest secret value that is scrubbed from stored text. Shorter values
 /// would mangle unrelated text (and are not secrets in any useful sense).
 pub const MIN_REDACT_LEN: usize = 4;
@@ -604,6 +659,15 @@ mod tests {
         assert_eq!(first, same);
         assert_ne!(first, other);
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn auto_tags_are_recognized_and_git_tag_is_none_outside_a_repo() {
+        assert!(super::is_auto_tag("git:0123abcd"));
+        assert!(super::is_auto_tag("expect:fail"));
+        assert!(!super::is_auto_tag("smoke"));
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(super::git_tag(dir.path()), None);
     }
 
     #[test]

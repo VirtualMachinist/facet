@@ -1787,3 +1787,115 @@ fn dry_run_previews_without_sending_or_recording() {
         assert_eq!(code, 2);
     }
 }
+
+#[test]
+fn git_head_auto_tag_rides_on_record_and_not_on_replay() {
+    let sandbox = Sandbox::new();
+    let (url, server) = serve_once(ECHO_BODY.to_vec(), "application/json");
+    let workspace = sandbox.workspace(&url);
+    let ws = workspace.to_str().unwrap();
+    let sha = sandbox.git_init();
+    assert_eq!(sha.len(), 40);
+    let clean_tag = format!("git:{sha}");
+
+    let clean = sandbox.run_json(&[
+        "request",
+        "run",
+        ws,
+        "items/0",
+        "--environment",
+        "local",
+        "--tag",
+        "smoke",
+    ]);
+    server.join().unwrap();
+    let clean_id = clean["lattice"]["runId"].as_str().unwrap().to_owned();
+    let row = sandbox.run_json(&["history", ws, "--id", &clean_id]);
+    assert_eq!(row["run"]["tags"], json!(["smoke", clean_tag]));
+
+    // A tracked change makes the tree dirty; untracked `.facet/` never does.
+    // Appending a comment keeps the YAML (and the URL) intact.
+    let source = fs::read_to_string(&workspace).unwrap();
+    fs::write(
+        &workspace,
+        format!(
+            "{source}# dirty
+"
+        ),
+    )
+    .unwrap();
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let dirty = sandbox.run_json(&["request", "run", ws, "items/0", "--environment", "local"]);
+    again.join().unwrap();
+    let dirty_id = dirty["lattice"]["runId"].as_str().unwrap().to_owned();
+    let row = sandbox.run_json(&["history", ws, "--id", &dirty_id]);
+    assert_eq!(row["run"]["tags"], json!([format!("git:{sha}-dirty")]));
+
+    // `history --tag git:…` is the query.
+    assert_eq!(
+        run_count(&sandbox, &["history", ws, "--tag", &clean_tag]),
+        1
+    );
+    assert_eq!(
+        run_count(
+            &sandbox,
+            &["history", ws, "--tag", &format!("git:{sha}-dirty")]
+        ),
+        1
+    );
+
+    // A replay keeps the source's user tags but recomputes auto-tags: the
+    // clean run's `git:<sha>` must not be copied onto a dirty-tree replay.
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let replayed = sandbox.run_json(&["replay", &clean_id, ws, "--tag", "retry"]);
+    again.join().unwrap();
+    let replay_id = replayed["lattice"]["runId"].as_str().unwrap();
+    let row = sandbox.run_json(&["history", ws, "--id", replay_id]);
+    assert_eq!(
+        row["run"]["tags"],
+        json!(["smoke", "retry", format!("git:{sha}-dirty")])
+    );
+
+    // An expect:fail source does not taint a passing replay.
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let output = sandbox
+        .facet()
+        .args([
+            "request",
+            "run",
+            ws,
+            "items/0",
+            "--environment",
+            "local",
+            "--expect",
+            "500",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    again.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let failed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let failed_id = failed["lattice"]["runId"].as_str().unwrap();
+    let again = serve_again(&url, ECHO_BODY.to_vec());
+    let passing = sandbox.run_json(&["replay", failed_id, ws, "--expect", "200"]);
+    again.join().unwrap();
+    let row = sandbox.run_json(&[
+        "history",
+        ws,
+        "--id",
+        passing["lattice"]["runId"].as_str().unwrap(),
+    ]);
+    assert_eq!(row["run"]["tags"], json!([format!("git:{sha}-dirty")]));
+
+    // Outside a repository nothing is added (every other test relies on it).
+    let plain = Sandbox::new();
+    let value = record_one_run(&plain, &[]);
+    let row = plain.run_json(&[
+        "history",
+        plain.root().to_str().unwrap(),
+        "--id",
+        value["lattice"]["runId"].as_str().unwrap(),
+    ]);
+    assert_eq!(row["run"]["tags"], json!([]));
+}

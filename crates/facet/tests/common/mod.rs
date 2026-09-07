@@ -135,6 +135,45 @@ impl Sandbox {
         (exit_code, value)
     }
 
+    /// Turns the sandbox root into a git repository with one commit holding
+    /// `workspace.yml`, returning HEAD's sha. Local only, no remote.
+    pub(crate) fn git_init(&self) -> String {
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(self.root())
+                .args(args)
+                .output()
+                .expect("git should run");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=facet-test",
+            "-c",
+            "user.email=facet@test",
+            "add",
+            "workspace.yml",
+        ]);
+        git(&[
+            "-c",
+            "user.name=facet-test",
+            "-c",
+            "user.email=facet@test",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        ]);
+        git(&["rev-parse", "HEAD"])
+    }
+
     /// Rewrites `duration_ms` for one run so `diff` output is deterministic.
     pub(crate) fn set_duration_ms(&self, run_id: &str, duration_ms: i64) {
         let db = std::path::absolute(self.root().join(".facet/lattice.db"))
