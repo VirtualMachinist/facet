@@ -9,7 +9,7 @@ use lattice::{
 };
 use serde_json::{Value, json};
 
-use crate::{CommandOutput, FacetError, LATTICE_EXIT_CODE, ASSERTION_EXIT_CODE, args};
+use crate::{ASSERTION_EXIT_CODE, CommandOutput, FacetError, LATTICE_EXIT_CODE, args};
 
 const DOCTOR_FLAGS: &[&str] = &[];
 const DOCTOR_SWITCHES: &[&str] = &["--probe"];
@@ -88,7 +88,11 @@ pub(crate) fn doctor(args: &[String]) -> Result<CommandOutput, FacetError> {
     // as usable=false rather than an error.
     let (backend, usable): (&'static str, Option<bool>) = match SecretConfig::from_env() {
         Ok(secret_config) => {
-            let backend = if secret_config.is_encrypted() { "encrypted" } else { "keyring" };
+            let backend = if secret_config.is_encrypted() {
+                "encrypted"
+            } else {
+                "keyring"
+            };
             let usable = if probe {
                 Some(probe_secret_usable(&secret_config, &mut warnings))
             } else {
@@ -122,7 +126,11 @@ pub(crate) fn doctor(args: &[String]) -> Result<CommandOutput, FacetError> {
         "secrets": secrets_json,
         "env": env_json(),
     });
-    let exit_code = if warnings.is_empty() { 0 } else { ASSERTION_EXIT_CODE };
+    let exit_code = if warnings.is_empty() {
+        0
+    } else {
+        ASSERTION_EXIT_CODE
+    };
     Ok(finish(doctor_json, warnings, exit_code))
 }
 
@@ -170,9 +178,11 @@ fn probe_secret_usable(config: &SecretConfig, warnings: &mut Vec<String>) -> boo
 
 fn finish(doctor_json: Value, warnings: Vec<String>, exit_code: u8) -> CommandOutput {
     let human = doctor_human(&doctor_json, &warnings);
-    let mut output = CommandOutput::new(human, json!({ "doctor": doctor_json }))
-        .with_exit_code(exit_code);
-    output = warnings.iter().fold(output, |acc, warning| acc.warn(warning.clone()));
+    let mut output =
+        CommandOutput::new(human, json!({ "doctor": doctor_json })).with_exit_code(exit_code);
+    output = warnings
+        .iter()
+        .fold(output, |acc, warning| acc.warn(warning.clone()));
     output
 }
 

@@ -11,7 +11,7 @@ use std::{
 
 use facet_record::{
     Hydration, RecordRequest, Recording, actor_from_env, overlay_secrets, record,
-    recording_disabled, session_from_env,
+    recording_disabled, request_preview_json, session_from_env,
 };
 use lattice::now_ms;
 use probe_core::{
@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 
 use crate::{
     CommandOutput, FacetError, args,
+    expect::{EXPECT_FAIL_TAG, Expectation},
     presentation::{response_human, response_json},
     workspace::{WorkspaceInput, load, overrides_from_parsed},
 };
@@ -32,10 +33,11 @@ const VALUE_FLAGS: &[&str] = &[
     "--output",
     "--var",
     "--tag",
+    "--expect",
     "--inline-body-max",
     "--history-retention",
 ];
-const SWITCH_FLAGS: &[&str] = &["--strict-variables", "--no-record"];
+const SWITCH_FLAGS: &[&str] = &["--strict-variables", "--no-record", "--dry-run"];
 
 /// One executed request: when it started, how long it took, and the outcome.
 pub(crate) struct Execution {
@@ -56,13 +58,23 @@ pub(crate) fn run(args: &[String], stdin: &mut impl Read) -> Result<CommandOutpu
     let output = parsed.value("--output")?.map(PathBuf::from);
     let strict_variables = parsed.switch("--strict-variables");
     let variables = parse_vars(&parsed)?;
-    let tags: Vec<String> = parsed
+    let mut tags: Vec<String> = parsed
         .values("--tag")
         .into_iter()
         .map(str::to_owned)
         .collect();
     let should_record = !parsed.switch("--no-record") && !recording_disabled();
     let overrides = overrides_from_parsed(&parsed)?;
+    let expect = parsed
+        .value("--expect")?
+        .map(Expectation::parse)
+        .transpose()?;
+    let dry_run = parsed.switch("--dry-run");
+    if dry_run && (expect.is_some() || output.is_some()) {
+        return Err(FacetError::invalid_arguments(
+            "--dry-run sends nothing; it cannot be combined with --expect or --output",
+        ));
+    }
 
     let loaded = load(&input, stdin)?;
     let base = input.base_directory();
@@ -81,7 +93,21 @@ pub(crate) fn run(args: &[String], stdin: &mut impl Read) -> Result<CommandOutpu
         &hydration.merged(&variables),
         strict_variables,
     )?;
+    if dry_run {
+        return Ok(dry_run_output(&request, &hydration, environment.is_some()));
+    }
     let execution = execute(&request, input.base_directory(), output.as_deref())?;
+    let status = execution
+        .result
+        .as_ref()
+        .ok()
+        .map(|response| response.status);
+    let miss = expect.as_ref().and_then(|expect| expect.miss(status));
+    if miss.is_some() {
+        // Auto-tag, no schema: `history --tag expect:fail` answers "what
+        // failed this session" without --sql.
+        tags.push(EXPECT_FAIL_TAG.to_owned());
+    }
 
     let recording = if should_record {
         let root = input.base_directory();
@@ -114,14 +140,103 @@ pub(crate) fn run(args: &[String], stdin: &mut impl Read) -> Result<CommandOutpu
         &hydration,
         environment.is_some(),
     );
-    render(
+    let rendered = render(
         &request,
         execution,
         output.as_deref(),
         lattice_json,
         lattice_human,
         recording.warning().into_iter().collect(),
-    )
+    )?;
+    Ok(match miss {
+        Some(error) => rendered.fail(error),
+        None => rendered,
+    })
+}
+
+/// `--dry-run`: the resolved request (hydration included), nothing sent,
+/// nothing recorded. `lattice.requestHash` is what a real run would store,
+/// so an agent can compare it against a recorded run before firing.
+pub(crate) fn dry_run_output(
+    request: &HttpRequest,
+    hydration: &Hydration,
+    environment_selected: bool,
+) -> CommandOutput {
+    let preview = request_preview_json(request, &hydration.redact);
+    // Human view shows enabled query parameters on the URL line, as sent.
+    let query: Vec<String> = preview["query"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| item["disabled"] != true)
+                .map(|item| {
+                    format!(
+                        "{}={}",
+                        item["name"].as_str().unwrap_or(""),
+                        item["value"].as_str().unwrap_or("")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let url = preview["url"].as_str().unwrap_or("<unset>");
+    let url = if query.is_empty() {
+        url.to_owned()
+    } else {
+        format!("{url}?{}", query.join("&"))
+    };
+    let mut human = format!(
+        "{} {url}
+Headers:
+",
+        preview["method"].as_str().unwrap_or("<unset>")
+    );
+    match preview["headers"].as_array() {
+        Some(headers) if !headers.is_empty() => {
+            for header in headers {
+                human.push_str(&format!(
+                    "  {}: {}\n",
+                    header["name"].as_str().unwrap_or(""),
+                    header["value"].as_str().unwrap_or("")
+                ));
+            }
+        }
+        _ => human.push_str("  (none)\n"),
+    }
+    human.push('\n');
+    match (
+        preview["body"]["content"].as_str(),
+        preview["body"]["sizeBytes"].as_u64(),
+    ) {
+        (Some(content), _) => {
+            human.push_str(content);
+            if !content.ends_with('\n') {
+                human.push('\n');
+            }
+        }
+        (None, Some(size)) => human.push_str(&format!("Body omitted ({size} bytes)\n")),
+        (None, None) => human.push_str("(no body)\n"),
+    }
+    let mut lattice_json = json!({
+        "recorded": false,
+        "reason": "dry_run",
+        "requestHash": preview["requestHash"],
+    });
+    let (lattice_json, lattice_human) = with_secrets(
+        std::mem::take(&mut lattice_json),
+        "not recorded (dry_run)".to_owned(),
+        hydration,
+        environment_selected,
+    );
+    human.push_str(&format!("Lattice: {lattice_human}\n"));
+    let mut json = json!({ "dryRun": true, "request": preview });
+    json["request"]
+        .as_object_mut()
+        .expect("preview is an object")
+        .remove("requestHash");
+    json["lattice"] = lattice_json;
+    CommandOutput::new(human, json)
 }
 
 /// Secret hydration (Goal 5): Lattice environment values for the names the
