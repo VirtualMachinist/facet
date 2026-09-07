@@ -1,0 +1,13 @@
+{
+  "error": {
+    "category": "replay_changed",
+    "details": {
+      "currentHash": "<sha256>",
+      "recordedHash": "<sha256>",
+      "replayedFrom": "<ulid>"
+    },
+    "exitCode": 1,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}

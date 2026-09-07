@@ -1,0 +1,210 @@
+//! `facet replay <runId> [<path>]`: re-resolve the **current** YAML at the
+//! recorded environment and send it again, recording lineage.
+//!
+//! Replay truth is current YAML plus recorded environment. There is no
+//! "send stored bytes" mode: stored headers are redacted, auth enters the
+//! hash by scheme only, and request bodies are content-addressed blobs that
+//! may hold secrets. `--frozen` is refuse-on-change only: when the resolved
+//! request hashes differently from the recorded row, exit 1 with no network
+//! and no Lattice row.
+
+use std::io::Read;
+
+use facet_record::{
+    RecordRequest, Recording, actor_from_env, record, recording_disabled, request_hash_of,
+    session_from_env,
+};
+use lattice::{MachineStore, WorkspaceStore};
+use serde_json::json;
+
+use crate::{
+    CommandOutput, FacetError, args,
+    run::{execute, parse_vars, render, selected_request, var_names},
+    workspace::{WorkspaceInput, load, open_store, overrides_from_parsed},
+};
+
+const VALUE_FLAGS: &[&str] = &[
+    "--environment",
+    "--var",
+    "--tag",
+    "--inline-body-max",
+    "--history-retention",
+];
+const SWITCH_FLAGS: &[&str] = &["--frozen", "--strict-variables", "--no-record"];
+
+pub(crate) fn replay(args: &[String], stdin: &mut impl Read) -> Result<CommandOutput, FacetError> {
+    let parsed = args::parse(args, VALUE_FLAGS, SWITCH_FLAGS)?;
+    let (run_id, path) = match parsed.positionals() {
+        [run_id] => (run_id.as_str(), "."),
+        [run_id, path] => (run_id.as_str(), path.as_str()),
+        _ => {
+            return Err(FacetError::invalid_arguments(
+                "replay requires <runId> and an optional <path>",
+            ));
+        }
+    };
+    let input = WorkspaceInput::from_argument(path);
+    let Some(base) = input.base_directory() else {
+        return Err(FacetError::invalid_arguments(
+            "replay needs a collection on disk (a stdin workspace has no Lattice store)",
+        ));
+    };
+    let frozen = parsed.switch("--frozen");
+    let strict_variables = parsed.switch("--strict-variables");
+    let should_record = !parsed.switch("--no-record") && !recording_disabled();
+    let overrides = overrides_from_parsed(&parsed)?;
+    let variables = parse_vars(&parsed)?;
+    let extra_tags: Vec<String> = parsed
+        .values("--tag")
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+
+    // 1. The run row, from the workspace store beside the collection.
+    let root =
+        WorkspaceStore::discover(&base).ok_or_else(|| FacetError::lattice_not_found(&base))?;
+    let store = open_store(&root, &overrides)?;
+    let Some(row) = store.run(run_id).map_err(FacetError::lattice)? else {
+        return Err(run_not_found_with_breadcrumb(&store, run_id));
+    };
+
+    // 2. Selector and environment come from the row; `--environment` wins.
+    let selector = row.request_path.as_str();
+    let environment = parsed
+        .value("--environment")?
+        .map(str::to_owned)
+        .or_else(|| row.environment.clone());
+
+    // 3. Recorded `--var` names are a warning, never replayed (values are
+    //    not stored). `None` means the row predates 0003.
+    let mut warnings = Vec::new();
+    if let Some(recorded) = row
+        .var_names
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+    {
+        let passed = var_names(&variables);
+        let missing: Vec<&str> = recorded
+            .iter()
+            .filter(|name| !passed.contains(name))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            warnings.push(format!(
+                "run {} was recorded with --var {}; pass them again",
+                row.id,
+                missing.join(", ")
+            ));
+        }
+    }
+
+    // 4. Resolve the current YAML and compare hashes before any network.
+    let loaded = load(&input, stdin)?;
+    let request = selected_request(
+        &loaded,
+        selector,
+        environment.as_deref(),
+        &variables,
+        strict_variables,
+    )
+    .map_err(|error| error.with_details(json!({ "replayedFrom": row.id })))?;
+    let current_hash = request_hash_of(&request);
+    let hash_changed = current_hash != row.request_hash;
+    if hash_changed && frozen {
+        return Err(FacetError::replay_changed(
+            &row.id,
+            &row.request_hash,
+            &current_hash,
+        ));
+    }
+    if hash_changed {
+        warnings.push(format!(
+            "request changed since {}: recorded {}…, current {}…",
+            row.id,
+            &row.request_hash[..12.min(row.request_hash.len())],
+            &current_hash[..12.min(current_hash.len())]
+        ));
+    }
+
+    // 5. Send and record with lineage.
+    let execution = execute(&request, input.base_directory(), None)?;
+    let tags = merged_tags(row.tags.as_deref(), &extra_tags);
+    let recording = if should_record {
+        let actor = actor_from_env();
+        let session = session_from_env();
+        record(&RecordRequest {
+            root: Some(&base),
+            overrides: &overrides,
+            selector,
+            environment: environment.as_deref(),
+            request: &request,
+            started_at: execution.started_at,
+            elapsed_ms: execution.elapsed_ms,
+            result: &execution.result,
+            output: None,
+            tags: &tags,
+            actor: &actor,
+            session: session.as_deref(),
+            replayed_from: Some(&row.id),
+            var_names: &var_names(&variables),
+        })
+    } else {
+        Recording::Skipped("disabled")
+    };
+    if let Some(warning) = recording.warning() {
+        warnings.push(warning);
+    }
+
+    let mut lattice_json = recording.json();
+    lattice_json["replayedFrom"] = json!(row.id);
+    lattice_json["hashChanged"] = json!(hash_changed);
+    let lattice_human = format!(
+        "{} · replayed from {} ({})",
+        recording.human(),
+        row.id,
+        if hash_changed {
+            "request changed"
+        } else {
+            "request unchanged"
+        }
+    );
+    render(
+        &request,
+        execution,
+        None,
+        lattice_json,
+        lattice_human,
+        warnings,
+    )
+}
+
+/// Recorded tags first, then `--tag` additions, without duplicates.
+fn merged_tags(recorded: Option<&str>, extra: &[String]) -> Vec<String> {
+    let mut tags: Vec<String> = recorded
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_default();
+    for tag in extra {
+        if !tags.contains(tag) {
+            tags.push(tag.clone());
+        }
+    }
+    tags
+}
+
+/// `run_not_found`, with the workspace the machine index knows the run
+/// under when it lives elsewhere (one query; best effort).
+fn run_not_found_with_breadcrumb(store: &WorkspaceStore, run_id: &str) -> FacetError {
+    let error = FacetError::run_not_found(run_id);
+    let elsewhere = MachineStore::open(store.config())
+        .ok()
+        .and_then(|machine| machine.indexed_run(run_id).ok().flatten());
+    match elsewhere {
+        Some((workspace_id, path)) if workspace_id != store.workspace_id() => {
+            error.with_details(json!({
+                "workspaceId": workspace_id,
+                "workspacePath": path,
+            }))
+        }
+        _ => error,
+    }
+}

@@ -31,6 +31,7 @@ pub const CONFIG_FILE: &str = "config.toml";
 const WORKSPACE_MIGRATIONS: &[&str] = &[
     include_str!("../migrations/workspace/0001_init.sql"),
     include_str!("../migrations/workspace/0002_hash_only_req.sql"),
+    include_str!("../migrations/workspace/0003_replay_lineage.sql"),
 ];
 
 const GITIGNORE: &str = "# Lattice run history is machine-local. workspace.toml and config.toml are shared.\n\
@@ -42,7 +43,8 @@ blobs/\n";
 
 const RUN_COLUMNS: &str = "id, started_at, duration_ms, request_path, request_hash, environment, method, url, \
 status, error, req_headers, res_headers, req_body_len, req_body_hash, \
-res_body_len, res_body_hash, res_body IS NOT NULL, res_content_type, session_id, actor, tags";
+res_body_len, res_body_hash, res_body IS NOT NULL, res_content_type, session_id, actor, tags, \
+replayed_from, var_names";
 
 #[derive(Debug, Deserialize)]
 struct WorkspaceFile {
@@ -114,6 +116,12 @@ pub struct RunRow {
     pub actor: String,
     /// JSON array of tags.
     pub tags: Option<String>,
+    /// `runs.id` this run replayed, when it came from `facet replay`.
+    pub replayed_from: Option<String>,
+    /// JSON array of `--var` names used at resolve time (never values).
+    /// `None` on rows recorded before migration 0003 (unknown); `[]` when
+    /// no overrides were passed.
+    pub var_names: Option<String>,
 }
 
 /// A run to record.
@@ -153,6 +161,10 @@ pub struct NewRun<'a> {
     pub actor: &'a str,
     /// JSON array of tags.
     pub tags: Option<&'a str>,
+    /// `runs.id` this run replayed, if any.
+    pub replayed_from: Option<&'a str>,
+    /// JSON array of `--var` names (never values); `[]` when none.
+    pub var_names: Option<&'a str>,
 }
 
 impl Default for NewRun<'_> {
@@ -175,6 +187,8 @@ impl Default for NewRun<'_> {
             session_id: None,
             actor: "human",
             tags: None,
+            replayed_from: None,
+            var_names: None,
         }
     }
 }
@@ -365,8 +379,10 @@ impl WorkspaceStore {
         tx.execute(
             "INSERT INTO runs (id, started_at, duration_ms, request_path, request_hash, environment, method, url, \
              status, error, req_headers, res_headers, req_body_len, req_body_hash, \
-             res_body_len, res_body, res_body_hash, res_content_type, session_id, actor, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+             res_body_len, res_body, res_body_hash, res_content_type, session_id, actor, tags, \
+             replayed_from, var_names) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, \
+             ?22, ?23)",
             params![
                 id,
                 run.started_at,
@@ -389,6 +405,8 @@ impl WorkspaceStore {
                 run.session_id,
                 run.actor,
                 run.tags,
+                run.replayed_from,
+                run.var_names,
             ],
         )?;
         tx.commit()?;
@@ -691,6 +709,8 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         session_id: row.get(18)?,
         actor: row.get(19)?,
         tags: row.get(20)?,
+        replayed_from: row.get(21)?,
+        var_names: row.get(22)?,
     })
 }
 

@@ -946,3 +946,49 @@ fn history_filters_by_session_environment_tag_and_hash() {
 
     let _ = other_session;
 }
+
+#[test]
+fn replay_lineage_columns_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), config(1024)).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 3);
+    let plain = store.record_run(&run("a.yml", b"x")).unwrap();
+    assert!(plain.replayed_from.is_none());
+    assert!(
+        plain.var_names.is_none(),
+        "NewRun default leaves var_names unknown"
+    );
+    let replayed = store
+        .record_run(&NewRun {
+            replayed_from: Some(&plain.id),
+            var_names: Some(r#"["token"]"#),
+            ..run("a.yml", b"x")
+        })
+        .unwrap();
+    assert_eq!(replayed.replayed_from.as_deref(), Some(plain.id.as_str()));
+    assert_eq!(replayed.var_names.as_deref(), Some(r#"["token"]"#));
+    let lineage = store
+        .query(&format!(
+            "SELECT id FROM runs WHERE replayed_from = '{}'",
+            plain.id
+        ))
+        .unwrap();
+    assert_eq!(lineage.rows.len(), 1);
+    assert_eq!(lineage.rows[0][0], SqlValue::Text(replayed.id.clone()));
+}
+
+#[test]
+fn machine_index_answers_which_workspace_holds_a_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), config(1024)).unwrap();
+    let machine = MachineStore::open_at(&dir.path().join("machine.db"), store.config()).unwrap();
+    let row = store.record_run(&run("a.yml", b"x")).unwrap();
+    assert_eq!(machine.indexed_run(&row.id).unwrap(), None);
+    machine
+        .touch_workspace(store.workspace_id(), store.root(), None, now_ms())
+        .unwrap();
+    machine.index_run(&row, store.workspace_id()).unwrap();
+    let (workspace_id, path) = machine.indexed_run(&row.id).unwrap().expect("indexed");
+    assert_eq!(workspace_id, store.workspace_id());
+    assert_eq!(path, store.root().to_string_lossy());
+}

@@ -1969,6 +1969,8 @@ impl App {
                     tags: &[],
                     actor: &actor,
                     session: session.as_deref(),
+                    replayed_from: None,
+                    var_names: &[],
                 });
                 Some(RecordSummary::from_recording(&recording))
             } else {

@@ -1,0 +1,12 @@
+{
+  "error": {
+    "category": "run_not_found",
+    "details": {
+      "workspaceId": "<ulid>",
+      "workspacePath": "<path>"
+    },
+    "exitCode": 4,
+    "message": "<message>"
+  },
+  "schemaVersion": 1
+}
