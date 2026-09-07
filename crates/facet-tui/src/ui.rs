@@ -1117,7 +1117,8 @@ fn render_history_grid(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
     const CHROME: usize = 1 + 6 + 1;
     let fixed = STARTED_W + STATUS_W + MS_W + METHOD_W + ACTOR_W + ID_W + CHROME + REQUEST_MIN;
     let width = ((fixed + 12) as u16).clamp(64, 110).min(area.width);
-    let height = (visible.len().max(1) as u16 + 4)
+    let sparkline_rows = u16::from(!grid.sparkline.is_empty());
+    let height = (visible.len().max(1) as u16 + 4 + sparkline_rows)
         .min(area.height.saturating_sub(2))
         .max(5);
     let overlay = centered(area, width, height);
@@ -1156,13 +1157,42 @@ fn render_history_grid(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
         styles.muted,
     ));
 
-    let body_height = inner.height.saturating_sub(2) as usize; // header + footer
+    // Sparkline (Goal bells): the last ≤24 statuses of the focused row's
+    // selector, oldest → newest. Palette buckets, stone for unrecorded.
+    // Paint only — no key, no verb, flat fallback unaffected.
+    let sparkline = if grid.sparkline.is_empty() {
+        None
+    } else {
+        let mut spans = vec![Span::raw(" ")];
+        for status in &grid.sparkline {
+            let color = match status {
+                Some(code) => palette.response_status(u16::try_from(*code).unwrap_or(0)),
+                None => palette.text_placeholder, // stone
+            };
+            spans.push(Span::styled("●", styles.base.fg(color)));
+        }
+        let label = match &grid.sparkline_selector {
+            Some(selector) => format!("  last {} · {}", grid.sparkline.len(), selector),
+            None => format!("  last {}", grid.sparkline.len()),
+        };
+        let used = 1 + grid.sparkline.len();
+        spans.push(Span::styled(
+            cell(&label, (inner.width as usize).saturating_sub(used)),
+            styles.muted,
+        ));
+        Some(Line::from(spans))
+    };
+
+    let body_height = inner.height.saturating_sub(2 + sparkline_rows) as usize;
     let offset = if grid.selected >= body_height {
         grid.selected + 1 - body_height
     } else {
         0
     };
     let mut lines = vec![header];
+    if let Some(sparkline) = sparkline {
+        lines.push(sparkline);
+    }
     if visible.is_empty() {
         let empty = if grid.filter.is_empty() {
             " (no runs)"
@@ -1539,6 +1569,7 @@ mod tests {
             replayed_from: None,
             var_names: None,
         }]);
+        app.preview_sparkline(vec![Some(200), Some(200), Some(500), None]);
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).expect("backend");
         app.render_to(&mut terminal).expect("render");
@@ -1557,6 +1588,12 @@ mod tests {
         assert!(
             text.contains("history · Enter hydrate · y yank"),
             "footer hints: {text}"
+        );
+        // Sparkline: four nodes for four runs, labeled with the selector.
+        assert!(text.contains("●●●●"), "sparkline nodes: {text}");
+        assert!(
+            text.contains("last 4 · Pets/List pets"),
+            "sparkline label: {text}"
         );
     }
 

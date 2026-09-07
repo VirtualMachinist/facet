@@ -298,8 +298,10 @@ Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
 `gg`/`G` jump, Enter hydrates the response pane from Lattice (titled
 `run <id> · replayed view`), `y` yanks the run id and `Y` the response
 body hash (OSC 52), `/` filters by selector, `s` toggles runs from
-`$FACET_SESSION` only, Esc closes. `:sql <query>` opens a read-only
-overlay. `?` lists the rest.
+`$FACET_SESSION` only, Esc closes. Under the header, a sparkline paints
+the last ≤24 statuses of the focused row's selector (oldest → newest,
+palette status buckets, stone for unrecorded) — paint, not a verb.
+`:sql <query>` opens a read-only overlay. `?` lists the rest.
 
 Roadmap (Probe's public list, folded): HTTP live; next WebSocket, GraphQL,
 gRPC streaming, user-defined theme files, git integration. Secret storage
