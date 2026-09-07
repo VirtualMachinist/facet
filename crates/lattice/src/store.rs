@@ -192,6 +192,17 @@ pub struct HistoryQuery {
     pub actor: Option<String>,
     /// Only runs started at or after this time.
     pub since: Option<i64>,
+    /// Only runs recorded under this session id.
+    pub session_id: Option<String>,
+    /// Only runs recorded under this environment name.
+    pub environment: Option<String>,
+    /// Only runs carrying every one of these tags (AND). Matched via
+    /// `json_each(tags)`; a run with no tags never matches.
+    pub tags: Vec<String>,
+    /// Only runs whose `request_hash`, `req_body_hash`, or `res_body_hash`
+    /// equals this value. Which column matched is reported by the CLI
+    /// (`matchedHash`), not by the store.
+    pub hash: Option<String>,
 }
 
 /// A blob registry row plus its bytes.
@@ -417,6 +428,29 @@ impl WorkspaceStore {
         if let Some(since) = query.since {
             clauses.push("started_at >= ?");
             values.push(Value::Integer(since));
+        }
+        if let Some(session_id) = &query.session_id {
+            clauses.push("session_id = ?");
+            values.push(Value::Text(session_id.clone()));
+        }
+        if let Some(environment) = &query.environment {
+            clauses.push("environment = ?");
+            values.push(Value::Text(environment.clone()));
+        }
+        for tag in &query.tags {
+            // AND: every tag must appear in the run's tags array. A NULL or
+            // empty tags column yields no rows from json_each, so it never
+            // matches, which is the correct absence semantics.
+            clauses.push("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)");
+            values.push(Value::Text(tag.clone()));
+        }
+        if let Some(hash) = &query.hash {
+            // One column-agnostic flag across the three hash columns.
+            clauses.push("(request_hash = ? OR req_body_hash = ? OR res_body_hash = ?)");
+            let hash_value = Value::Text(hash.clone());
+            values.push(hash_value.clone());
+            values.push(hash_value.clone());
+            values.push(hash_value);
         }
         if !clauses.is_empty() {
             sql.push_str(" WHERE ");
