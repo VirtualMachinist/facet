@@ -282,7 +282,7 @@ pub(crate) fn normalize(value: Value) -> Value {
                         "version" | "probeVersion" => json!("<version>"),
                         "id" | "runId" | "workspaceId" => json!("<ulid>"),
                         "sessionId" | "replayedFrom" if value.is_string() => json!("<ulid>"),
-                        "startedAt" | "durationMs" | "updatedAt" => json!("<int>"),
+                        "startedAt" | "durationMs" | "updatedAt" | "pinnedAt" => json!("<int>"),
                         "endedAt" if value.is_number() => json!("<int>"),
                         "requestHash" | "recordedHash" | "currentHash" => json!("<sha256>"),
                         "hash" if value.is_string() => json!("<sha256>"),
