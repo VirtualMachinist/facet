@@ -16,7 +16,7 @@ After this file, inspect the affected code and read only the matching reference:
 | Rust workflow, dependencies, GPUI, tests | [Development](docs/DEVELOPMENT.md) |
 | Errors or logging | [Errors and logging](docs/ERRORS_AND_LOGGING.md) |
 | Benchmarks or optimization | [Performance](docs/PERFORMANCE.md) |
-| Facet: `facet` binary, Lattice, `history`/`blob`/`gc`, fork boundary | [Facet](docs/FACET.md) |
+| Facet: `facet` binary, Lattice, session/recall/replay/diff/env/`--expect`, fork boundary | [Facet](docs/FACET.md) |
 | Future scope | [Roadmap](IMPLEMENTATION_PLAN.md) |
 
 Do not read every document by default. The [documentation index](docs/README.md)
