@@ -10,7 +10,8 @@ use std::{
 };
 
 use facet_record::{
-    RecordRequest, Recording, actor_from_env, record, recording_disabled, session_from_env,
+    Hydration, RecordRequest, Recording, actor_from_env, overlay_secrets, record,
+    recording_disabled, session_from_env,
 };
 use lattice::now_ms;
 use probe_core::{
@@ -64,11 +65,20 @@ pub(crate) fn run(args: &[String], stdin: &mut impl Read) -> Result<CommandOutpu
     let overrides = overrides_from_parsed(&parsed)?;
 
     let loaded = load(&input, stdin)?;
-    let request = selected_request(
-        &loaded,
-        selector,
+    let base = input.base_directory();
+    let raw = lookup_request(&loaded, selector)?;
+    let hydration = hydrate(
+        base.as_deref(),
         environment.as_deref(),
+        raw,
+        &loaded,
         &variables,
+    )?;
+    let request = resolve_selected(
+        &loaded,
+        raw,
+        environment.as_deref(),
+        &hydration.merged(&variables),
         strict_variables,
     )?;
     let execution = execute(&request, input.base_directory(), output.as_deref())?;
@@ -92,19 +102,63 @@ pub(crate) fn run(args: &[String], stdin: &mut impl Read) -> Result<CommandOutpu
             session: session.as_deref(),
             replayed_from: None,
             var_names: &var_names(&variables),
+            redact: &hydration.redact,
         })
     } else {
         Recording::Skipped("disabled")
     };
 
+    let (lattice_json, lattice_human) = with_secrets(
+        recording.json(),
+        recording.human(),
+        &hydration,
+        environment.is_some(),
+    );
     render(
         &request,
         execution,
         output.as_deref(),
-        recording.json(),
-        recording.human(),
+        lattice_json,
+        lattice_human,
         recording.warning().into_iter().collect(),
     )
+}
+
+/// Secret hydration (Goal 5): Lattice environment values for the names the
+/// request references, placed before the user's `--var` so those win.
+/// Only with `--environment`; otherwise an empty overlay.
+pub(crate) fn hydrate(
+    base: Option<&Path>,
+    environment: Option<&str>,
+    request: &HttpRequest,
+    loaded: &LoadedWorkspace,
+    variables: &[(String, String)],
+) -> Result<Hydration, FacetError> {
+    overlay_secrets(
+        base,
+        environment,
+        request,
+        loaded.workspace().environments(),
+        variables,
+    )
+    .map_err(FacetError::hydrate)
+}
+
+/// Adds `lattice.secrets` (names only) whenever an environment was selected,
+/// and the human note when something was hydrated.
+pub(crate) fn with_secrets(
+    mut lattice_json: Value,
+    mut lattice_human: String,
+    hydration: &Hydration,
+    environment_selected: bool,
+) -> (Value, String) {
+    if environment_selected {
+        lattice_json["secrets"] = hydration.json();
+    }
+    if let Some(note) = hydration.human() {
+        lattice_human = format!("{lattice_human} · {note}");
+    }
+    (lattice_json, lattice_human)
 }
 
 /// Parses repeated `--var NAME=VALUE` flags in order.
@@ -200,21 +254,30 @@ pub(crate) fn render(
     }
 }
 
-/// Mirrors `probe-cli`'s selection and interpolation rules.
-pub(crate) fn selected_request<'a>(
+/// The unresolved request behind a selector.
+pub(crate) fn lookup_request<'a>(
     loaded: &'a LoadedWorkspace,
     selector: &str,
+) -> Result<&'a HttpRequest, FacetError> {
+    let key = loaded
+        .request_key(selector)
+        .ok_or_else(|| FacetError::request_not_found(selector))?;
+    Ok(loaded
+        .workspace()
+        .request(key)
+        .expect("repository request key must resolve"))
+}
+
+/// Mirrors `probe-cli`'s interpolation rules over an already looked-up
+/// request. `variables` are applied last, so the caller decides precedence.
+pub(crate) fn resolve_selected<'a>(
+    loaded: &LoadedWorkspace,
+    request: &'a HttpRequest,
     environment: Option<&str>,
     variables: &[(String, String)],
     strict_variables: bool,
 ) -> Result<Cow<'a, HttpRequest>, FacetError> {
-    let key = loaded
-        .request_key(selector)
-        .ok_or_else(|| FacetError::request_not_found(selector))?;
     let workspace = loaded.workspace();
-    let request = workspace
-        .request(key)
-        .expect("repository request key must resolve");
     if environment.is_some() || !variables.is_empty() || strict_variables {
         let environment =
             resolve_environment_with_overrides(workspace.environments(), environment, variables)

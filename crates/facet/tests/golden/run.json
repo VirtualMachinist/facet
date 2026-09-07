@@ -9,6 +9,10 @@
       "sizeBytes": 12
     },
     "runId": "<ulid>",
+    "secrets": {
+      "hydrated": [],
+      "source": null
+    },
     "workspaceId": "<ulid>"
   },
   "request": {

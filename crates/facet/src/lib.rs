@@ -9,6 +9,7 @@
 //! - `history`, `blob`, and `gc` read and maintain that store.
 //! - `session` starts, ends, lists, and shows agent sessions in the machine store.
 //! - `replay` re-sends a recorded run from the current YAML; `diff` compares two runs.
+//! - `env` sets and lists machine-store environment values (metadata only on read).
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -21,6 +22,7 @@ use serde_json::{Value, json};
 
 mod args;
 mod diff;
+mod env;
 mod error;
 mod history;
 mod presentation;
@@ -170,6 +172,10 @@ pub const fn help() -> &'static str {
         "  session show <id>|current           Show one session\n",
         "  replay <runId> [<path>]             Re-send a recorded run from the current YAML\n",
         "  diff <idA> <idB> [<path>]           Compare two recorded runs, hashes first (exit 1 if different)\n",
+        "  env set [<path>] --environment <e> --name <k> --value <v> [--secret]\n",
+        "                                      Store a value in the Facet machine store (hydrated at resolve)\n",
+        "  env list [<path>] [--environment <e>] List stored values (metadata only, never values)\n",
+        "  env delete [<path>] --environment <e> --name <k>\n",
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
         "  tui [<path>]                        Open the terminal UI\n",
@@ -190,6 +196,7 @@ pub const fn help() -> &'static str {
         "      --id <ulid>             One run by id (exclusive with the filters above)\n",
         "      --bodies                Include inline bodies in history JSON; unified body diff for diff\n",
         "      --frozen                Refuse to replay when the request hash changed (exit 1)\n",
+        "      --secret                Store the env value through the secrets layer (env set)\n",
         "      --meta <json>           Session metadata object (session start)\n",
         "      --open                  Only sessions still open (session list)\n",
         "      --output <file>         Write a blob to a file instead of stdout\n",
@@ -201,7 +208,8 @@ pub const fn help() -> &'static str {
         "  -V, --version               Print version\n",
         "\n",
         "Environment: FACET_ACTOR (run actor, default human), FACET_SESSION (session id),\n",
-        "FACET_NO_RECORD=1 (never record), FACET_DATA_DIR / FACET_CONFIG_DIR (machine store paths).\n",
+        "FACET_NO_RECORD=1 (never record), FACET_DATA_DIR / FACET_CONFIG_DIR (machine store paths),\n",
+        "FACET_SECRET_KEY (encrypted secrets instead of the OS keyring).\n",
     )
 }
 
@@ -237,8 +245,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "session" | "replay" | "diff" | "blob" | "gc" | "tui" | "-V" | "--version"
-            | "-h" | "--help",
+            "history" | "session" | "replay" | "diff" | "env" | "blob" | "gc" | "tui" | "-V"
+            | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -285,6 +293,7 @@ where
         "session" => session::session(&args[1..]),
         "replay" => replay::replay(&args[1..], stdin),
         "diff" => diff::diff(&args[1..]),
+        "env" => env::env(&args[1..]),
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(

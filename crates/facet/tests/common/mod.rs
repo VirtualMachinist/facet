@@ -26,6 +26,19 @@ impl Sandbox {
         self.dir.path()
     }
 
+    /// A bundled collection whose request references a declared secret
+    /// (`token`, `secret: true`) in its URL query, a custom header, and its
+    /// body, so the mock server sees the hydrated value, nothing but Lattice
+    /// can supply it, and every stored text column is exercised by scrubbing.
+    pub(crate) fn secret_workspace(&self, server_url: &str) -> PathBuf {
+        let source = format!(
+            "opencollection: 1.0.0\ninfo:\n  name: Secret fixture\nbundled: true\nconfig:\n  environments:\n    - name: local\n      variables:\n        - name: serverUrl\n          value: {server_url}\n        - secret: true\n          name: token\n          type: string\nitems:\n  - info:\n      name: Echo secret\n      type: http\n      seq: 1\n    http:\n      method: POST\n      url: \"{{{{serverUrl}}}}/echo?t={{{{token}}}}\"\n      headers:\n        - name: X-Token\n          value: \"{{{{token}}}}\"\n      body:\n        type: json\n        data: '{{\"token\":\"{{{{token}}}}\"}}'\n"
+        );
+        let path = self.root().join("workspace.yml");
+        fs::write(&path, source).unwrap();
+        path
+    }
+
     /// Writes the phase-5 HTTP fixture with `__SERVER_URL__` replaced.
     pub(crate) fn workspace(&self, server_url: &str) -> PathBuf {
         let source = fs::read_to_string(fixture("phase5-http.yml")).unwrap();
@@ -43,6 +56,8 @@ impl Sandbox {
             .env_remove("FACET_ACTOR")
             .env_remove("FACET_SESSION")
             .env_remove("FACET_NO_RECORD")
+            // Encrypted secrets backend: deterministic, no OS keyring prompts.
+            .env("FACET_SECRET_KEY", "test-master-key")
             // Session metadata picks these up when present; goldens must not.
             .env_remove("HERDR_WORKSPACE_ID")
             .env_remove("HERDR_TAB_ID")
@@ -228,7 +243,7 @@ pub(crate) fn normalize(value: Value) -> Value {
                         "version" | "probeVersion" => json!("<version>"),
                         "id" | "runId" | "workspaceId" => json!("<ulid>"),
                         "sessionId" | "replayedFrom" if value.is_string() => json!("<ulid>"),
-                        "startedAt" | "durationMs" => json!("<int>"),
+                        "startedAt" | "durationMs" | "updatedAt" => json!("<int>"),
                         "endedAt" if value.is_number() => json!("<int>"),
                         "requestHash" | "recordedHash" | "currentHash" => json!("<sha256>"),
                         "hash" if value.is_string() => json!("<sha256>"),

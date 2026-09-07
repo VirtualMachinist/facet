@@ -1,9 +1,7 @@
 {
   "lattice": {
-    "hashChanged": false,
     "indexed": true,
     "recorded": true,
-    "replayedFrom": "<ulid>",
     "requestHash": "<sha256>",
     "responseBody": {
       "hash": null,
@@ -12,8 +10,10 @@
     },
     "runId": "<ulid>",
     "secrets": {
-      "hydrated": [],
-      "source": null
+      "hydrated": [
+        "token"
+      ],
+      "source": "encrypted"
     },
     "workspaceId": "<ulid>"
   },
