@@ -142,7 +142,7 @@ Ranked (fullstack, 2026-09-07). Smallest vertical slice first.
 | 3 | **Replay** | `facet replay <runId>` re-resolves **current** YAML at the recorded env; warn on `request_hash` change; `--frozen` refuses | Facet command; Probe engine untouched |
 | 4 | **Hash-first diff** | `facet diff <a> <b>`: hashes equal ⇒ bodies equal; exit 1 on mismatch, 9 if a run is missing | Facet-only |
 | 5 | **Secret hydration** | Overlay Lattice env as `--var` before resolve on `request run` / TUI send. `--var` still wins | Facet overlay now; secret-provider hook upstream later |
-| 6 | **Dry-run + `--expect`** | `--expect 200,201` after a real run; miss → exit **6** `expect_failed`; Lattice still records. `--dry-run` second | **Upstream-first** on `request run` |
+| 6 | **Dry-run + `--expect`** | `--expect 200,201` after a real run; miss → exit **1** `expect_failed` (decided; see § `--expect`); Lattice still records. `--dry-run` second | **Upstream-first** on `request run` |
 
 CLI is the harness contract. MCP wraps the same functions later and must
 not parse stdout. Sketch: `agents/fullstack/notes/2026-09-07-and-more.md`
@@ -241,7 +241,7 @@ in the Lapis vault for the full runbook.
 ## Commands
 
 ```text
-facet request run <path> <selector> [<probe request run flags>] [--no-record] [--tag <tag>]... [--inline-body-max <size>] [--json]
+facet request run <path> <selector> [<probe request run flags>] [--no-record] [--tag <tag>]... [--expect <codes>] [--dry-run] [--inline-body-max <size>] [--json]
 facet history [<path>] [--limit <n>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--session <id>|current] [--environment <name>] [--tag <tag>]... [--hash <sha256>] [--bodies] [--json]
 facet history [<path>] --id <ulid> [--bodies] [--json]
 facet history [<path>] --sql "<query>" [--json]
@@ -249,7 +249,7 @@ facet session start [--actor <name>] [--meta <json>] [--json]
 facet session end [<id>|current] [--json]
 facet session list [--limit <n>] [--actor <name>] [--open] [--json]
 facet session show <id>|current [--json]
-facet replay <runId> [<path>] [--frozen] [--environment <name>] [--var k=v]... [--tag <tag>]... [--strict-variables] [--no-record] [--json]
+facet replay <runId> [<path>] [--frozen] [--environment <name>] [--var k=v]... [--tag <tag>]... [--expect <codes>] [--strict-variables] [--no-record] [--json]
 facet diff <idA> <idB> [<path>] [--bodies] [--json]
 facet env set [<path>] --environment <name> --name <key> --value <value> [--secret] [--json]
 facet env list [<path>] [--environment <name>] [--json]
@@ -298,6 +298,58 @@ A stdin (`-`) workspace has no root and is never recorded. A Lattice failure
 never changes the run's exit code; it is reported in `lattice` and on stderr.
 A transport failure is recorded with `status: null` and the error text, then
 the upstream error envelope is returned with `error.details.lattice`.
+
+### `--expect` and `--dry-run`
+
+`--expect <codes>` on `request run` and `replay` is the assertion an agent
+asks for after a real run: a comma list of status codes (`200,201`) and/or
+class shorthands (`2xx`, `3xx`), mixable. Absent means no assertion (today's
+behavior). `--expect 2xx` is what skill files should teach.
+
+| Outcome | Exit | Category | Agent should |
+| --- | ---: | --- | --- |
+| status in set | 0 | — | continue |
+| HTTP completed, status not in set | **1** | `expect_failed` | stop, read the run, do not retry |
+| transport / timeout / cancel | 6 | `network_execution` / `request_timeout` / `request_cancelled` | retry (bounded) |
+| config / env / secret missing | 5 | as today | fix inputs |
+| Lattice write failed | 0 + `lattice.recorded: false` | — | continue; warn |
+
+Why 1 and not 6: a harness mapping "6 → retry" (right for sockets) would
+retry a 404 forever, and one that parses the category first has reintroduced
+the JSON parse `--expect` exists to remove. Unix already gave `1` to "the
+assertion you asked for is false" (`test`, `grep`, `diff`, `cmp`); upstream's
+constants start at 2, so nothing collides. The same row is offered to Probe
+for `request run`; if upstream declines, `--expect` stays a Facet extension.
+
+On a miss with `--json` the **full success document** is emitted plus
+`error`, so the run id is in hand without a second call:
+
+```json
+{ "schemaVersion": 1, "request": { "…": "…" }, "response": { "status": 500, "…": "…" }, "lattice": { "runId": "01K…", "…": "…" },
+  "error": { "category": "expect_failed", "exitCode": 1, "message": "expected status in [200,201], got 500",
+             "details": { "expected": [200, 201], "actual": 500 } } }
+```
+
+Human mode prints the response as usual and `error[expect_failed]: …` on
+stderr. `--quiet` prints nothing and exits 1. Lattice records regardless and
+tags the run `expect:fail`, so `history --tag expect:fail --session current`
+answers "what failed this session" without `--sql`. Transport failures keep
+their own envelope and exit code; `--expect` never rewrites them.
+
+`--dry-run` resolves the request (secret hydration included) and shows what
+would be sent, without sending or recording. It cannot be combined with
+`--expect` or `--output`. The preview applies Lattice's redactions
+(sensitive header names, URL userinfo, known secret values), so it is safe to
+paste; `lattice.requestHash` is what a real run would store, so an agent can
+compare it against a recorded run (`history --id`, `diff`) before firing.
+
+```json
+{ "schemaVersion": 1, "dryRun": true,
+  "request": { "method": "POST", "url": "http://…/echo", "query": [ { "disabled": false, "name": "mode", "value": "cli" } ],
+               "headers": [ { "disabled": false, "name": "X-Probe", "value": "…" } ],
+               "body": { "content": "{\"source\":\"cli\"}", "sizeBytes": 16, "omitted": false, "omissionReason": null } },
+  "lattice": { "recorded": false, "reason": "dry_run", "requestHash": "9f…", "secrets": { "hydrated": [], "source": null } } }
+```
 
 ### `history`
 
@@ -558,7 +610,7 @@ Facet extends the upstream table; it never renumbers it.
 | Code | Category |
 | ---: | --- |
 | 0–8 | As in [CLI](CLI.md#exit-codes) |
-| 1 | Assertion failed (`replay_changed`; `diff` found differences) |
+| 1 | Assertion failed (`expect_failed`, `replay_changed`; `diff` found differences) |
 | 9 | Lattice store failure (`lattice_error`, `lattice_not_found`) |
 
 Additional stable categories: `blob_not_found`, `run_not_found`, and

@@ -10,6 +10,7 @@
 //! - `session` starts, ends, lists, and shows agent sessions in the machine store.
 //! - `replay` re-sends a recorded run from the current YAML; `diff` compares two runs.
 //! - `env` sets and lists machine-store environment values (metadata only on read).
+//! - `request run --expect` / `--dry-run`: the assertion (exit 1) and the preview.
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -25,6 +26,7 @@ mod diff;
 mod doctor;
 mod env;
 mod error;
+mod expect;
 mod history;
 mod presentation;
 mod replay;
@@ -106,6 +108,8 @@ pub(crate) struct CommandOutput {
     human: Vec<u8>,
     json: Value,
     warnings: Vec<String>,
+    /// `error[category]: message` lines for stderr (suppressed by --quiet).
+    errors: Vec<String>,
     exit_code: u8,
 }
 
@@ -115,8 +119,32 @@ impl CommandOutput {
             human: human.into(),
             json,
             warnings: Vec::new(),
+            errors: Vec::new(),
             exit_code: 0,
         }
+    }
+
+    /// A complete success document that nonetheless failed the caller's
+    /// assertion (`--expect`): the document stays, `error` is added to the
+    /// JSON, the human view gains an `error[...]` line on stderr, and the
+    /// process exits with the error's code.
+    pub(crate) fn fail(mut self, error: FacetError) -> Self {
+        let mut envelope = json!({
+            "category": error.category,
+            "exitCode": error.exit_code,
+            "message": error.message,
+        });
+        if let Some(details) = error.details {
+            envelope["details"] = details;
+        }
+        self.errors.push(format!(
+            "error[{}]: {}
+",
+            error.category, error.message
+        ));
+        self.json["error"] = envelope;
+        self.exit_code = error.exit_code;
+        self
     }
 
     pub(crate) fn warn(mut self, warning: impl Into<String>) -> Self {
@@ -139,11 +167,15 @@ impl CommandOutput {
         } else {
             self.human
         };
-        let stderr = self
+        let mut stderr: String = self
             .warnings
             .iter()
             .map(|warning| format!("warning: {warning}\n"))
             .collect();
+        // The JSON document carries `error`; the human view says it on stderr.
+        if !quiet && !json_output {
+            stderr.extend(self.errors.iter().map(String::as_str));
+        }
         RunOutput {
             stdout,
             stderr,
@@ -164,6 +196,7 @@ pub const fn help() -> &'static str {
         "\n",
         "Commands:\n",
         "  request run <path> <selector>       Execute an HTTP request and record it in Lattice\n",
+        "      [--expect <codes>] [--dry-run]  Assert the status (exit 1 on miss) or preview only\n",
         "  history [<path>]                    List recorded runs, newest first (metadata only)\n",
         "  history [<path>] --id <ulid>        Show one recorded run by id\n",
         "  history [<path>] --sql <query>      Run read-only SQL against the workspace store\n",
@@ -184,6 +217,8 @@ pub const fn help() -> &'static str {
         "\n",
         "Options:\n",
         "      --no-record             Execute without writing to Lattice\n",
+        "      --expect <codes>        Assert the status: 200,201 or 2xx; miss is exit 1 expect_failed\n",
+        "      --dry-run               Resolve and preview the request without sending or recording\n",
         "      --tag <tag>             Tag the recorded run, or filter history by tag (AND); may be repeated\n",
         "      --inline-body-max <n>   Inline bodies at or under this size (e.g. 64KiB)\n",
         "      --history-retention <r> Retention window for gc (unlimited or e.g. 30d)\n",
@@ -247,8 +282,8 @@ where
     let owned = match args.first().map(String::as_str) {
         None => true,
         Some(
-            "history" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc"
-            | "tui" | "-V" | "--version" | "-h" | "--help",
+            "history" | "session" | "replay" | "diff" | "env" | "doctor" | "blob" | "gc" | "tui"
+            | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
