@@ -248,6 +248,7 @@ file format:
 | --- | --- | --- |
 | `lattice-turso` | Turso / libSQL (local mode) | Same file format as rusqlite (libSQL is a SQLite fork); flipping the flag requires no migration. Smoke: `crates/lattice/tests/turso.rs` (open/write/read a workspace store through libSQL). The smoke is libsql-only: rusqlite and libsql both bundle SQLite and cannot coexist in one binary (libsql's `sqlite3_config(SERIALIZED)` returns `SQLITE_MISUSE` after rusqlite initializes SQLite; `skip_safety_assert` is `unsafe` and the workspace forbids it). Verified still true 2026-09-06 (libsql 0.9.30). |
 | `lattice-duckdb` | DuckDB in-process (bundled) | **Apiary-only; never in lathe default members.** ATTACHes the SQLite lattice file for analytics. Smoke: `crates/lattice/tests/duckdb.rs`. Heavy native build. |
+| `lattice-hedron` | HedronDB knowledge-graph (`hedron-core`, bundled rusqlite) | **Apiary-only; never in lathe default members.** A **second data plane**, not a `lattice-turso` clone: Turso **retrieves** (same `lattice.db`, libSQL is a SQLite fork); HedronDB **records/reconciles** (separate-schema store — `nodes`/`edges`/`desired_states`/`events`, HQL — `hedron_core::Store::open` bootstraps its own schema and cannot read `lattice.db`). Engines are **beside, not instead** — no Turso cutover, no Facet SoT flip; read/search stays Turso/lattice. The smoke proves coexistence — `hedron-core` (rusqlite 0.40, bundled, aligned via the `facet-pin-align` proposal branch) and this crate's default engine (rusqlite 0.40, bundled) share one `libsqlite3-sys` and link/run in one binary. Smoke: `crates/lattice/tests/hedron.rs`. The Lattice→HedronDB projection (record/reconcile adapters) is a later slice; do not mix Warm `current_state` and Cool `causal_chain` in one API. |
 
 The primary analytics path is the **`duckdb` CLI** attaching the SQLite
 file externally (no Rust, no feature flag). Durable smoke:
@@ -262,6 +263,17 @@ duckdb -c "INSTALL sqlite; LOAD sqlite; \
 `INSTALL sqlite` downloads the `sqlite` extension on first use (network
 needed once). The in-process `lattice-duckdb` feature is a convenience
 for embedding the same ATTACH in Rust; it is not required for analytics.
+
+`lattice-hedron` is a **second data plane**, not a
+`lattice-turso` clone: Turso retrieves (reads the same `lattice.db`);
+HedronDB records/reconciles (a separate-schema knowledge graph —
+HQL, not SQL — that a future projection feeds from Lattice run history).
+Engines are **beside, not instead** — no Turso cutover, no Facet
+SoT flip; read/search stays Turso/lattice. It is apiary-only until
+the projection adapters and the upstream `hedron-core` pin alignment
+(rusqlite 0.40) land on hedrondb main. Do not mix Warm
+`current_state` and Cool `causal_chain` in one API. See
+`agents/backend/notes/2026-09-07-evaluate-hedrondb.md` for the evaluation.
 
 Feature-gated tests use `required-features` in `crates/lattice/Cargo.toml`,
 so a default `cargo test -p lattice` (features off) never pulls libsql,
