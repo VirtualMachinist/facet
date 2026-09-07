@@ -255,9 +255,13 @@ facet tui [<path>] [--appearance graphite|porcelain]
 ```
 
 Graphite Honey is the TUI default. `:theme` (bare) toggles Porcelain Honey;
-`:theme graphite|porcelain` sets one. `:history` and `:sql <query>` open
-Lattice overlays. `gg` / `G` jump to the first / last row of the focused
-pane. `?` lists the rest.
+`:theme graphite|porcelain` sets one. `:history` opens the run grid
+(`STARTED STATUS MS METHOD REQUEST ACTOR ID`): `j`/`k` or arrows move,
+`gg`/`G` jump, Enter hydrates the response pane from Lattice (titled
+`run <id> · replayed view`), `y` yanks the run id and `Y` the response
+body hash (OSC 52), `/` filters by selector, `s` toggles runs from
+`$FACET_SESSION` only, Esc closes. `:sql <query>` opens a read-only
+overlay. `?` lists the rest.
 
 Roadmap (Probe's public list, folded): HTTP live; next WebSocket, GraphQL,
 gRPC streaming, user-defined theme files, git integration. Secret storage
