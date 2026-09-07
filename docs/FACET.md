@@ -275,6 +275,11 @@ in the Lapis vault for the full runbook.
 facet request run <path> <selector> [<probe request run flags>] [--no-record] [--tag <tag>]... [--expect <codes>] [--dry-run] [--inline-body-max <size>] [--json]
 facet history [<path>] [--limit <n>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--session <id>|current] [--environment <name>] [--tag <tag>]... [--hash <sha256>] [--bodies] [--json]
 facet history [<path>] --id <ulid> [--bodies] [--json]
+facet last [<path>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--session <id>|current] [--environment <name>] [--tag <tag>]... [--hash <sha256>] [--bodies] [--json]
+facet pin <runId> --as <name> [<path>] [--json]
+facet pin get <name> [<path>] [--json]
+facet pin list [<path>] [--json]
+facet pin delete <name> [--json]
 facet history [<path>] --sql "<query>" [--json]
 facet session start [--actor <name>] [--meta <json>] [--json]
 facet session end [<id>|current] [--json]
@@ -437,6 +442,27 @@ Rows carry two lineage fields from migration 0003: `replayedFrom` (the run
 this one replayed, else `null`) and `varNames` (the `--var` names used at
 resolve time, never values; `[]` when none, `null` on rows recorded before
 0003, meaning unknown).
+
+### `last` and `pin`
+
+`facet last` is `history` with `--limit 1`: the same filters, the newest
+match. Human mode prints the bare ULID, so
+`facet replay $(facet last --status 500)` is a one-liner; `--json` is the
+`history --id` shape (`{ workspace, run }`). No match, or no store, is
+`run_not_found` (exit 4), so a shell substitution never yields an empty id.
+
+`facet pin <runId> --as <name>` names a run: the first real write to the
+machine store's `preferences` table, key `pin.<name>`, value
+`{ runId, workspaceId, pinnedAt }`. The run must exist in the workspace
+store discovered from `<path>` when pinned. Pins live in the **machine**
+store so they survive `gc` of the workspace; `pin get` prints the bare id
+(`facet replay $(facet pin get auth-ok)`) and its JSON reports
+`dangling: true` when the run is gone, `false` when it is there, `null` when
+the workspace under `<path>` is not the pin's. `pin list` returns
+`{ pins: [ … ] }`; `pin delete` reports `deleted`. Names are 1-64 characters
+of letters, digits, `-`, `_`, `.`. Unknown pin: `pin_not_found` (exit 4).
+`SELECT key, value FROM preferences WHERE key LIKE 'pin.%'` is the query
+against the machine store file.
 
 ### `history --sql`
 
@@ -702,8 +728,8 @@ Facet extends the upstream table; it never renumbers it.
 | 1 | Assertion failed (`expect_failed`, `replay_changed`; `diff` found differences) |
 | 9 | Lattice store failure (`lattice_error`, `lattice_not_found`) |
 
-Additional stable categories: `blob_not_found`, `run_not_found`, and
-`session_not_found` (exit 4, "not found"); `session_not_set` and
+Additional stable categories: `blob_not_found`, `run_not_found`,
+`session_not_found`, and `pin_not_found` (exit 4, "not found"); `session_not_set` and
 `secret_backend_unavailable` (exit 5, configuration); `invalid_sql` and
 `sql_read_only` (exit 2). Every JSON document carries `schemaVersion: 1`;
 fields are added compatibly and never removed or retyped within a version.

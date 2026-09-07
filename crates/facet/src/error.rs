@@ -122,6 +122,20 @@ impl FacetError {
         }))
     }
 
+    /// `pin get <name>` with no such pin (exit 4).
+    pub(crate) fn pin_not_found(name: &str) -> Self {
+        Self::new(
+            "pin_not_found",
+            format!("pin not found: {name}"),
+            REQUEST_NOT_FOUND_EXIT_CODE,
+        )
+    }
+
+    /// A stored value Facet wrote itself cannot be read back (exit 9).
+    pub(crate) fn lattice_corrupt(message: impl Into<String>) -> Self {
+        Self::new("lattice_error", message, LATTICE_EXIT_CODE)
+    }
+
     /// `session end|show <id>` with an unknown session id (exit 4).
     pub(crate) fn session_not_found(id: &str) -> Self {
         Self::new(
