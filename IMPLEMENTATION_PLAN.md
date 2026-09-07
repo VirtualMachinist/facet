@@ -96,14 +96,17 @@ for the closed train stay in the Lapis vault
 (`agents/fullstack/notes/2026-09-07-and-more.md` and the explore / deep-dive
 passes).
 
-**Ship next** (ranked; no `probe-core`):
+**Facet-owned rest** (ranked; no `probe-core`; finish this train first):
 
-1. MCP — tools over the existing CLI contract; same JSON; no stdout parse
+1. MCP — `facet mcp` stdio; tools over lattice + record + run; same JSON; no stdout parse
 2. Git HEAD auto-tag — `git:<sha>[-dirty]` on record; no column
 3. Bells — `facet last`, `:history` sparkline, pins
 4. Theme files — Probe 05 rest
 5. TUI env editor + `ctrl+u`/`ctrl+d` — Probe 07 rest + deferred Surface 2 scroll
-6. Upstream offers — `--expect` row and secret-provider hook to Probe
+
+**Probe contribution** (later, separate train): `--expect` + `--dry-run` on
+`probe request run`; secret-provider hook in `probe-core` (not Lattice);
+then Thread A (02–04) when unparked. Fresh branch off upstream `main`.
 
 MCP / harness adapter over Lattice must not parse CLI output. Engines stay
 rusqlite default; DuckDB ATTACH is `scripts/duckdb-attach-demo.sh`.

@@ -151,24 +151,29 @@ Lapis vault.
 
 ### Next slice
 
-Do **not** start with Probe 02–04 (WebSocket, GraphQL, gRPC). Those are
-protocol engines. They need a `protocol-session` / event abstraction in
-`probe-core` first (Thread A, parked on `repos/probe-upstream`). Facet
-cannot ship them as Facet-only adapters against an HTTP-only core without
-forking the engine Evan keeps cherry-pickable. Unpark Thread A when Evan
-says; then core PR upstream, Facet JSONL + TUI session pane + Lattice events
-in this tree in parallel.
+Two trains. Finish the Facet-owned rest **before** pivoting to Probe.
 
-What is left, ranked for a Facet-owned train that does not touch `probe-core`:
+#### Facet-owned rest (no `probe-core`)
 
 | # | Item | Smallest slice | Belonging |
 | --- | --- | --- | --- |
-| 1 | **MCP** | Tools over the existing CLI contract (`request_run`, `history_get`, `run_replay`, `run_diff`, `blob_get`). Same JSON envelopes. No stdout parse. Skills/rules before freezing tool names. | Facet adapter; not a second API |
-| 2 | **Git HEAD auto-tag** | On record, tag `git:<sha>[-dirty]` when cwd is a repo. No column. `history --tag git:…` is the query. | Facet-only |
-| 3 | **Bells** | `facet last` (one-row recall); sparkline on the `:history` grid; pins. Each rides a command that is already green. | Facet-only |
+| 1 | **MCP** | `facet mcp` stdio. Tools over lattice + record + the same run function (never shell out to `facet`). v1: session start/end, request list/get/run, history list/get, blob_get, run_diff, run_replay, sql_query. Same JSON envelopes. Skills/rules before freezing names. | Facet adapter; not a second API |
+| 2 | **Git HEAD auto-tag** | On record, tag `git:<sha>[-dirty]` when cwd is a repo. No column. `history --tag git:…`. | Facet-only |
+| 3 | **Bells** | `facet last`; sparkline on the `:history` grid; pins. Each rides a command that is already green. | Facet-only |
 | 4 | **Theme files** (Probe 05 rest) | Versioned files for `facet-tui`; invalid → Graphite/Porcelain. | Facet TUI; desktop files stay upstream |
 | 5 | **TUI env editor** (Probe 07 rest) + `ctrl+u`/`ctrl+d` | Overlay UI on `facet env` / machine store. Half-page scroll deferred from Surface 2. | Facet TUI |
-| 6 | **Upstream offers** | Same `--expect` row and secret-provider hook to Probe. Facet-only fallback already shipped. | Upstream-first |
+
+#### Probe contribution (later, separate)
+
+Give Probe the pieces we already shipped that belong in `probe-cli` / `probe-core`, then protocols. Fresh branch off upstream `main` — not the parked Thread A tree.
+
+| # | Item | Notes |
+| --- | --- | --- |
+| A1 | `--expect` + `--dry-run` on `request run` | Exit **1** `expect_failed`; transport stays 6. Facet-only fallback already shipped. |
+| A2 | Secret-provider hook | Probe still errors `secret_variable_unavailable` with no `--var`. A host trait; do not push Lattice into Probe. |
+| B | Thread A — Probe 02–04 | WebSocket, GraphQL, gRPC. Need `protocol-session` in `probe-core` first. Unpark when Evan says; Facet JSONL + TUI session pane + Lattice events **after** the core PR exists. |
+
+Do **not** ship 02–04 as Facet-only adapters against an HTTP-only core — that forks the engine.
 
 **Still not this product:** collection-in-Lattice, a writer daemon,
 kitchen-sink MCP writes, a JS test runner, Probe-shaped git hosting UI,
