@@ -641,6 +641,10 @@ pub struct Styles {
     pub brand_bright: Style,
     /// Lattice edges on the splash.
     pub brand_line: Style,
+    /// Filled brand band: carbon-on-gold (text inverse on accent), bold.
+    /// Reserved for the splash hexagon outline — the one place the brand
+    /// gets a filled frame instead of a line.
+    pub brand_fill: Style,
 }
 
 impl Styles {
@@ -695,6 +699,10 @@ impl Styles {
         let brand_line = base.fg(accent);
         let brand = brand_line.add_modifier(Modifier::BOLD);
         let brand_bright = brand;
+        let brand_fill = Style::new()
+            .fg(text_inverse)
+            .bg(accent)
+            .add_modifier(Modifier::BOLD);
 
         let _ = palette;
         Self {
@@ -718,6 +726,7 @@ impl Styles {
             brand,
             brand_bright,
             brand_line,
+            brand_fill,
         }
     }
 }
@@ -826,6 +835,23 @@ mod tests {
             Some(dark.palette().text_inverse),
             "dark selected row / Send is carbon on gold"
         );
+    }
+
+    #[test]
+    fn brand_fill_is_the_filled_brand_band() {
+        // The splash hexagon outline: text-inverse on accent, bold, in
+        // both appearances. Distinct from the line/bright brand styles.
+        for appearance in [Appearance::Dark, Appearance::Light] {
+            let theme = Theme::new(appearance);
+            let styles = Styles::for_theme(theme);
+            let palette = theme.palette();
+            assert_eq!(styles.brand_fill.fg, Some(palette.text_inverse));
+            assert_eq!(styles.brand_fill.bg, Some(palette.accent));
+            assert_ne!(
+                styles.brand_fill.bg, styles.brand_line.bg,
+                "fill must stand apart from the line style"
+            );
+        }
     }
 
     #[test]

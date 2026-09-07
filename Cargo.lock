@@ -2371,6 +2371,7 @@ name = "facet-cli"
 version = "0.5.7"
 dependencies = [
  "crossterm 0.29.0",
+ "facet-record",
  "facet-tui",
  "lattice",
  "probe-cli",
@@ -2385,10 +2386,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "facet-record"
+version = "0.5.7"
+dependencies = [
+ "lattice",
+ "probe-core",
+ "probe-http",
+ "serde_json",
+]
+
+[[package]]
 name = "facet-tui"
 version = "0.5.7"
 dependencies = [
  "crossterm 0.29.0",
+ "facet-record",
+ "lattice",
  "probe-core",
  "probe-http",
  "probe-opencollection",

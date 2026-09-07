@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use lattice::{LatticeConfig, Retention, WorkspaceStore};
+use lattice::WorkspaceStore;
 use probe_opencollection::{LoadedWorkspace, load_workspace, load_workspace_from_str};
 
 use crate::FacetError;
@@ -61,51 +61,34 @@ pub(crate) fn load(
     .map_err(|error| FacetError::invalid_workspace(error.to_string()))
 }
 
-/// CLI overrides applied over the file-based configuration.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ConfigOverrides {
-    pub(crate) inline_body_max: Option<u64>,
-    pub(crate) history_retention: Option<Retention>,
+pub(crate) use facet_record::ConfigOverrides;
+
+/// Reads `--inline-body-max` / `--history-retention` from parsed arguments.
+pub(crate) fn overrides_from_parsed(
+    parsed: &crate::args::Parsed,
+) -> Result<ConfigOverrides, FacetError> {
+    let inline_body_max = parsed
+        .value("--inline-body-max")?
+        .map(lattice::parse_byte_size)
+        .transpose()
+        .map_err(|error| FacetError::invalid_arguments(error.to_string()))?;
+    let history_retention = parsed
+        .value("--history-retention")?
+        .map(lattice::parse_retention)
+        .transpose()
+        .map_err(|error| FacetError::invalid_arguments(error.to_string()))?;
+    Ok(ConfigOverrides {
+        inline_body_max,
+        history_retention,
+    })
 }
 
-impl ConfigOverrides {
-    pub(crate) fn from_parsed(parsed: &crate::args::Parsed) -> Result<Self, FacetError> {
-        let inline_body_max = parsed
-            .value("--inline-body-max")?
-            .map(lattice::parse_byte_size)
-            .transpose()
-            .map_err(|error| FacetError::invalid_arguments(error.to_string()))?;
-        let history_retention = parsed
-            .value("--history-retention")?
-            .map(lattice::parse_retention)
-            .transpose()
-            .map_err(|error| FacetError::invalid_arguments(error.to_string()))?;
-        Ok(Self {
-            inline_body_max,
-            history_retention,
-        })
-    }
-
-    fn apply(&self, config: &mut LatticeConfig) {
-        if let Some(value) = self.inline_body_max {
-            config.inline_body_max = value;
-        }
-        if let Some(value) = self.history_retention {
-            config.history_retention = value;
-        }
-    }
-}
-
-/// Loads configuration for `root` (machine file, then workspace file, then
-/// CLI overrides) and opens or creates its store.
+/// Opens or creates the store for `root` with the shared configuration path.
 pub(crate) fn open_store(
     root: &Path,
     overrides: &ConfigOverrides,
 ) -> Result<WorkspaceStore, FacetError> {
-    let mut config =
-        LatticeConfig::load(root).map_err(|error| FacetError::lattice(error.into()))?;
-    overrides.apply(&mut config);
-    WorkspaceStore::open(root, config).map_err(FacetError::lattice)
+    facet_record::open_store(root, overrides).map_err(FacetError::lattice)
 }
 
 /// Finds the workspace root for an optional path argument (default: cwd).

@@ -83,7 +83,10 @@ fn history_json_is_golden_and_carries_no_bodies_by_default() {
         with_bodies["runs"][0]["response"]["body"]["content"],
         r#"{"users":[]}"#
     );
-    assert_eq!(with_bodies["runs"][0]["request"]["body"]["retention"], "blob");
+    assert_eq!(
+        with_bodies["runs"][0]["request"]["body"]["retention"],
+        "blob"
+    );
     assert!(with_bodies["runs"][0]["request"]["body"]["content"].is_null());
     assert_golden("history_bodies.json", &normalize(with_bodies));
 
@@ -127,18 +130,13 @@ fn history_sql_is_golden_and_read_only() {
     );
     assert_golden("history_sql.json", &normalize(result));
 
-    let (write_code, write_error) = sandbox.run_error_json(&[
-        "history",
-        root,
-        "--sql",
-        "DELETE FROM runs",
-    ]);
+    let (write_code, write_error) =
+        sandbox.run_error_json(&["history", root, "--sql", "DELETE FROM runs"]);
     assert_eq!(write_code, 2);
     assert_eq!(write_error["error"]["category"], "sql_read_only");
     assert_golden("error_sql_read_only.json", &normalize_error(write_error));
 
-    let (bad_code, bad_error) =
-        sandbox.run_error_json(&["history", root, "--sql", "SELEC nope"]);
+    let (bad_code, bad_error) = sandbox.run_error_json(&["history", root, "--sql", "SELEC nope"]);
     assert_eq!(bad_code, 2);
     assert_eq!(bad_error["error"]["category"], "invalid_sql");
     assert_golden("error_invalid_sql.json", &normalize_error(bad_error));
@@ -241,7 +239,8 @@ fn blob_not_found_uses_exit_code_4() {
     let sandbox = Sandbox::new();
     record_one_run(&sandbox, &[]);
     let missing = "0".repeat(64);
-    let (code, error) = sandbox.run_error_json(&["blob", &missing, sandbox.root().to_str().unwrap()]);
+    let (code, error) =
+        sandbox.run_error_json(&["blob", &missing, sandbox.root().to_str().unwrap()]);
     assert_eq!(code, 4);
     assert_eq!(error["error"]["category"], "blob_not_found");
     assert_golden("error_blob_not_found.json", &normalize_error(error));
@@ -281,9 +280,7 @@ fn gc_is_a_dry_run_unless_yes() {
 fn gc_expires_runs_by_retention_at_cli() {
     let sandbox = Sandbox::new();
     let first = record_one_run(&sandbox, &["--inline-body-max", "0"]);
-    let run_id = first["lattice"]["runId"]
-        .as_str()
-        .expect("recorded run id");
+    let run_id = first["lattice"]["runId"].as_str().expect("recorded run id");
     sandbox.backdate_run(run_id, lattice::now_ms() - 3 * 86_400_000);
     record_one_run(&sandbox, &["--inline-body-max", "0"]);
     let root = sandbox.root().to_str().unwrap();
@@ -296,7 +293,10 @@ fn gc_expires_runs_by_retention_at_cli() {
     ]);
     assert_eq!(stamps["rows"].as_array().unwrap().len(), 2);
     let gap = stamps["rows"][1][0].as_i64().unwrap() - stamps["rows"][0][0].as_i64().unwrap();
-    assert!(gap > 86_400_000, "backdated run should be more than a day older");
+    assert!(
+        gap > 86_400_000,
+        "backdated run should be more than a day older"
+    );
 
     let dry = sandbox.run_json(&["gc", root, "--history-retention", "1d"]);
     assert_eq!(dry["applied"], false);

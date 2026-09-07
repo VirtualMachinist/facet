@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, BodyKind, EditorMode, Focus, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
+    App, BodyKind, Focus, Mode, RequestFocus, ResponseTab, ResponseView, RunStatus, Section,
 };
 use crate::theme::{PaletteToken, Styles, resolve};
 use crate::tree::Row;
@@ -46,6 +46,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     if matches!(app.status(), RunStatus::Running) {
         render_running_overlay(frame, shell[1], styles);
+    }
+    if app.help_open() {
+        render_help_overlay(frame, shell[1], styles);
+    }
+    if let Some((title, lines)) = app.data_overlay() {
+        render_data_overlay(frame, shell[1], title, lines, styles);
     }
 }
 
@@ -176,9 +182,33 @@ const WORDMARK: [&str; 3] = [
     "│   ┴ ┴ └─  └─┘  ┴ ",
 ];
 
+/// The lattice glyph inside an outer hexagon outline, 14×23. The hexagon
+/// is drawn with ASCII `/`, `\`, `-` so the renderer can style it apart
+/// from the glyph: edges become `╱ ╲ ─` in `brand_fill` (the one filled
+/// brand frame). Glyph chars keep their node/line styles. Concentric
+/// with the glyph: every glyph row clears the outline by at least one
+/// cell.
+const SPLASH_HEXAGON: [&str; 14] = [
+    "         /---\\         ",
+    "        /  ●  \\        ",
+    "       / ╱ │ ╲ \\       ",
+    "      /●   │   ●\\      ",
+    "     / │╲  │  ╱│ \\     ",
+    "    /  │ ╲ │ ╱ │  \\    ",
+    "   /   │   ●   │   \\   ",
+    "   \\   │ ╱ │ ╲ │   /   ",
+    "    \\  │╱  │  ╲│  /    ",
+    "     \\ ●   │   ● /     ",
+    "      \\  ╲ │ ╱  /      ",
+    "       \\   ●   /       ",
+    "        \\     /        ",
+    "         \\---/         ",
+];
+
 /// Splash for `facet tui` without a collection: lattice glyph, wordmark,
-/// tagline, and how to open something. Degrades by height: glyph first,
-/// then the wordmark, then a single line.
+/// tagline, and how to open something. Tall and wide enough panes get the
+/// glyph inside the outer hexagon outline. Degrades by height: hexagon
+/// first, then the bare glyph, then the wordmark, then a single line.
 fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
     if area.width < 24 || area.height < 3 {
         let line = Line::from(Span::styled("facet · local-first api client", styles.brand));
@@ -190,19 +220,19 @@ fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
         );
         return;
     }
-    let show_glyph = area.height >= LATTICE_GLYPH.len() as u16 + WORDMARK.len() as u16 + 5;
+    let wordmark_height = WORDMARK.len() as u16 + 5;
+    let show_hexagon = area.height >= SPLASH_HEXAGON.len() as u16 + wordmark_height
+        && area.width >= SPLASH_HEXAGON[0].chars().count() as u16 + 2;
+    let show_glyph = area.height >= LATTICE_GLYPH.len() as u16 + wordmark_height;
     let mut lines: Vec<Line> = Vec::new();
-    if show_glyph {
+    if show_hexagon {
+        for row in SPLASH_HEXAGON {
+            lines.push(Line::from(splash_art_spans(row, styles)));
+        }
+        lines.push(Line::raw(""));
+    } else if show_glyph {
         for row in LATTICE_GLYPH {
-            let spans = row
-                .chars()
-                .map(|ch| match ch {
-                    '●' => Span::styled(ch.to_string(), styles.brand_bright),
-                    ' ' => Span::raw(" "),
-                    _ => Span::styled(ch.to_string(), styles.brand_line),
-                })
-                .collect::<Vec<_>>();
-            lines.push(Line::from(spans));
+            lines.push(Line::from(splash_art_spans(row, styles)));
         }
         lines.push(Line::raw(""));
     }
@@ -223,6 +253,22 @@ fn render_splash(frame: &mut Frame, area: Rect, styles: Styles) {
             .style(styles.editor),
         target,
     );
+}
+
+/// Styles one row of splash art. ASCII `/ \ -` are stand-ins for the
+/// hexagon outline (rendered as `╱ ╲ ─` in the filled brand band); `●`
+/// is a lattice node; any other non-space char is a lattice edge.
+fn splash_art_spans(row: &str, styles: Styles) -> Vec<Span<'static>> {
+    row.chars()
+        .map(|ch| match ch {
+            '●' => Span::styled(ch.to_string(), styles.brand_bright),
+            '/' => Span::styled("╱", styles.brand_fill),
+            '\\' => Span::styled("╲", styles.brand_fill),
+            '-' => Span::styled("─", styles.brand_fill),
+            ' ' => Span::raw(" "),
+            _ => Span::styled(ch.to_string(), styles.brand_line),
+        })
+        .collect()
 }
 
 fn render_pane_title(frame: &mut Frame, area: Rect, label: &str, focused: bool, styles: Styles) {
@@ -429,7 +475,7 @@ fn render_url_bar(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     let method = app.method();
     let method_color = app.theme().palette().method(method);
     let url_focused = app.focus() == Focus::Request && app.request_focus() == RequestFocus::Url;
-    let insert = app.editor_mode() == EditorMode::Insert && url_focused;
+    let insert = app.mode() == Mode::Insert && url_focused;
     let mut url = app.editor().url.clone();
     if insert {
         url.push('▌');
@@ -541,7 +587,7 @@ fn render_section_editor(frame: &mut Frame, area: Rect, app: &App, styles: Style
     }
     let editor_focused =
         app.focus() == Focus::Request && app.request_focus() == RequestFocus::Editor;
-    let insert = app.editor_mode() == EditorMode::Insert && editor_focused;
+    let insert = app.mode() == Mode::Insert && editor_focused;
     let lines = match app.section() {
         Section::Path => kv_lines(
             &app.editor().path_rows,
@@ -791,25 +837,42 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         RunStatus::Idle if app.lattice_ready() => "lattice ready".to_string(),
         RunStatus::Idle => "lattice idle".to_string(),
         RunStatus::Done { status, duration } => {
-            format!("{} · {} ms", status, duration.as_millis())
+            let lattice = match app.last_recording() {
+                Some(summary) if summary.run_id.is_some() => " · recorded",
+                Some(_) => " · unrecorded",
+                None => "",
+            };
+            format!("{} · {} ms{lattice}", status, duration.as_millis())
         }
         other => other.label().to_string(),
     };
-    let hint = if app.editor_mode() == EditorMode::Insert {
-        "insert · Esc normal · Enter save"
+    let mode = app.mode();
+    let mode_style = match mode {
+        Mode::Normal => styles.muted,
+        Mode::Insert | Mode::Command => styles.accent_text,
+    };
+    let hint = if mode == Mode::Command {
+        format!(":{}", app.command_line())
+    } else if mode == Mode::Insert {
+        "insert · Esc normal · Enter save".to_string()
+    } else if app.help_open() {
+        "help · Esc close".to_string()
+    } else if app.data_overlay().is_some() {
+        "overlay · Esc close".to_string()
     } else if app.searching() {
-        "search · Enter apply · Esc clear"
+        "search · Enter apply · Esc clear".to_string()
     } else if app.env_dropdown_open() {
-        "env · j/k select · Enter close"
+        "env · j/k select · Enter close".to_string()
     } else {
-        "j/k · Enter send · i edit · / search · e env · [] tabs · t theme · q quit"
+        "j/k · Enter send · i insert · : command · ? help · q quit".to_string()
     };
     let appearance = app.theme().appearance().label().to_lowercase();
 
     let mut segments: Vec<(String, Style)> = vec![
         (CODENAME.to_string(), styles.muted),
+        (mode.indicator().to_string(), mode_style),
         (status_label, status_style),
-        (hint.to_string(), styles.muted),
+        (hint, styles.muted),
         (appearance, styles.muted),
     ];
     let width = |segments: &[(String, Style)]| -> usize {
@@ -819,7 +882,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     };
     let available = area.width as usize;
     if width(&segments) > available {
-        segments.remove(2);
+        segments.remove(3);
     }
     if width(&segments) > available {
         segments.remove(0);
@@ -897,15 +960,124 @@ fn render_env_dropdown(frame: &mut Frame, area: Rect, app: &App, styles: Styles)
     frame.render_widget(List::new(items).style(styles.editor), inner);
 }
 
+/// Send-in-flight overlay: the seven-node lattice glyph over a caption.
+/// Falls back to the caption-only box when the pane is too small for the
+/// glyph.
 fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    let overlay = centered(area, 30.min(area.width), 3.min(area.height));
+    // Box fits the glyph (11 wide) and the caption (16 cells) with margin.
+    let overlay_width = 20u16;
+    let overlay_height = LATTICE_GLYPH.len() as u16 + 4;
+    if area.width < overlay_width || area.height < overlay_height {
+        let overlay = centered(area, 30.min(area.width), 3.min(area.height));
+        frame.render_widget(Clear, overlay);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(styles.border);
+        let text =
+            Paragraph::new(Span::styled("  Sending request…", styles.status_running)).block(block);
+        frame.render_widget(text, overlay);
+        return;
+    }
+    let overlay = centered(area, overlay_width, overlay_height);
     frame.render_widget(Clear, overlay);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(styles.border);
-    let text =
-        Paragraph::new(Span::styled("  Sending request…", styles.status_running)).block(block);
-    frame.render_widget(text, overlay);
+        .border_style(styles.border)
+        .style(styles.editor);
+    let mut lines: Vec<Line> = Vec::new();
+    for row in LATTICE_GLYPH {
+        lines.push(Line::from(splash_art_spans(row, styles)));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "Sending request…",
+        styles.status_running,
+    )));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(block),
+        overlay,
+    );
+}
+
+/// `?` help overlay: the whole keymap in one stone box. Keys in accent,
+/// actions in editor text. This is option A's discoverability device —
+/// one overlay, no which-key.
+fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
+    const KEYS: [(&str, &str); 15] = [
+        ("j/k · arrows", "move (tree, rows, response scroll)"),
+        ("gg / G", "first / last row (tree, request, response)"),
+        ("Enter", "folder toggle · open · send · :send"),
+        ("i / a", "insert (URL or section) · Esc back"),
+        ("/", "search · Enter apply · Esc clear"),
+        ("e", "environment dropdown · :env <name>"),
+        ("[ ]", "section / response tabs"),
+        ("h/l · Space", "collapse folder · name/value"),
+        ("m / b", "method · body kind"),
+        ("n / d", "add / delete a row"),
+        ("Ctrl-W h/j/k/l", "focus pane · Ctrl-W w cycles"),
+        ("Ctrl-S", "save to disk · :w"),
+        (":", "command line (:w :q :send :theme :history :sql)"),
+        ("?", "this help · :help"),
+        ("q", "quit · Esc cancels run/overlay"),
+    ];
+    let width = 68u16.min(area.width);
+    let height = (KEYS.len() as u16 + 4).min(area.height);
+    let overlay = centered(area, width, height);
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(" facet keys ", styles.brand));
+    let mut lines = Vec::new();
+    for (key, action) in KEYS {
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {key:<14}"), styles.accent_text),
+            Span::styled(action, styles.editor),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " normal · i inserts · : commands · arrows always work",
+        styles.muted,
+    )));
+    frame.render_widget(Paragraph::new(lines).block(block), overlay);
+}
+
+fn render_data_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: &[String],
+    styles: Styles,
+) {
+    let longest = lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(20)
+        .max(title.chars().count());
+    let width = ((longest + 4) as u16).clamp(40, 80).min(area.width);
+    let height = (lines.len() as u16 + 2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let overlay = centered(area, width, height);
+    frame.render_widget(Clear, overlay);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(title.to_string(), styles.brand));
+    let body: Vec<Line> = lines
+        .iter()
+        .map(|line| Line::from(Span::styled(format!(" {line}"), styles.editor)))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(body).block(block).wrap(Wrap { trim: false }),
+        overlay,
+    );
 }
 
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
@@ -1028,6 +1200,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn splash_wraps_the_glyph_in_the_hexagon_when_tall() {
+        let mut app = App::load(None).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("╱───╲"), "hexagon top edge: {text}");
+        assert!(text.contains("╲───╱"), "hexagon bottom edge: {text}");
+        assert_eq!(
+            text.matches('●').count(),
+            7,
+            "outline adds no nodes: {text}"
+        );
+        assert!(text.contains("local-first api client"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn porcelain_splash_renders_the_hexagon() {
+        let mut app = App::load(None).await;
+        app.apply_theme(Theme::new(Appearance::Light).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("Porcelain Honey"), "{text}");
+        assert!(text.contains("╱───╲"), "hexagon in porcelain: {text}");
+        assert!(text.contains("local-first api client"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn running_overlay_shows_the_lattice_glyph() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_running();
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("Sending request…"), "caption: {text}");
+        assert_eq!(
+            text.matches('●').count(),
+            7,
+            "overlay glyph has seven nodes: {text}"
+        );
+    }
+
+    #[tokio::test]
     async fn footer_is_the_bracketed_status_bar() {
         let mut app = App::load(Some(&fixture())).await;
         app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
@@ -1051,6 +1274,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn footer_shows_the_mode_indicator() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+
+        assert!(footer.starts_with("[ G38 │ NOR │ "), "{footer}");
+        assert!(
+            footer.contains("? help"),
+            "normal hints mention help: {footer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn help_overlay_lists_the_keymap() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_help();
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("facet keys"), "title: {text}");
+        assert!(text.contains("command line"), ": row: {text}");
+        assert!(text.contains(":history"), "history verb: {text}");
+        assert!(text.contains("gg / G"), "gg/G: {text}");
+        assert!(
+            text.contains("arrows always work"),
+            "flat fallback note: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn history_overlay_renders_rows() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.preview_data_overlay(
+            " history ",
+            vec![
+                "STATUS  MS     METHOD  REQUEST".to_string(),
+                "200     12     GET     Pets/List pets".to_string(),
+            ],
+        );
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        assert!(text.contains("history"), "title: {text}");
+        assert!(text.contains("Pets/List pets"), "{text}");
+        assert!(
+            text.contains("overlay · Esc close") || text.contains("Esc close"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
     async fn footer_drops_hints_before_codename_when_narrow() {
         let mut app = App::load(Some(&fixture())).await;
         app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
@@ -1063,5 +1346,43 @@ mod tests {
         assert!(footer.starts_with("[ G38 │ "), "{footer}");
         assert!(!footer.contains("q quit"), "hints dropped: {footer}");
         assert!(footer.contains("graphite honey"), "{footer}");
+    }
+
+    #[tokio::test]
+    async fn footer_marks_a_recorded_send() {
+        use crate::app::{RecordSummary, ResponseView, RunResult};
+        use std::time::Duration;
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.apply_run_result(RunResult::Ok(ResponseView {
+            status: 200,
+            reason: "OK".to_string(),
+            url: "http://127.0.0.1/".to_string(),
+            duration: Duration::from_millis(12),
+            headers: Vec::new(),
+            body: "{}".to_string(),
+            body_len: 2,
+        }));
+        app.preview_recording(Some(RecordSummary {
+            run_id: Some("01ARZ3NDEKTSV4RRFFQ69G5FAV".to_string()),
+            note: "recorded".to_string(),
+        }));
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        let footer = text.lines().last().expect("footer row");
+        assert!(footer.contains("200 · 12 ms · recorded"), "{footer}");
+
+        app.preview_recording(Some(RecordSummary {
+            run_id: None,
+            note: "unrecorded: boom".to_string(),
+        }));
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+        assert!(
+            text.lines().last().unwrap().contains("· unrecorded"),
+            "{text}"
+        );
     }
 }
