@@ -94,6 +94,12 @@ pub enum Recording {
         workspace_id: String,
         /// Whether the machine-store pointer row was written.
         indexed: Result<(), String>,
+        /// Whether the run's session was minted in the machine store by the
+        /// mint-if-missing path. `false` when no session was set, when the
+        /// session already existed, or when the best-effort write failed.
+        /// Not part of the `request run` envelope (it stays still; the
+        /// session is visible through `facet session show`).
+        session_created: bool,
     },
     /// Recording was not attempted (`disabled`, `stdin_workspace`).
     Skipped(&'static str),
@@ -110,6 +116,7 @@ impl Recording {
                 run,
                 workspace_id,
                 indexed,
+                ..
             } => json!({
                 "recorded": true,
                 "runId": run.id,
@@ -283,27 +290,45 @@ pub fn record(req: &RecordRequest<'_>) -> Recording {
 
     match store.record_run(&new_run) {
         Ok(run) => {
-            let indexed = index_run(&store, &run);
+            let (indexed, session_created) = index_run(&store, &run);
             Recording::Recorded {
                 run,
                 workspace_id: store.workspace_id().to_owned(),
                 indexed,
+                session_created,
             }
         }
         Err(error) => Recording::Failed(error.to_string()),
     }
 }
 
-/// Best-effort pointer row in the machine store. The workspace store is the
-/// record of truth; the index is a convenience and never fails the run.
-fn index_run(store: &WorkspaceStore, run: &RunRow) -> Result<(), String> {
-    let machine = MachineStore::open(store.config()).map_err(|error| error.to_string())?;
-    machine
-        .touch_workspace(store.workspace_id(), store.root(), None, now_ms())
-        .map_err(|error| error.to_string())?;
-    machine
+/// Best-effort pointer row in the machine store, plus the mint-if-missing
+/// session write. The workspace store is the record of truth; both the
+/// index and the session mint are conveniences and never fail the run.
+/// Returns `(indexed, session_created)` where `session_created` is `false`
+/// when no session was set, when the session already existed, or when the
+/// best-effort write failed.
+fn index_run(store: &WorkspaceStore, run: &RunRow) -> (Result<(), String>, bool) {
+    let machine = match MachineStore::open(store.config()) {
+        Ok(machine) => machine,
+        Err(error) => return (Err(error.to_string()), false),
+    };
+    if let Err(error) = machine.touch_workspace(store.workspace_id(), store.root(), None, now_ms())
+    {
+        return (Err(error.to_string()), false);
+    }
+    // Mint-if-missing: when the run carries a session id, ensure a parent
+    // session row exists. Best effort, never fails the run.
+    let session_created = match run.session_id.as_deref() {
+        Some(session_id) => machine
+            .ensure_session(session_id, &run.actor, now_ms())
+            .unwrap_or(false),
+        None => false,
+    };
+    let indexed = machine
         .index_run(run, store.workspace_id())
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string());
+    (indexed, session_created)
 }
 
 fn request_body_bytes(request: &HttpRequest) -> Option<Vec<u8>> {

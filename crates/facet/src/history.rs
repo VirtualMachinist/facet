@@ -1,6 +1,7 @@
 //! `facet history`, `facet blob`, and `facet gc`: the agent-facing reads and
 //! the one maintenance command over the workspace Lattice store.
 //! Metadata is cheap and returned by default; payloads are explicit pulls.
+//! `history --id <ulid>` is the recall seam replay and diff stand on.
 
 use std::{fs, path::PathBuf};
 
@@ -11,35 +12,53 @@ use serde_json::{Value, json};
 use crate::{
     CommandOutput, FacetError, args,
     presentation::{format_utc, human_size, stored_body_json},
+    session::resolve_session_id,
     workspace::{ConfigOverrides, locate_root, open_store, overrides_from_parsed},
 };
 
 const DEFAULT_LIMIT: usize = 50;
 
+/// Query-side filters. `--id` and `--sql` are each exclusive with all of them.
+const HISTORY_FILTER_FLAGS: &[&str] = &[
+    "--limit",
+    "--request",
+    "--status",
+    "--actor",
+    "--since",
+    "--session",
+    "--environment",
+    "--tag",
+    "--hash",
+];
 const HISTORY_VALUE_FLAGS: &[&str] = &[
     "--limit",
     "--request",
     "--status",
     "--actor",
     "--since",
+    "--session",
+    "--environment",
+    "--tag",
+    "--hash",
+    "--id",
     "--sql",
 ];
 const HISTORY_SWITCH_FLAGS: &[&str] = &["--bodies"];
+const HISTORY_HEADER: &str = "ID\tSTARTED\tSTATUS\tMS\tMETHOD\tREQUEST\tSIZE\tACTOR";
 
 pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
     let parsed = args::parse(args, HISTORY_VALUE_FLAGS, HISTORY_SWITCH_FLAGS)?;
     let path = single_optional_path(parsed.positionals(), "history")?;
     let (start, root) = locate_root(path);
+    let has_filters = HISTORY_FILTER_FLAGS
+        .iter()
+        .any(|flag| !parsed.values(flag).is_empty());
+    let include_bodies = parsed.switch("--bodies");
 
     if let Some(sql) = parsed.value("--sql")? {
-        let filters = ["--limit", "--request", "--status", "--actor", "--since"];
-        if filters
-            .iter()
-            .any(|flag| parsed.value(flag).ok().flatten().is_some())
-            || parsed.switch("--bodies")
-        {
+        if has_filters || include_bodies || parsed.value("--id")?.is_some() {
             return Err(FacetError::invalid_arguments(
-                "--sql cannot be combined with history filters or --bodies",
+                "--sql cannot be combined with history filters, --id, or --bodies",
             ));
         }
         let root = root.ok_or_else(|| FacetError::lattice_not_found(&start))?;
@@ -48,6 +67,31 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
         return Ok(sql_output(&store, result));
     }
 
+    if let Some(id) = parsed.value("--id")? {
+        if has_filters {
+            return Err(FacetError::invalid_arguments(
+                "--id cannot be combined with history filters",
+            ));
+        }
+        // No store means the run cannot exist: same answer as an unknown id.
+        let root = root.ok_or_else(|| FacetError::run_not_found(id))?;
+        let store = open_store(&root, &ConfigOverrides::default())?;
+        let row = store
+            .run(id)
+            .map_err(FacetError::lattice)?
+            .ok_or_else(|| FacetError::run_not_found(id))?;
+        return Ok(CommandOutput::new(
+            format!("{HISTORY_HEADER}\n{}\n", history_line(&row)),
+            json!({
+                "workspace": workspace_json(&store),
+                "run": run_json(&store, &row, include_bodies)?,
+            }),
+        ));
+    }
+
+    let hash = parsed
+        .value("--hash")?
+        .map(|value| value.trim().to_ascii_lowercase());
     let query = HistoryQuery {
         limit: parsed
             .parsed_value::<usize>("--limit", "a positive number")?
@@ -56,11 +100,21 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
         status: parsed.parsed_value::<i64>("--status", "an HTTP status code")?,
         actor: parsed.value("--actor")?.map(str::to_owned),
         since: parsed.parsed_value::<i64>("--since", "Unix milliseconds")?,
+        session_id: parsed
+            .value("--session")?
+            .map(resolve_session_id)
+            .transpose()?,
+        environment: parsed.value("--environment")?.map(str::to_owned),
+        tags: parsed
+            .values("--tag")
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        hash: hash.clone(),
     };
     if query.limit == 0 {
         return Err(FacetError::invalid_arguments("--limit must be at least 1"));
     }
-    let include_bodies = parsed.switch("--bodies");
 
     let Some(root) = root else {
         return Ok(CommandOutput::new(
@@ -71,30 +125,54 @@ pub(crate) fn history(args: &[String]) -> Result<CommandOutput, FacetError> {
     let store = open_store(&root, &ConfigOverrides::default())?;
     let rows = store.history(&query).map_err(FacetError::lattice)?;
 
-    let mut lines = vec!["ID\tSTARTED\tSTATUS\tMS\tMETHOD\tREQUEST\tSIZE\tACTOR".to_owned()];
+    let mut lines = vec![HISTORY_HEADER.to_owned()];
     let mut runs = Vec::with_capacity(rows.len());
     for row in &rows {
-        lines.push(format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            row.id,
-            format_utc(row.started_at),
-            row.status
-                .map_or_else(|| "ERR".to_owned(), |status| status.to_string()),
-            row.duration_ms
-                .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
-            row.method,
-            row.request_path,
-            row.res_body
-                .len
-                .map_or_else(|| "-".to_owned(), |len| human_size(len as usize)),
-            row.actor,
-        ));
-        runs.push(run_json(&store, row, include_bodies)?);
+        lines.push(history_line(row));
+        let mut run = run_json(&store, row, include_bodies)?;
+        if let Some(hash) = &hash {
+            run["matchedHash"] = matched_hash(row, hash);
+        }
+        runs.push(run);
     }
     Ok(CommandOutput::new(
         format!("{}\n", lines.join("\n")),
         json!({ "workspace": workspace_json(&store), "runs": runs }),
     ))
+}
+
+/// One human table row (columns follow [`HISTORY_HEADER`]).
+fn history_line(row: &RunRow) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        row.id,
+        format_utc(row.started_at),
+        row.status
+            .map_or_else(|| "ERR".to_owned(), |status| status.to_string()),
+        row.duration_ms
+            .map_or_else(|| "-".to_owned(), |ms| ms.to_string()),
+        row.method,
+        row.request_path,
+        row.res_body
+            .len
+            .map_or_else(|| "-".to_owned(), |len| human_size(len as usize)),
+        row.actor,
+    )
+}
+
+/// Which hash column `--hash` hit, computed here rather than in SQL so the
+/// store stays column-agnostic. `null` only if the filter and the row
+/// disagree, which the query prevents.
+fn matched_hash(row: &RunRow, hash: &str) -> Value {
+    if row.request_hash == hash {
+        json!("request")
+    } else if row.req_body.hash.as_deref() == Some(hash) {
+        json!("requestBody")
+    } else if row.res_body.hash.as_deref() == Some(hash) {
+        json!("responseBody")
+    } else {
+        Value::Null
+    }
 }
 
 pub(crate) fn blob(args: &[String]) -> Result<CommandOutput, FacetError> {
