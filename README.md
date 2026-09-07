@@ -140,6 +140,11 @@ Facet is the working tree at 0.5.7; track `main`. The Lattice schema is versione
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
 - **Agent CLI**: Ready. Deterministic JSON and SQL querying.
 
+HTTP is live. Next, folded from [Probe's roadmap](https://rusty-probe.pages.dev):
+WebSocket, GraphQL, gRPC streaming, user-defined themes, git integration, and
+the rest of secret storage. Facet ships those independently where we own the
+layer, and contributes shared core upstream. Details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+
 ## Contributing
 
 Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md). Roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Development practices for this tree: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
