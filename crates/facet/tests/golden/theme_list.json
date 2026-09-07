@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "themes": [
+    {
+      "error": null,
+      "extends": "graphite",
+      "name": "graphite",
+      "path": null,
+      "source": "built-in",
+      "valid": true
+    },
+    {
+      "error": null,
+      "extends": "porcelain",
+      "name": "porcelain",
+      "path": null,
+      "source": "built-in",
+      "valid": true
+    }
+  ]
+}

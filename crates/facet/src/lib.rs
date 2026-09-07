@@ -35,6 +35,7 @@ mod presentation;
 mod replay;
 mod run;
 mod session;
+mod theme;
 mod tui;
 mod workspace;
 
@@ -216,6 +217,8 @@ pub const fn help() -> &'static str {
         "  doctor [--probe]                   Preflight: machine/workspace stores, secret backend, FACET_* env\n",
         "  blob <hash> [<path>]                Fetch one stored body by SHA-256\n",
         "  gc [<path>] [--yes]                 Expire old runs and sweep orphaned blobs\n",
+        "  theme check <path>                  Validate a facet-tui theme file (exit 1 if invalid)\n",
+        "  theme list                          List built-in and discovered theme files\n",
         "  tui [<path>]                        Open the terminal UI\n",
         "  mcp                                 Serve the same commands as MCP tools over stdio\n",
         "\n",
@@ -287,7 +290,7 @@ where
         None => true,
         Some(
             "history" | "last" | "pin" | "mcp" | "session" | "replay" | "diff" | "env" | "doctor"
-            | "blob" | "gc" | "tui" | "-V" | "--version" | "-h" | "--help",
+            | "blob" | "gc" | "theme" | "tui" | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -340,6 +343,7 @@ where
         "doctor" => doctor::doctor(&args[1..]),
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
+        "theme" => theme::theme(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(
             "tui is interactive and must be started from the facet binary",
         )),

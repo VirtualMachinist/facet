@@ -7,6 +7,7 @@
 
 mod app;
 mod theme;
+pub mod theme_file;
 mod tree;
 pub mod ui;
 
@@ -15,3 +16,4 @@ pub use app::{
     ResponseView, RunResult, RunStatus, Section, TuiError,
 };
 pub use theme::{Appearance, Depth, Palette, PaletteToken, Role, Styles, Theme};
+pub use theme_file::{ThemeEntry, ThemeFile, ThemeFileError};

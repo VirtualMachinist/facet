@@ -15,10 +15,12 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 crossterm = "0.29"
 serde_json = "1"
 base64 = "0.23.1"
+toml = "1"
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 unicode-width = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["rt", "macros", "time"] }
+tempfile = "3"
 [lints]
 workspace = true

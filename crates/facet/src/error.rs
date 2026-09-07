@@ -122,6 +122,16 @@ impl FacetError {
         }))
     }
 
+    /// `facet theme check` on a rejected theme file (exit 1, assertion
+    /// family): the TUI would fall back to a built-in; `check` reports it
+    /// instead, naming the file and field in `details`.
+    pub(crate) fn theme_invalid(error: &facet_tui::ThemeFileError) -> Self {
+        Self::new("theme_invalid", error.to_string(), ASSERTION_EXIT_CODE).with_details(json!({
+            "path": error.path().to_string_lossy(),
+            "field": error.field(),
+        }))
+    }
+
     /// `pin get <name>` with no such pin (exit 4).
     pub(crate) fn pin_not_found(name: &str) -> Self {
         Self::new(
