@@ -38,6 +38,23 @@ impl FacetError {
         }
     }
 
+    /// The versioned JSON error document (`schemaVersion` + `error`).
+    #[must_use]
+    pub fn envelope(&self) -> Value {
+        let mut value = json!({
+            "schemaVersion": crate::JSON_SCHEMA_VERSION,
+            "error": {
+                "category": self.category,
+                "exitCode": self.exit_code,
+                "message": self.message,
+            }
+        });
+        if let Some(details) = &self.details {
+            value["error"]["details"] = details.clone();
+        }
+        value
+    }
+
     /// Attaches structured details.
     #[must_use]
     pub fn with_details(mut self, details: Value) -> Self {
