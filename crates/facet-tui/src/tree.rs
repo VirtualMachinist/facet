@@ -33,24 +33,13 @@ impl Row {
 
 /// Sidebar state. Visible rows rebuild whenever the workspace, collapse
 /// set, or search query changes.
+#[derive(Default)]
 pub struct TreeView {
     workspace: Option<Workspace>,
     collapsed: BTreeSet<FolderKey>,
     search: String,
     visible: Vec<Row>,
     selection: usize,
-}
-
-impl Default for TreeView {
-    fn default() -> Self {
-        Self {
-            workspace: None,
-            collapsed: BTreeSet::new(),
-            search: String::new(),
-            visible: Vec::new(),
-            selection: 0,
-        }
-    }
 }
 
 impl TreeView {

@@ -5,7 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, params, types::Value};
+use crate::database::{Connection, Row};
+use rusqlite::{params, types::Value};
 
 use crate::{
     DB_FILE, LatticeConfig, LatticeError, RunRow, io_error,
@@ -109,13 +110,19 @@ impl MachineStore {
         &self.path
     }
 
+    /// Engine executing operations for this store.
+    #[must_use]
+    pub fn engine(&self) -> crate::Engine {
+        self.conn.engine()
+    }
+
     /// Highest applied migration.
     pub fn schema_version(&self) -> Result<i64, LatticeError> {
-        Ok(self.conn.query_row(
+        self.conn.query_row(
             "SELECT coalesce(max(version), 0) FROM schema_version",
             [],
             |row| row.get(0),
-        )?)
+        )
     }
 
     /// Registers or refreshes a workspace.
@@ -183,16 +190,15 @@ impl MachineStore {
             |row| Ok((row.get(0)?, row.get(1)?)),
         ) {
             Ok(pair) => Ok(Some(pair)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(other) => Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => Ok(None),
+            Err(other) => Err(other),
         }
     }
 
     /// Total pointer rows.
     pub fn count_indexed_runs(&self) -> Result<i64, LatticeError> {
-        Ok(self
-            .conn
-            .query_row("SELECT count(*) FROM run_index", [], |row| row.get(0))?)
+        self.conn
+            .query_row("SELECT count(*) FROM run_index", [], |row| row.get(0))
     }
 
     // ----- Sessions (Goal 1) --------------------------------------------
@@ -251,8 +257,8 @@ impl MachineStore {
             row_to_session,
         ) {
             Ok(row) => Some(row),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(other) => return Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => None,
+            Err(other) => return Err(other),
         };
         Ok(row)
     }
@@ -279,7 +285,7 @@ impl MachineStore {
         ));
 
         let mut statement = self.conn.prepare(&sql)?;
-        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut rows = statement.query(values)?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(row_to_session(row)?);
@@ -304,11 +310,11 @@ impl MachineStore {
         match self.conn.query_row(
             "SELECT value FROM preferences WHERE key = ?1",
             params![key],
-            |row| row.get::<_, String>(0),
+            |row| row.get::<String>(0),
         ) {
             Ok(value) => Ok(Some(value)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(other) => Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => Ok(None),
+            Err(other) => Err(other),
         }
     }
 
@@ -375,11 +381,11 @@ impl MachineStore {
         let old_ref: Option<String> = match self.conn.query_row(
             "SELECT secret_ref FROM environments WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
             params![workspace_id, name, key],
-            |row| row.get::<_, Option<String>>(0),
+            |row| row.get::<Option<String>>(0),
         ) {
             Ok(value) => value,
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(other) => return Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => None,
+            Err(other) => return Err(other),
         };
 
         let (stored_value, stored_ref): (Option<String>, Option<String>) = if secret {
@@ -437,16 +443,11 @@ impl MachineStore {
             "SELECT value, secret_ref FROM environments \
              WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
             params![workspace_id, name, key],
-            |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                ))
-            },
+            |row| Ok((row.get::<Option<String>>(0)?, row.get::<Option<String>>(1)?)),
         ) {
             Ok(pair) => Some(pair),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(other) => return Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => None,
+            Err(other) => return Err(other),
         };
         let Some((value, secret_ref)) = row else {
             return Ok(None);
@@ -503,11 +504,11 @@ impl MachineStore {
             "SELECT secret_ref FROM environments \
              WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
             params![workspace_id, name, key],
-            |row| row.get::<_, Option<String>>(0),
+            |row| row.get::<Option<String>>(0),
         ) {
             Ok(value) => value,
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
-            Err(other) => return Err(other.into()),
+            Err(LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows)) => None,
+            Err(other) => return Err(other),
         };
         let removed = self.conn.execute(
             "DELETE FROM environments WHERE workspace_id = ?1 AND name = ?2 AND key = ?3",
@@ -537,7 +538,7 @@ pub struct EnvironmentRow {
     pub updated_at: i64,
 }
 
-fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+fn row_to_session(row: &Row) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
         id: row.get(0)?,
         actor: row.get(1)?,

@@ -263,10 +263,10 @@ fn serve_once_at(bind: &str, body: Vec<u8>, content_type: &str) -> (String, Join
 /// Error envelopes carry volatile `message` text; category and exitCode are the contract.
 pub(crate) fn normalize_error(value: Value) -> Value {
     let mut normalized = normalize(value);
-    if let Value::Object(root) = &mut normalized {
-        if let Some(Value::Object(error)) = root.get_mut("error") {
-            error.insert("message".to_owned(), json!("<message>"));
-        }
+    if let Value::Object(root) = &mut normalized
+        && let Some(Value::Object(error)) = root.get_mut("error")
+    {
+        error.insert("message".to_owned(), json!("<message>"));
     }
     normalized
 }

@@ -454,6 +454,7 @@ pub fn ansi(appearance: Appearance, kind: Role16) -> Color {
 pub enum Role256 {
     Window,
     Sidebar,
+    #[allow(dead_code)] // Retained palette role; current resolver shares Window.
     Editor,
     Raised,
     Overlay,
@@ -464,6 +465,7 @@ pub enum Role256 {
     Accent,
     AccentInverse,
     MethodGet,
+    #[allow(dead_code)] // Retained palette role; current resolver shares Accent.
     MethodPost,
     MethodPut,
     MethodPatch,
@@ -483,6 +485,7 @@ pub enum Role16 {
     Accent,
     AccentInverse,
     MethodGet,
+    #[allow(dead_code)] // Retained palette role; current resolver shares Accent.
     MethodPost,
     MethodPut,
     MethodPatch,

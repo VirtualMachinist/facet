@@ -45,7 +45,11 @@ fn hedron_core_coexists_with_rusqlite_default_engine() {
 
     // Write path: bootstrap the store and put a document node.
     let mut store = Store::open(&db).expect("open hedron store");
-    let Bootstrap { vault, agent: _, token } = store
+    let Bootstrap {
+        vault,
+        agent: _,
+        token,
+    } = store
         .bootstrap("lattice", "facet", "/tmp/htec")
         .expect("bootstrap vault + agent");
     let doc = Node::brief_document(vault.id, "smoke", "2026-09-07").expect("build doc node");

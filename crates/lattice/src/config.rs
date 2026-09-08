@@ -40,9 +40,33 @@ impl fmt::Display for Retention {
     }
 }
 
+/// Engine used for both workspace history and machine state.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// Bundled SQLite, the default for existing installations.
+    #[default]
+    Sqlite,
+    /// The Rust tursodatabase/turso engine (requires `lattice-turso`).
+    Turso,
+}
+
+impl Engine {
+    /// Stable engine identifier used by configuration and database markers.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Turso => "turso",
+        }
+    }
+}
+
 /// Effective Lattice configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LatticeConfig {
+    /// Explicit storage engine; compilation alone never changes it.
+    pub engine: Engine,
     /// Bodies at or under this many bytes are stored inline in the row.
     pub inline_body_max: u64,
     /// Run retention window applied by `gc`.
@@ -56,6 +80,7 @@ pub struct LatticeConfig {
 impl Default for LatticeConfig {
     fn default() -> Self {
         Self {
+            engine: Engine::Sqlite,
             inline_body_max: DEFAULT_INLINE_BODY_MAX,
             history_retention: Retention::Unlimited,
             wal: true,
@@ -108,6 +133,7 @@ struct ConfigFile {
 
 #[derive(Debug, Default, Deserialize)]
 struct LatticeSection {
+    engine: Option<Engine>,
     inline_body_max: Option<String>,
     history_retention: Option<String>,
     wal: Option<bool>,
@@ -143,6 +169,9 @@ impl LatticeConfig {
     pub fn apply_source(&mut self, source: &str) -> Result<(), ConfigError> {
         let file: ConfigFile =
             toml::from_str(source).map_err(|error| ConfigError::Toml(error.to_string()))?;
+        if let Some(value) = file.lattice.engine {
+            self.engine = value;
+        }
         if let Some(value) = file.lattice.inline_body_max {
             self.inline_body_max = parse_byte_size(&value)?;
         }
@@ -236,5 +265,41 @@ mod tests {
         let mut config = LatticeConfig::default();
         config.apply_source("").unwrap();
         assert_eq!(config, LatticeConfig::default());
+    }
+}
+
+#[cfg(test)]
+mod engine_tests {
+    use super::*;
+
+    #[test]
+    fn engine_is_explicit_and_unknown_names_are_rejected() {
+        let mut config = LatticeConfig::default();
+        assert_eq!(config.engine, Engine::Sqlite);
+        config
+            .apply_source("[lattice]\nengine = \"turso\"")
+            .unwrap();
+        assert_eq!(config.engine, Engine::Turso);
+        assert!(
+            config
+                .apply_source("[lattice]\nengine = \"libsql\"")
+                .is_err()
+        );
+    }
+
+    #[cfg(not(feature = "lattice-turso"))]
+    #[test]
+    fn unavailable_engine_never_creates_a_sqlite_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = LatticeConfig {
+            engine: Engine::Turso,
+            ..LatticeConfig::default()
+        };
+        assert!(matches!(
+            crate::WorkspaceStore::open(dir.path(), config),
+            Err(crate::LatticeError::Engine(_))
+        ));
+        assert!(!dir.path().join(".facet/lattice.db").exists());
+        assert!(!dir.path().join(".facet/lattice.db.engine").exists());
     }
 }

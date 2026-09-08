@@ -37,11 +37,7 @@ fn seed_store(root: &Path) -> std::path::PathBuf {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child
-                .stdin
-                .take()
-                .unwrap()
-                .write_all(schema.as_bytes())?;
+            child.stdin.take().unwrap().write_all(schema.as_bytes())?;
             child.wait().map(|_| ())
         })
         .expect("sqlite3 CLI to apply the schema");

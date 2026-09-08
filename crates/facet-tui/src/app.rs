@@ -1505,10 +1505,16 @@ impl App {
                 self.env_overlay = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.env_overlay.as_mut().expect("overlay").move_selection(1);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.env_overlay.as_mut().expect("overlay").move_selection(-1);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(-1);
             }
             KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
                 let rows = half_page_rows(&self.viewports.env);
@@ -2768,7 +2774,8 @@ impl App {
     /// is restored, reverting a previously applied file) and the footer
     /// names the file and field — invalid files never take the chrome down.
     pub fn apply_theme_file(&mut self, argument: &str) {
-        let result = theme_file::resolve_theme_path(argument).and_then(|path| ThemeFile::load(&path));
+        let result =
+            theme_file::resolve_theme_path(argument).and_then(|path| ThemeFile::load(&path));
         match result {
             Ok(file) => {
                 let name = file.name().to_string();
@@ -2776,8 +2783,8 @@ impl App {
                 self.custom_theme = Some(name);
             }
             Err(error) => {
-                self.theme_state = Theme::new(self.theme_state.appearance())
-                    .with_depth(self.theme_state.depth());
+                self.theme_state =
+                    Theme::new(self.theme_state.appearance()).with_depth(self.theme_state.depth());
                 self.custom_theme = None;
                 self.status = RunStatus::Failed(format!("theme: {error}"));
             }
@@ -3588,10 +3595,7 @@ mod tests {
         assert_eq!(overlay.rows[0].key, "token");
         assert!(!overlay.rows[0].secret);
         // The notice carries metadata only — never the value.
-        assert_eq!(
-            overlay.notice.as_deref(),
-            Some("local/token set (plain)")
-        );
+        assert_eq!(overlay.notice.as_deref(), Some("local/token set (plain)"));
 
         // `d` then anything-but-y keeps the row; `d` then `y` deletes.
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE)
