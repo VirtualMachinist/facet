@@ -276,6 +276,10 @@ libSQL smoke and do not establish compatibility of the Rust Turso backend.
 
 ## Commands
 
+For verified h3s client-certificate requests shared by CLI, replay, TUI and MCP,
+see [Cluster transport](CLUSTER-TRANSPORT.md). Configure credentials through an
+explicit project kubeconfig, separately from canonical collection YAML.
+
 ```text
 facet request run <path> <selector> [<probe request run flags>] [--no-record] [--tag <tag>]... [--expect <codes>] [--dry-run] [--inline-body-max <size>] [--json]
 facet history [<path>] [--limit <n>] [--request <selector>] [--status <code>] [--actor <name>] [--since <unix-ms>] [--session <id>|current] [--environment <name>] [--tag <tag>]... [--hash <sha256>] [--bodies] [--json]

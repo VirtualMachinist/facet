@@ -17,7 +17,7 @@ use lattice::now_ms;
 use probe_core::{
     HttpRequest, resolve_environment_with_overrides, resolve_request, resolve_request_strict,
 };
-use probe_http::{ExecutionOptions, HttpEngine, HttpError, HttpResponse};
+use probe_http::{ExecutionOptions, HttpError, HttpResponse};
 use probe_opencollection::LoadedWorkspace;
 use serde_json::{Value, json};
 
@@ -315,11 +315,12 @@ pub(crate) fn execute(
         .enable_all()
         .build()
         .map_err(|error| FacetError::runtime(&error))?;
-    let engine = HttpEngine::new().map_err(|error| FacetError::http(&error))?;
+    let engine = facet_record::http_engine_from_env();
 
     let started_at = now_ms();
     let clock = Instant::now();
     let result = runtime.block_on(async {
+        let engine = engine?;
         if let Some(output) = output {
             engine
                 .execute_cancellable_to_file(request, &options, output, tokio::signal::ctrl_c())
