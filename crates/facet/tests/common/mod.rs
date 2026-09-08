@@ -56,6 +56,8 @@ impl Sandbox {
             .env_remove("FACET_ACTOR")
             .env_remove("FACET_SESSION")
             .env_remove("FACET_NO_RECORD")
+            .env_remove("FACET_KUBECONFIG")
+            .env_remove("FACET_KUBE_CONTEXT")
             // Encrypted secrets backend: deterministic, no OS keyring prompts.
             .env("FACET_SECRET_KEY", "test-master-key")
             // Session metadata picks these up when present; goldens must not.

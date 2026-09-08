@@ -13,3 +13,8 @@ tokio = { version = "1.53.1", features = ["rt", "macros", "time", "fs", "net", "
 [lints]
 workspace = true
 
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
+rustls = { version = "0.23.42", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+tokio-rustls = "0.26.5"

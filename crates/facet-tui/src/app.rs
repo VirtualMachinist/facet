@@ -16,7 +16,7 @@ use lattice::{
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_request,
 };
-use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
+use probe_http::{ExecutionOptions, HttpResponse};
 use probe_opencollection::{LoadedWorkspace, SaveError, load_workspace};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -2525,25 +2525,24 @@ impl App {
         tokio::spawn(async move {
             let started_at = lattice::now_ms();
             let clock = Instant::now();
-            let engine = match HttpEngine::new() {
-                Ok(engine) => engine,
-                Err(error) => {
-                    let _ = sender.send((RunResult::Err(error.to_string()), None)).await;
-                    return;
+            let engine = facet_record::http_engine_from_env();
+            let outcome = match engine {
+                Ok(engine) => {
+                    engine
+                        .execute_cancellable(&request, &options, async move {
+                            loop {
+                                if *cancel_signal.borrow() {
+                                    return;
+                                }
+                                if cancel_signal.changed().await.is_err() {
+                                    return;
+                                }
+                            }
+                        })
+                        .await
                 }
+                Err(error) => Err(error),
             };
-            let outcome = engine
-                .execute_cancellable(&request, &options, async move {
-                    loop {
-                        if *cancel_signal.borrow() {
-                            return;
-                        }
-                        if cancel_signal.changed().await.is_err() {
-                            return;
-                        }
-                    }
-                })
-                .await;
             let elapsed_ms = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
             // Same recording path as `facet request run`, so TUI and CLI
             // rows are identical. Store I/O is brief and off the UI loop.

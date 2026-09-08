@@ -22,7 +22,7 @@
           };
         in {
           default = pkgs.mkShell {
-            packages = [ rust pkgs.cmake pkgs.pkg-config pkgs.git pkgs.python3 ];
+            packages = [ rust pkgs.cmake pkgs.pkg-config pkgs.git pkgs.python3 pkgs.openssl ];
             nativeBuildInputs = [ pkgs.rustPlatform.bindgenHook ];
             CARGO_BUILD_JOBS = "2";
             # Bound build space in the M1 guest; this is not a release profile.
