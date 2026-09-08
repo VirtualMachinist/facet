@@ -3,12 +3,14 @@
 #![forbid(unsafe_code)]
 
 mod cache;
+mod cluster_tls;
 mod engine;
 mod error;
 mod request;
 mod response;
 
 pub use cache::{ResponseBodyFile, ResponseCache};
+pub use cluster_tls::ClusterTls;
 pub use engine::HttpEngine;
 pub use error::HttpError;
 pub use response::{HttpResponse, ResponseHeader};

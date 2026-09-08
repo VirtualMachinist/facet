@@ -4,7 +4,7 @@ use probe_core::{HttpRequest, RequestSettings};
 use reqwest::{Client, header::HeaderMap, redirect::Policy};
 
 use crate::{
-    ExecutionOptions, HttpError, HttpResponse, ResponseHeader,
+    ClusterTls, ExecutionOptions, HttpError, HttpResponse, ResponseHeader,
     request::build_request,
     response::{CollectedBody, collect_bounded, map_reqwest_error, stream_to_file},
 };
@@ -12,16 +12,36 @@ use crate::{
 const DEFAULT_MAX_REDIRECTS: usize = 10;
 
 /// Reusable asynchronous HTTP engine shared by every interface.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HttpEngine {
     default_client: Client,
+    cluster_tls: Option<ClusterTls>,
+}
+
+impl std::fmt::Debug for HttpEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpEngine")
+            .field("cluster_tls", &self.cluster_tls)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpEngine {
     /// Creates an engine with the default redirect policy.
     pub fn new() -> Result<Self, HttpError> {
         Ok(Self {
-            default_client: build_client(true, DEFAULT_MAX_REDIRECTS)?,
+            default_client: build_client(true, DEFAULT_MAX_REDIRECTS, None)?,
+            cluster_tls: None,
+        })
+    }
+
+    /// Creates a verified client-certificate engine restricted to one cluster.
+    /// Credential material remains in the transport and is never added to the
+    /// request model, persisted history, or presentation output.
+    pub fn with_cluster_tls(cluster_tls: ClusterTls) -> Result<Self, HttpError> {
+        Ok(Self {
+            default_client: build_client(true, DEFAULT_MAX_REDIRECTS, Some(&cluster_tls))?,
+            cluster_tls: Some(cluster_tls),
         })
     }
 
@@ -105,8 +125,28 @@ impl HttpEngine {
     ) -> Result<HttpResponse, HttpError> {
         let client = self.client_for(&request.settings)?;
         let builder = build_request(&client, request, options).await?;
+        let built = builder.build().map_err(map_reqwest_error)?;
+        if let Some(tls) = &self.cluster_tls {
+            // Validate the final URL after path/query substitution, not the
+            // template URL. Never send certificate credentials to another origin.
+            if !tls.permits(built.url()) {
+                return Err(crate::cluster_tls::configuration(
+                    "request is outside the configured cluster origin",
+                ));
+            }
+            if built.headers().keys().any(|name| {
+                matches!(
+                    name.as_str(),
+                    "authorization" | "proxy-authorization" | "host"
+                ) || name.as_str().starts_with("impersonate-")
+            }) {
+                return Err(crate::cluster_tls::configuration(
+                    "cluster certificate profile cannot be combined with authentication, Host or impersonation headers",
+                ));
+            }
+        }
         let started = Instant::now();
-        let mut response = builder.send().await.map_err(map_reqwest_error)?;
+        let mut response = client.execute(built).await.map_err(map_reqwest_error)?;
         let expected_size = response.content_length();
         let status = response.status();
         let url = response.url().to_string();
@@ -148,19 +188,44 @@ impl HttpEngine {
         if follow && maximum == DEFAULT_MAX_REDIRECTS {
             Ok(Cow::Borrowed(&self.default_client))
         } else {
-            build_client(follow, maximum).map(Cow::Owned)
+            build_client(follow, maximum, self.cluster_tls.as_ref()).map(Cow::Owned)
         }
     }
 }
 
-fn build_client(follow_redirects: bool, maximum: usize) -> Result<Client, HttpError> {
-    let policy = if follow_redirects {
-        Policy::limited(maximum)
-    } else {
+fn build_client(
+    follow_redirects: bool,
+    maximum: usize,
+    cluster_tls: Option<&ClusterTls>,
+) -> Result<Client, HttpError> {
+    let policy = if !follow_redirects {
         Policy::none()
+    } else if let Some(tls) = cluster_tls {
+        let origin = tls.origin.origin();
+        Policy::custom(move |attempt| {
+            if attempt.url().origin() != origin
+                || !attempt.url().username().is_empty()
+                || attempt.url().password().is_some()
+            {
+                attempt.error("redirect is outside the configured cluster origin")
+            } else if attempt.previous().len() >= maximum {
+                attempt.error("too many redirects")
+            } else {
+                attempt.follow()
+            }
+        })
+    } else {
+        Policy::limited(maximum)
     };
-    Client::builder()
-        .redirect(policy)
+    let mut builder = Client::builder().redirect(policy);
+    if let Some(tls) = cluster_tls {
+        builder = builder
+            .tls_certs_only(tls.roots.clone())
+            .identity(tls.identity.clone())
+            .tls_sslkeylogfile(false)
+            .no_proxy();
+    }
+    builder
         .build()
         .map_err(|error| HttpError::ClientConfiguration(error.to_string()))
 }

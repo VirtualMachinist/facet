@@ -1,142 +1,340 @@
-//! Turso/libSQL smoke (Surface 3/4 future path).
-//!
-//! Behind the `lattice-turso` cargo feature. Proves Turso (libSQL local mode)
-//! can open/write/read a workspace store file. libSQL is a SQLite fork, so the
-//! on-disk file format is identical to rusqlite's; flipping the engine flag
-//! requires no migration.
-//!
-//! This test is **libsql-only** on purpose. The lattice test binary also
-//! links rusqlite (the default engine); if a test calls rusqlite first, rusqlite
-//! initializes the process-global SQLite and libsql's later
-//! `sqlite3_config(SERIALIZED)` returns `SQLITE_MISUSE`. Keeping this test
-//! libsql-only lets libsql initialize first. Cross-engine interop (a file
-//! written by libsql read back by rusqlite) is verified out-of-band with the
-//! `sqlite3` CLI — see `agents/backend/notes/`.
-//!
-//! Verified still true 2026-09-06 (libsql 0.9.30): `Builder::build()` alone
-//! defers init and looks fine, but the moment libsql uses a connection
-//! (`connect` + `execute`) after rusqlite opened the same file, libsql's
-//! threading-safety assert fires (`SQLITE_MISUSE` 21) at
-//! `libsql-0.9.30/src/local/database.rs:323`. So the libsql-only design
-//! stays. Do not be fooled by a `build()`-only check; exercise the connection.
-//!
-//! Run on the build host (apiary), not lathe:
-//!
-//! ```text
-//! cargo test -p lattice --features lattice-turso --test turso
-//! ```
-//!
-//! The default `cargo test -p lattice` (feature off) does not build this
-//! file or pull libsql/tokio.
-
+//! Actual Rust Turso through both application stores, never libSQL.
 #![cfg(feature = "lattice-turso")]
 
-use std::path::Path;
+use lattice::{
+    BodyInput, Engine, HistoryQuery, LatticeConfig, LatticeError, MachineStore, NewRun,
+    SessionQuery, SqlValue, WorkspaceStore,
+};
 
-use libsql::Builder;
-
-/// The workspace-store migration, embedded so the smoke can lay down the
-/// schema through libsql without touching rusqlite. Source of truth:
-/// `crates/lattice/migrations/workspace/0001_init.sql`.
-const WORKSPACE_SCHEMA: &str = include_str!("../migrations/workspace/0001_init.sql");
-
-/// Opens (creating when needed) the workspace store file through Turso
-/// (libSQL local mode) and runs the schema migration. Local mode does no
-/// networking; it opens the SQLite-compatible file in place.
-async fn turso_open(root: &Path) -> libsql::Result<libsql::Connection> {
-    let db_path = root.join(lattice::FACET_DIR).join(lattice::DB_FILE);
-    std::fs::create_dir_all(root.join(lattice::FACET_DIR)).unwrap();
-    let db = Builder::new_local(&db_path).build().await?;
-    let conn = db.connect()?;
-    // The migration is not idempotent (CREATE TABLE, not IF NOT EXISTS), so
-    // only run it when the schema_version table is absent.
-    let mut rows = conn
-        .query(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
-            (),
-        )
-        .await?;
-    let row = rows.next().await?.unwrap();
-    if *row.get_value(0).unwrap().as_integer().unwrap() == 0 {
-        conn.execute_batch(WORKSPACE_SCHEMA).await?;
+fn config() -> LatticeConfig {
+    LatticeConfig {
+        engine: Engine::Turso,
+        inline_body_max: 8,
+        ..LatticeConfig::default()
     }
-    Ok(conn)
 }
 
 #[tokio::test]
-async fn turso_opens_writes_and_reads_a_workspace_store() {
-    // If TURSO_KEEP_DB is set, write the store there and leave it on disk so the
-    // file can be inspected with the `sqlite3` CLI (cross-engine interop
-    // check). Otherwise use a tempdir that is cleaned up.
-    let root: std::path::PathBuf = match std::env::var_os("TURSO_KEEP_DB") {
-        Some(path) => {
-            let path = std::path::PathBuf::from(path);
-            std::fs::create_dir_all(&path).unwrap();
-            path
-        }
-        None => tempfile::tempdir().unwrap().path().to_owned(),
-    };
-    let conn = turso_open(&root).await.unwrap();
-
-    // Write a run row through Turso.
-    conn
-        .execute(
-            "INSERT INTO runs (id, started_at, request_path, request_hash, method, url, actor) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            libsql::params!(
-                "01JABCTURSO00000000",
-                lattice::now_ms(),
-                "users/list-users.yml",
-                "deadbeef",
-                "GET",
-                "http://127.0.0.1/users",
-                "agent-turso",
-            ),
+async fn application_history_sessions_bodies_and_reopen_inside_tokio() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine_path = dir.path().join("machine.db");
+    let store = WorkspaceStore::open(dir.path(), config()).unwrap();
+    let machine = MachineStore::open_at(&machine_path, &config()).unwrap();
+    assert_eq!(store.engine(), Engine::Turso);
+    assert_eq!(machine.engine(), Engine::Turso);
+    assert_eq!(
+        store.schema_version().unwrap(),
+        lattice::WORKSPACE_SCHEMA_VERSION
+    );
+    assert_eq!(
+        machine.schema_version().unwrap(),
+        lattice::MACHINE_SCHEMA_VERSION
+    );
+    let session = machine
+        .start_session("grok", Some(r#"{"herdr":"pane-1","omp":"session-1"}"#), 100)
+        .unwrap();
+    machine
+        .touch_workspace(
+            store.workspace_id(),
+            dir.path(),
+            Some("Turso contract"),
+            101,
         )
-        .await
         .unwrap();
-
-    // Read it back through Turso.
-    let mut rows = conn
-        .query(
-            "SELECT id, request_path, actor, method FROM runs WHERE actor = ?1",
-            libsql::params!("agent-turso"),
-        )
-        .await
+    machine.set_preference("editor.theme", "dark").unwrap();
+    let run = store
+        .record_run(&NewRun {
+            started_at: 102,
+            request_path: "cluster.yml",
+            request_hash: "abc",
+            method: "POST",
+            url: "https://cluster/api",
+            status: Some(201),
+            actor: "grok",
+            session_id: Some(&session.id),
+            environment: Some("m1"),
+            req_body: BodyInput::Bytes(b"request body"),
+            res_body: BodyInput::Bytes(b"tiny"),
+            tags: Some(r#"["m1","cluster"]"#),
+            ..NewRun::default()
+        })
         .unwrap();
-    let row = rows.next().await.unwrap().unwrap();
-    assert_eq!(row.get_value(0).unwrap().as_text().unwrap(), "01JABCTURSO00000000");
-    assert_eq!(row.get_value(1).unwrap().as_text().unwrap(), "users/list-users.yml");
-    assert_eq!(row.get_value(2).unwrap().as_text().unwrap(), "agent-turso");
-    assert_eq!(row.get_value(3).unwrap().as_text().unwrap(), "GET");
-
-    // The schema_version row landed.
-    let mut meta = conn
-        .query("SELECT count(*) FROM schema_version", ())
-        .await
+    machine.index_run(&run, store.workspace_id()).unwrap();
+    let replay = store
+        .record_run(&NewRun {
+            started_at: 103,
+            replayed_from: Some(&run.id),
+            res_body: BodyInput::Bytes(b"a large response body"),
+            ..NewRun::default()
+        })
         .unwrap();
-    let row = meta.next().await.unwrap().unwrap();
-    assert_eq!(*row.get_value(0).unwrap().as_integer().unwrap(), 1);
-
-    // Reopening the same file through Turso sees the row (persistence).
-    drop(conn);
-    let conn2 = turso_open(&root).await.unwrap();
-    let mut rows = conn2
-        .query("SELECT count(*) FROM runs", ())
-        .await
+    assert_eq!(store.request_body(&run).unwrap().unwrap(), b"request body");
+    assert_eq!(store.response_body(&run).unwrap().unwrap(), b"tiny");
+    assert_eq!(
+        store.response_body(&replay).unwrap().unwrap(),
+        b"a large response body"
+    );
+    let history = store
+        .history(&HistoryQuery {
+            limit: 10,
+            actor: Some("grok".into()),
+            session_id: Some(session.id.clone()),
+            environment: Some("m1".into()),
+            tags: vec!["m1".into(), "cluster".into()],
+            ..HistoryQuery::default()
+        })
         .unwrap();
-    let row = rows.next().await.unwrap().unwrap();
-    assert_eq!(*row.get_value(0).unwrap().as_integer().unwrap(), 1);
-    drop(conn2);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, run.id);
+    assert_eq!(
+        store
+            .query("WITH selected AS (SELECT id FROM runs) SELECT count(*) FROM selected")
+            .unwrap()
+            .rows,
+        vec![vec![SqlValue::Integer(2)]]
+    );
+    assert!(store.gc(false).unwrap().orphans.is_empty());
+    let workspace_id = store.workspace_id().to_owned();
+    drop(store);
+    drop(machine);
+    let store = WorkspaceStore::open(dir.path(), config()).unwrap();
+    let machine = MachineStore::open_at(&machine_path, &config()).unwrap();
+    assert_eq!(store.workspace_id(), workspace_id);
+    assert_eq!(store.run(&run.id).unwrap().unwrap(), run);
+    assert_eq!(
+        store
+            .run(&replay.id)
+            .unwrap()
+            .unwrap()
+            .replayed_from
+            .as_deref(),
+        Some(run.id.as_str())
+    );
+    assert_eq!(
+        machine.indexed_run(&run.id).unwrap().unwrap().0,
+        workspace_id
+    );
+    assert_eq!(
+        machine.preference("editor.theme").unwrap().as_deref(),
+        Some("dark")
+    );
+    assert_eq!(
+        machine
+            .sessions(&SessionQuery {
+                limit: 10,
+                actor: Some("grok".into()),
+                open_only: true
+            })
+            .unwrap(),
+        vec![session.clone()]
+    );
+    assert_eq!(
+        machine.session(&session.id).unwrap().unwrap().meta,
+        session.meta
+    );
+    assert_eq!(
+        machine
+            .end_session(&session.id, 200)
+            .unwrap()
+            .unwrap()
+            .ended_at,
+        Some(200)
+    );
+    assert_eq!(
+        machine
+            .end_session(&session.id, 300)
+            .unwrap()
+            .unwrap()
+            .ended_at,
+        Some(200)
+    );
+}
 
-    // Cross-engine interop: when keeping the file, confirm the `sqlite3` CLI
-    // (system SQLite, separate from both bundled engines) can read the row
-    // libsql wrote. This is run out-of-band after the test, see notes.
-    if std::env::var_os("TURSO_KEEP_DB").is_some() {
-        eprintln!(
-            "TURSO_KEEP_DB at {} — verify with: sqlite3 {}/.facet/lattice.db 'SELECT id, actor FROM runs;'",
-            root.display(),
-            root.display()
+#[test]
+fn read_only_queries_reject_writes_attach_comments_and_multiple_statements() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), config()).unwrap();
+    for sql in [
+        "DELETE FROM runs",
+        "WITH x AS (SELECT 1) DELETE FROM runs",
+        "PRAGMA user_version = 99",
+        "/* prefix */ ATTACH ':memory:' AS other",
+        "-- prefix\nATTACH ':memory:' AS other",
+        "SELECT 1; DELETE FROM runs",
+        "SELECT 1; ATTACH ':memory:' AS other",
+        "VACUUM INTO 'escaped.db'",
+    ] {
+        assert!(
+            matches!(store.query(sql), Err(LatticeError::ReadOnlyQuery)),
+            "{sql}"
         );
     }
+    assert!(
+        store
+            .query("SELECT absent FROM runs")
+            .unwrap_err()
+            .is_query_error()
+    );
+    assert_eq!(store.count_runs().unwrap(), 0);
+    assert_eq!(
+        store
+            .query("/* allowed */ SELECT 1 AS result")
+            .unwrap()
+            .columns,
+        ["result"]
+    );
+}
+
+#[test]
+fn explicit_selection_protects_existing_files_in_both_directions() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(dir.path(), LatticeConfig::default()).unwrap();
+    store.record_run(&NewRun::default()).unwrap();
+    drop(store);
+    let path = dir.path().join(".facet/lattice.db");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(matches!(
+        WorkspaceStore::open(dir.path(), config()),
+        Err(LatticeError::Engine(_))
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    std::fs::remove_file(path.with_added_extension("engine")).unwrap();
+    assert!(matches!(
+        WorkspaceStore::open(dir.path(), config()),
+        Err(LatticeError::Engine(_))
+    ));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let other = tempfile::tempdir().unwrap();
+    WorkspaceStore::open(other.path(), config()).unwrap();
+    assert!(matches!(
+        WorkspaceStore::open(other.path(), LatticeConfig::default()),
+        Err(LatticeError::Engine(_))
+    ));
+}
+
+#[test]
+fn concurrent_application_writers_retain_every_run() {
+    let dir = tempfile::tempdir().unwrap();
+    WorkspaceStore::open(dir.path(), config()).unwrap();
+    let writers: Vec<_> = (0..4)
+        .map(|writer| {
+            let root = dir.path().to_owned();
+            std::thread::spawn(move || {
+                let store = WorkspaceStore::open(&root, config()).unwrap();
+                for index in 0..10 {
+                    store
+                        .record_run(&NewRun {
+                            started_at: index,
+                            actor: &format!("writer-{writer}"),
+                            ..NewRun::default()
+                        })
+                        .unwrap();
+                    assert!(
+                        !store
+                            .history(&HistoryQuery {
+                                limit: 5,
+                                ..HistoryQuery::default()
+                            })
+                            .unwrap()
+                            .is_empty()
+                    );
+                }
+            })
+        })
+        .collect();
+    for writer in writers {
+        writer.join().unwrap();
+    }
+    assert_eq!(
+        WorkspaceStore::open(dir.path(), config())
+            .unwrap()
+            .count_runs()
+            .unwrap(),
+        40
+    );
+}
+
+#[test]
+fn legacy_request_body_migration_preserves_bytes_and_future_schema_is_rejected() {
+    use futures::executor::block_on;
+    for future in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let facet = dir.path().join(".facet");
+        std::fs::create_dir(&facet).unwrap();
+        let path = facet.join("lattice.db");
+        std::fs::write(path.with_added_extension("engine"), "turso\n").unwrap();
+        let db = block_on(
+            turso::Builder::new_local(path.to_str().unwrap())
+                .experimental_multiprocess_wal(true)
+                .build(),
+        )
+        .unwrap();
+        let conn = db.connect().unwrap();
+        block_on(conn.execute_batch(include_str!("../migrations/workspace/0001_init.sql")))
+            .unwrap();
+        block_on(conn.execute("INSERT INTO runs (id, started_at, request_path, request_hash, method, url, req_body) VALUES ('old', 1, 'old.yml', 'hash', 'POST', 'http://local', ?1)", turso::params![b"preserve legacy bytes".to_vec()])).unwrap();
+        if future {
+            block_on(conn.execute_batch("INSERT INTO schema_version VALUES (100, 1)")).unwrap();
+        }
+        drop(conn);
+        drop(db);
+        if future {
+            assert!(matches!(
+                WorkspaceStore::open(dir.path(), config()),
+                Err(LatticeError::Engine(_))
+            ));
+            assert!(
+                !facet.join("blobs").exists(),
+                "reject before body hydration"
+            );
+        } else {
+            let store = WorkspaceStore::open(dir.path(), config()).unwrap();
+            let run = store.run("old").unwrap().unwrap();
+            assert_eq!(
+                store.request_body(&run).unwrap().unwrap(),
+                b"preserve legacy bytes"
+            );
+            assert_eq!(store.schema_version().unwrap(), 3);
+            assert!(store.query("SELECT req_body FROM runs").is_err());
+        }
+    }
+}
+
+#[test]
+fn process_writer() {
+    let Some(root) = std::env::var_os("LATTICE_TURSO_TEST_ROOT") else {
+        return;
+    };
+    let store = WorkspaceStore::open(std::path::Path::new(&root), config()).unwrap();
+    for _ in 0..10 {
+        store.record_run(&NewRun::default()).unwrap();
+    }
+}
+
+#[test]
+fn separate_process_writers_and_reader_share_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let reader = WorkspaceStore::open(dir.path(), config()).unwrap();
+    let mut children: Vec<_> = (0..3)
+        .map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "process_writer", "--nocapture"])
+                .env("LATTICE_TURSO_TEST_ROOT", dir.path())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for child in children.drain(..) {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(reader.count_runs().unwrap() >= 10);
+    }
+    assert_eq!(reader.count_runs().unwrap(), 30);
 }

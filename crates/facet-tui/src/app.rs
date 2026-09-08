@@ -16,7 +16,7 @@ use lattice::{
 use probe_core::{
     FolderKey, Header, HttpRequest, QueryParameter, RequestKey, RequestUpdate, resolve_request,
 };
-use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
+use probe_http::{ExecutionOptions, HttpResponse};
 use probe_opencollection::{LoadedWorkspace, SaveError, load_workspace};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
@@ -1505,10 +1505,16 @@ impl App {
                 self.env_overlay = None;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                self.env_overlay.as_mut().expect("overlay").move_selection(1);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(1);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.env_overlay.as_mut().expect("overlay").move_selection(-1);
+                self.env_overlay
+                    .as_mut()
+                    .expect("overlay")
+                    .move_selection(-1);
             }
             KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
                 let rows = half_page_rows(&self.viewports.env);
@@ -2519,25 +2525,24 @@ impl App {
         tokio::spawn(async move {
             let started_at = lattice::now_ms();
             let clock = Instant::now();
-            let engine = match HttpEngine::new() {
-                Ok(engine) => engine,
-                Err(error) => {
-                    let _ = sender.send((RunResult::Err(error.to_string()), None)).await;
-                    return;
+            let engine = facet_record::http_engine_from_env();
+            let outcome = match engine {
+                Ok(engine) => {
+                    engine
+                        .execute_cancellable(&request, &options, async move {
+                            loop {
+                                if *cancel_signal.borrow() {
+                                    return;
+                                }
+                                if cancel_signal.changed().await.is_err() {
+                                    return;
+                                }
+                            }
+                        })
+                        .await
                 }
+                Err(error) => Err(error),
             };
-            let outcome = engine
-                .execute_cancellable(&request, &options, async move {
-                    loop {
-                        if *cancel_signal.borrow() {
-                            return;
-                        }
-                        if cancel_signal.changed().await.is_err() {
-                            return;
-                        }
-                    }
-                })
-                .await;
             let elapsed_ms = i64::try_from(clock.elapsed().as_millis()).unwrap_or(i64::MAX);
             // Same recording path as `facet request run`, so TUI and CLI
             // rows are identical. Store I/O is brief and off the UI loop.
@@ -2768,7 +2773,8 @@ impl App {
     /// is restored, reverting a previously applied file) and the footer
     /// names the file and field — invalid files never take the chrome down.
     pub fn apply_theme_file(&mut self, argument: &str) {
-        let result = theme_file::resolve_theme_path(argument).and_then(|path| ThemeFile::load(&path));
+        let result =
+            theme_file::resolve_theme_path(argument).and_then(|path| ThemeFile::load(&path));
         match result {
             Ok(file) => {
                 let name = file.name().to_string();
@@ -2776,8 +2782,8 @@ impl App {
                 self.custom_theme = Some(name);
             }
             Err(error) => {
-                self.theme_state = Theme::new(self.theme_state.appearance())
-                    .with_depth(self.theme_state.depth());
+                self.theme_state =
+                    Theme::new(self.theme_state.appearance()).with_depth(self.theme_state.depth());
                 self.custom_theme = None;
                 self.status = RunStatus::Failed(format!("theme: {error}"));
             }
@@ -3588,10 +3594,7 @@ mod tests {
         assert_eq!(overlay.rows[0].key, "token");
         assert!(!overlay.rows[0].secret);
         // The notice carries metadata only — never the value.
-        assert_eq!(
-            overlay.notice.as_deref(),
-            Some("local/token set (plain)")
-        );
+        assert_eq!(overlay.notice.as_deref(), Some("local/token set (plain)"));
 
         // `d` then anything-but-y keeps the row; `d` then `y` deletes.
         app.handle_key(KeyCode::Char('d'), KeyModifiers::NONE)

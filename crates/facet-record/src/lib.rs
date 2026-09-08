@@ -8,6 +8,7 @@
 
 mod diff;
 mod hydrate;
+mod transport;
 
 use std::path::Path;
 
@@ -16,6 +17,7 @@ pub use diff::{
     diff_response_bodies, unified_diff,
 };
 pub use hydrate::{HydrateError, Hydration, overlay_secrets};
+pub use transport::{http_engine_from_env, http_engine_from_kubeconfig};
 
 use lattice::{
     BodyInput, LatticeConfig, LatticeError, MachineStore, NewRun, Retention, RunRow,
@@ -94,6 +96,8 @@ pub fn session_from_env() -> Option<String> {
 }
 
 /// What happened to the Lattice write for this run.
+// Keep the existing owned RunRow API; boxing this variant would break callers.
+#[allow(clippy::large_enum_variant)]
 pub enum Recording {
     /// The run row landed in the workspace store.
     Recorded {

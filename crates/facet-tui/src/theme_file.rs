@@ -67,15 +67,19 @@ impl ThemeFile {
             message: "theme file must be a TOML table".to_string(),
         })?;
 
-        let version = table.get("version").ok_or_else(|| ThemeFileError::MissingField {
-            path: path.to_path_buf(),
-            field: "version",
-        })?;
-        let version = version.as_integer().ok_or_else(|| ThemeFileError::InvalidField {
-            path: path.to_path_buf(),
-            field: "version".to_string(),
-            reason: "expected an integer".to_string(),
-        })?;
+        let version = table
+            .get("version")
+            .ok_or_else(|| ThemeFileError::MissingField {
+                path: path.to_path_buf(),
+                field: "version",
+            })?;
+        let version = version
+            .as_integer()
+            .ok_or_else(|| ThemeFileError::InvalidField {
+                path: path.to_path_buf(),
+                field: "version".to_string(),
+                reason: "expected an integer".to_string(),
+            })?;
         if version != THEME_FILE_VERSION {
             return Err(ThemeFileError::UnsupportedVersion {
                 path: path.to_path_buf(),
@@ -83,10 +87,12 @@ impl ThemeFile {
             });
         }
 
-        let extends_value = table.get("extends").ok_or_else(|| ThemeFileError::MissingField {
-            path: path.to_path_buf(),
-            field: "extends",
-        })?;
+        let extends_value = table
+            .get("extends")
+            .ok_or_else(|| ThemeFileError::MissingField {
+                path: path.to_path_buf(),
+                field: "extends",
+            })?;
         let extends_str = extends_value
             .as_str()
             .ok_or_else(|| ThemeFileError::InvalidField {
@@ -94,13 +100,12 @@ impl ThemeFile {
                 field: "extends".to_string(),
                 reason: "expected \"graphite\" or \"porcelain\"".to_string(),
             })?;
-        let extends = Appearance::from_flag(extends_str).ok_or_else(|| {
-            ThemeFileError::InvalidField {
+        let extends =
+            Appearance::from_flag(extends_str).ok_or_else(|| ThemeFileError::InvalidField {
                 path: path.to_path_buf(),
                 field: "extends".to_string(),
                 reason: format!("expected \"graphite\" or \"porcelain\", got {extends_str:?}"),
-            }
-        })?;
+            })?;
 
         let name = match table.get("name") {
             None => path
@@ -127,11 +132,13 @@ impl ThemeFile {
         let mut palette = Palette::for_appearance(extends);
         let mut overrides = 0;
         if let Some(colors) = table.get("colors") {
-            let colors = colors.as_table().ok_or_else(|| ThemeFileError::InvalidField {
-                path: path.to_path_buf(),
-                field: "colors".to_string(),
-                reason: "expected a table of token = \"#rrggbb\"".to_string(),
-            })?;
+            let colors = colors
+                .as_table()
+                .ok_or_else(|| ThemeFileError::InvalidField {
+                    path: path.to_path_buf(),
+                    field: "colors".to_string(),
+                    reason: "expected a table of token = \"#rrggbb\"".to_string(),
+                })?;
             for (token, value) in colors {
                 let field = format!("colors.{token}");
                 let hex = value.as_str().ok_or_else(|| ThemeFileError::InvalidField {
@@ -243,7 +250,11 @@ impl fmt::Display for ThemeFileError {
                 write!(formatter, "{}: {message}", path.display())
             }
             Self::MissingField { path, field } => {
-                write!(formatter, "{}: missing required field `{field}`", path.display())
+                write!(
+                    formatter,
+                    "{}: missing required field `{field}`",
+                    path.display()
+                )
             }
             Self::UnsupportedVersion { path, found } => write!(
                 formatter,
@@ -552,8 +563,7 @@ window_bg = "#101012"
 
     #[test]
     fn invalid_extends_rejects_the_file() {
-        let error =
-            ThemeFile::parse(path(), "version = 1\nextends = \"neon\"\n").unwrap_err();
+        let error = ThemeFile::parse(path(), "version = 1\nextends = \"neon\"\n").unwrap_err();
         assert!(matches!(
             error,
             ThemeFileError::InvalidField { field, .. } if field == "extends"

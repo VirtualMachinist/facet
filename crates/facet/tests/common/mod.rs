@@ -56,6 +56,8 @@ impl Sandbox {
             .env_remove("FACET_ACTOR")
             .env_remove("FACET_SESSION")
             .env_remove("FACET_NO_RECORD")
+            .env_remove("FACET_KUBECONFIG")
+            .env_remove("FACET_KUBE_CONTEXT")
             // Encrypted secrets backend: deterministic, no OS keyring prompts.
             .env("FACET_SECRET_KEY", "test-master-key")
             // Session metadata picks these up when present; goldens must not.
@@ -263,10 +265,10 @@ fn serve_once_at(bind: &str, body: Vec<u8>, content_type: &str) -> (String, Join
 /// Error envelopes carry volatile `message` text; category and exitCode are the contract.
 pub(crate) fn normalize_error(value: Value) -> Value {
     let mut normalized = normalize(value);
-    if let Value::Object(root) = &mut normalized {
-        if let Some(Value::Object(error)) = root.get_mut("error") {
-            error.insert("message".to_owned(), json!("<message>"));
-        }
+    if let Value::Object(root) = &mut normalized
+        && let Some(Value::Object(error)) = root.get_mut("error")
+    {
+        error.insert("message".to_owned(), json!("<message>"));
     }
     normalized
 }
