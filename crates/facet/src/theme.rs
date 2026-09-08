@@ -8,8 +8,8 @@
 
 use std::path::Path;
 
-use facet_tui::theme_file::{self, ThemeFile};
 use facet_tui::Appearance;
+use facet_tui::theme_file::{self, ThemeFile};
 use serde_json::json;
 
 use crate::{CommandOutput, FacetError, args};
@@ -55,7 +55,9 @@ fn check(args: &[String]) -> Result<CommandOutput, FacetError> {
 fn list(args: &[String]) -> Result<CommandOutput, FacetError> {
     let parsed = args::parse(args, &[], &[])?;
     if !parsed.positionals().is_empty() {
-        return Err(FacetError::invalid_arguments("theme list takes no arguments"));
+        return Err(FacetError::invalid_arguments(
+            "theme list takes no arguments",
+        ));
     }
     let entries = theme_file::list_themes();
     let mut lines = vec!["NAME\tSOURCE\tEXTENDS\tPATH".to_owned()];

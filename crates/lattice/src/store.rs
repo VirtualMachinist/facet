@@ -5,10 +5,10 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
-use rusqlite::{Connection, OpenFlags, TransactionBehavior, params, types::Value};
+use crate::database::{Connection, Row};
+use rusqlite::{params, types::Value};
 use serde::Deserialize;
 
 use crate::{
@@ -36,6 +36,7 @@ const WORKSPACE_MIGRATIONS: &[&str] = &[
 
 const GITIGNORE: &str = "# Lattice run history is machine-local. workspace.toml and config.toml are shared.\n\
 lattice.db\n\
+lattice.db.engine\n\
 lattice.db-wal\n\
 lattice.db-shm\n\
 lattice.db-journal\n\
@@ -293,6 +294,7 @@ impl WorkspaceStore {
         ensure_file(&facet_dir.join(".gitignore"), GITIGNORE)?;
         let workspace_id = ensure_workspace_id(&facet_dir)?;
         let conn = open_connection(&facet_dir.join(DB_FILE), &config)?;
+        validate_schema(&conn, WORKSPACE_MIGRATIONS.len())?;
         // Before applying the v2 migration (which drops the inline req_body
         // column), hydrate any v1 inline request bodies into blob files so no
         // body is lost. No-op on fresh stores and stores already at v2.
@@ -346,13 +348,19 @@ impl WorkspaceStore {
         &self.workspace_id
     }
 
+    /// Engine executing operations for this store.
+    #[must_use]
+    pub fn engine(&self) -> crate::Engine {
+        self.conn.engine()
+    }
+
     /// Highest applied migration.
     pub fn schema_version(&self) -> Result<i64, LatticeError> {
-        Ok(self.conn.query_row(
+        self.conn.query_row(
             "SELECT coalesce(max(version), 0) FROM schema_version",
             [],
             |row| row.get(0),
-        )?)
+        )
     }
 
     /// Records one run. Blob files are written before the short write
@@ -367,7 +375,7 @@ impl WorkspaceStore {
         let res_body = blobs::place(&blobs_dir, run.res_body, threshold)?;
         let now = now_ms();
 
-        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let tx = self.conn.transaction()?;
         for (stored, content_type) in [(&req_body, None), (&res_body, run.res_content_type)] {
             if let Some(hash) = &stored.hash {
                 tx.execute(
@@ -418,7 +426,7 @@ impl WorkspaceStore {
     pub fn run(&self, id: &str) -> Result<Option<RunRow>, LatticeError> {
         let mut statement = self
             .conn
-            .prepare_cached(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"))?;
+            .prepare(&format!("SELECT {RUN_COLUMNS} FROM runs WHERE id = ?1"))?;
         let mut rows = statement.query(params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_run(row)?)),
@@ -478,7 +486,7 @@ impl WorkspaceStore {
         values.push(Value::Integer(to_i64(query.limit as u64)));
 
         let mut statement = self.conn.prepare(&sql)?;
-        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut rows = statement.query(values)?;
         let mut runs = Vec::new();
         while let Some(row) = rows.next()? {
             runs.push(row_to_run(row)?);
@@ -488,9 +496,8 @@ impl WorkspaceStore {
 
     /// Total run rows.
     pub fn count_runs(&self) -> Result<i64, LatticeError> {
-        Ok(self
-            .conn
-            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))?)
+        self.conn
+            .query_row("SELECT count(*) FROM runs", [], |row| row.get(0))
     }
 
     /// Reads a run's request body per the reader rule. Request bodies are
@@ -543,7 +550,7 @@ impl WorkspaceStore {
             )
             .map(Some)
             .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                LatticeError::Sqlite(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 other => Err(other),
             })?;
         let (len, content_type) = registered
@@ -559,41 +566,15 @@ impl WorkspaceStore {
 
     /// Runs one read-only SQL statement on a separate read-only connection.
     pub fn query(&self, sql: &str) -> Result<SqlResult, LatticeError> {
-        let conn = Connection::open_with_flags(
-            self.facet_dir.join(DB_FILE),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )?;
-        conn.busy_timeout(Duration::from_millis(self.config.busy_timeout_ms))?;
-        conn.pragma_update(None, "query_only", true)?;
-        // `--sql` is read-only against the workspace store only. `ATTACH` opens
-        // another database (e.g. the machine store, which holds `environments`
-        // and `secret_ref`) and `sqlite3_stmt_readonly` reports ATTACH as
-        // read-only because it does not touch the main db file. Refuse it
-        // explicitly so `--sql` can never reach the machine store.
-        if sql
-            .trim()
-            .split_ascii_whitespace()
-            .next()
-            .map(|token| token.eq_ignore_ascii_case("ATTACH"))
-            .unwrap_or(false)
-        {
-            return Err(LatticeError::ReadOnlyQuery);
-        }
-        let mut statement = conn.prepare(sql)?;
-        if !statement.readonly() {
-            return Err(LatticeError::ReadOnlyQuery);
-        }
-        let columns: Vec<String> = statement
-            .column_names()
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
+        let conn = Connection::open(&self.facet_dir.join(DB_FILE), &self.config, true)?;
+        let mut statement = conn.prepare_read_only(sql)?;
+        let columns = statement.column_names();
         let mut rows = statement.query([])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             let mut values = Vec::with_capacity(columns.len());
             for index in 0..columns.len() {
-                values.push(row.get::<_, Value>(index)?);
+                values.push(row.get::<Value>(index)?);
             }
             out.push(values);
         }
@@ -623,7 +604,7 @@ impl WorkspaceStore {
             let mut statement = self.conn.prepare(live_sql)?;
             let mut rows = statement.query(params![floor])?;
             while let Some(row) = rows.next()? {
-                live.insert(row.get::<_, String>(0)?);
+                live.insert(row.get::<String>(0)?);
             }
         }
 
@@ -647,7 +628,7 @@ impl WorkspaceStore {
             let mut rows = statement.query([])?;
             let mut count = 0;
             while let Some(row) = rows.next()? {
-                if !live.contains(&row.get::<_, String>(0)?) {
+                if !live.contains(&row.get::<String>(0)?) {
                     count += 1;
                 }
             }
@@ -655,16 +636,16 @@ impl WorkspaceStore {
         };
 
         if apply {
-            let tx =
-                rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+            let tx = self.conn.transaction()?;
             if let Some(cutoff) = cutoff {
                 tx.execute("DELETE FROM runs WHERE started_at < ?1", params![cutoff])?;
             }
             {
                 let mut statement = tx.prepare("SELECT hash FROM blobs")?;
                 let stale: Vec<String> = statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .filter_map(Result::ok)
+                    .query_map([], |row| row.get::<String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
                     .filter(|hash| !live.contains(hash))
                     .collect();
                 for hash in stale {
@@ -693,7 +674,7 @@ fn to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
+fn row_to_run(row: &Row) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
         id: row.get(0)?,
         started_at: row.get(1)?,
@@ -710,12 +691,12 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<RunRow> {
         // Request bodies are hash-only (v2): no inline column, so
         // inline_present is always false. The reader only consults the hash.
         req_body: BodyRef {
-            len: row.get::<_, Option<i64>>(12)?.map(i64::unsigned_abs),
+            len: row.get::<Option<i64>>(12)?.map(i64::unsigned_abs),
             hash: row.get(13)?,
             inline_present: false,
         },
         res_body: BodyRef {
-            len: row.get::<_, Option<i64>>(14)?.map(i64::unsigned_abs),
+            len: row.get::<Option<i64>>(14)?.map(i64::unsigned_abs),
             hash: row.get(15)?,
             inline_present: row.get(16)?,
         },
@@ -757,13 +738,7 @@ pub(crate) fn open_connection(
     path: &Path,
     config: &LatticeConfig,
 ) -> Result<Connection, LatticeError> {
-    let conn = Connection::open(path)?;
-    conn.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;
-    if config.wal {
-        let _mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
-    }
-    Ok(conn)
+    Connection::open(path, config, false)
 }
 
 /// v1 -> v2 data migration: before the SQL migration drops the inline
@@ -773,13 +748,11 @@ pub(crate) fn open_connection(
 /// (the column is gone). Idempotent: identical content shares one file.
 fn hydrate_inline_request_bodies(conn: &Connection, blobs_dir: &Path) -> Result<(), LatticeError> {
     // Only meaningful when the v1 `runs` table still has `req_body`.
-    let has_req_body: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM pragma_table_info('runs') WHERE name = 'req_body'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(0);
+    let has_req_body: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('runs') WHERE name = 'req_body'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_req_body == 0 {
         return Ok(());
     }
@@ -788,15 +761,14 @@ fn hydrate_inline_request_bodies(conn: &Connection, blobs_dir: &Path) -> Result<
     )?;
     let rows: Vec<(String, Vec<u8>)> = statement
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .filter_map(Result::ok)
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     if rows.is_empty() {
         return Ok(());
     }
     fs::create_dir_all(blobs_dir).map_err(|error| io_error(blobs_dir, error))?;
     let now = now_ms();
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let tx = conn.transaction()?;
     for (id, bytes) in rows {
         let len = bytes.len() as u64;
         let hash = blobs::sha256_hex(&bytes);
@@ -817,21 +789,8 @@ fn hydrate_inline_request_bodies(conn: &Connection, blobs_dir: &Path) -> Result<
 /// Applies numbered migrations above the current `schema_version` inside one
 /// immediate transaction, so concurrent first opens serialize.
 pub(crate) fn migrate(conn: &Connection, migrations: &[&str]) -> Result<(), LatticeError> {
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let has_table: i64 = tx.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
-        [],
-        |row| row.get(0),
-    )?;
-    let current: i64 = if has_table > 0 {
-        tx.query_row(
-            "SELECT coalesce(max(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )?
-    } else {
-        0
-    };
+    let tx = conn.transaction()?;
+    let current = validate_schema(&tx, migrations.len())?;
     for (index, sql) in migrations.iter().enumerate() {
         let version = to_i64(index as u64 + 1);
         if version > current {
@@ -840,4 +799,28 @@ pub(crate) fn migrate(conn: &Connection, migrations: &[&str]) -> Result<(), Latt
     }
     tx.commit()?;
     Ok(())
+}
+
+fn validate_schema(conn: &Connection, maximum: usize) -> Result<i64, LatticeError> {
+    let has_table: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'",
+        [],
+        |row| row.get(0),
+    )?;
+    let current: i64 = if has_table > 0 {
+        conn.query_row(
+            "SELECT coalesce(max(version), 0) FROM schema_version",
+            [],
+            |row| row.get(0),
+        )?
+    } else {
+        0
+    };
+    if current < 0 || current > maximum as i64 {
+        return Err(LatticeError::Engine(format!(
+            "unsupported schema version {current}; maximum is {}",
+            maximum
+        )));
+    }
+    Ok(current)
 }

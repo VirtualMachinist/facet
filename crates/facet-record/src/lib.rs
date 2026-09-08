@@ -94,6 +94,8 @@ pub fn session_from_env() -> Option<String> {
 }
 
 /// What happened to the Lattice write for this run.
+// Keep the existing owned RunRow API; boxing this variant would break callers.
+#[allow(clippy::large_enum_variant)]
 pub enum Recording {
     /// The run row landed in the workspace store.
     Recorded {

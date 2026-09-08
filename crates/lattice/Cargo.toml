@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "MIT"
 rust-version.workspace = true
-description = "Facet run-history store: SQLite beside the OpenCollection YAML"
+description = "Facet run-history store: SQLite or Rust Turso beside OpenCollection YAML"
 
 [dependencies]
 base64 = "0.23.1"
@@ -13,77 +13,48 @@ directories = "6"
 hkdf = "0.13.0"
 hmac = "0.13.0"
 keyring = "4.2.0"
-# Turso/libSQL backend (Surface 3/4 future; not the default engine). Optional so
-# the default build pulls no libsql/tokio. See `lattice-turso` feature below.
-libsql = { version = "0.9", optional = true }
-# DuckDB in-process analytics (apiary-only; NEVER in lathe default members).
-# The default engine stays rusqlite; DuckDB attaches SQLite files externally for
-# analytics. This optional dep is only compiled when `lattice-duckdb` is on.
-# `bundled` builds libduckdb from source (heavy C++ build) so the crate is
-# self-contained on apiary.
+# Actual Rust Turso engine, pinned to the reviewed M1 source. No libSQL and
+# no optional sync/FTS/global allocator; the local driver needs no Tokio runtime.
+turso = { git = "https://github.com/tursodatabase/turso", rev = "87c7a8516511c3ad2745c25b1079ea5c90112692", default-features = false, optional = true }
+turso_parser = { git = "https://github.com/tursodatabase/turso", rev = "87c7a8516511c3ad2745c25b1079ea5c90112692", optional = true }
+futures = { version = "0.3", default-features = false, features = ["std", "executor"], optional = true }
+# Optional SQLite analytics smoke; bundled DuckDB is a heavy native build.
+# Keep this off in ordinary installations and budget build-host resources.
 duckdb = { version = "1.10505.0", optional = true, features = ["bundled"] }
-# HedronDB knowledge-graph engine (complement to Turso; apiary-only for the
-# smoke). `hedron-core` is a separate repo (publish = false), pulled as a git
-# dep only when `lattice-hedron` is on, pinned to the `facet-pin-align` proposal
-# branch which bumps `rusqlite` to 0.40 (bundled) to match this crate's 0.40
-# (bundled) — both engines share one `libsqlite3-sys` and coexist in one binary
-# (the `links = "sqlite3"` blocker is resolved by the alignment, not patched).
-# Not the default engine; never in lathe default-members. See
-# `agents/backend/notes/2026-09-07-evaluate-hedrondb.md` and `docs/FACET.md`
-# § Engines.
+# Separate knowledge-graph store. This existing coexistence smoke uses the
+# upstream rusqlite-aligned proposal pin; it is not an intent/HQL adapter.
 hedron-core = { git = "https://github.com/VirtualMachinist/hedrondb", rev = "c7210486f915b19d6b1cb9a8d9e0bea25782bb1c", optional = true }
 rand = "0.9"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 toml = "1"
 
 [dev-dependencies]
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 tempfile = "3"
-# Only referenced by the `lattice-turso` smoke test (gated by
-# `required-features` on the `turso` test target), so a default
-# `cargo test -p lattice` (feature off) never compiles tokio.
+# The Turso application test also verifies use from inside a Tokio runtime.
 tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt"] }
 
 [features]
-# Turso/libSQL backend. Same on-disk file format as rusqlite (libSQL is a
-# SQLite fork); flipping the flag requires no migration. Not the default
-# engine — rusqlite stays the default. Enables libsql (tokio is already a
-# dev-dep, used only by the gated smoke test).
-lattice-turso = ["dep:libsql"]
-# DuckDB in-process analytics. APIARY-ONLY: never enabled in lathe default
-# members. The default engine stays rusqlite; DuckDB attaches the SQLite
-# lattice file externally for analytics (see the `lattice-duckdb` smoke test
-# and `agents/backend/notes/`). Heavy native build; only compile on apiary.
+# Compiles the Rust Turso adapter. Runtime selection remains explicit in config.
+lattice-turso = ["dep:turso", "dep:turso_parser", "dep:futures"]
+# Optional in-process analytics against SQLite stores.
 lattice-duckdb = ["dep:duckdb"]
-# HedronDB knowledge-graph engine (complement to Turso). APIARY-ONLY: never
-# enabled in lathe default members. `hedron-core` is a separate-schema store
-# (nodes/edges/desired_states/events, HQL — not SQL over `lattice.db`), so it
-# is a projection complement, not a same-file read engine like Turso. The
-# gated smoke proves coexistence (hedron-core + this crate's rusqlite 0.40 link
-# and run in one binary); the projection mapping is a later slice. Not the
-# default engine. See `docs/FACET.md` § Engines.
+# Separate-schema HedronDB coexistence smoke, not a Lattice storage engine.
 lattice-hedron = ["dep:hedron-core"]
 
-# Feature-gated Turso smoke test: only built when `lattice-turso` is on, so a
-# default `cargo test -p lattice` (feature off) never pulls libsql/tokio.
+# Application storage contract tests for the actual Rust Turso backend.
 [[test]]
 name = "turso"
 required-features = ["lattice-turso"]
 
-# Feature-gated DuckDB in-process smoke test: only built when
-# `lattice-duckdb` is on. Never run on lathe.
+# Optional heavy analytics smoke.
 [[test]]
 name = "duckdb"
 required-features = ["lattice-duckdb"]
 
-# Feature-gated HedronDB smoke test: only built when `lattice-hedron` is on.
-# Never run on lathe (apiary-only). Proves hedron-core can open its own store
-# and answer an HQL read inside the lattice test binary that also links
-# rusqlite 0.40 (the default engine) — i.e. the two bundled-SQLite engines
-# coexist. It does NOT open `lattice.db` (hedron-core's Store bootstraps its
-# own schema; see the evaluate note).
+# Separate HedronDB store plus SQLite Lattice in one binary.
 [[test]]
 name = "hedron"
 required-features = ["lattice-hedron"]

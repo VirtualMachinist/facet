@@ -461,7 +461,7 @@ fn transport_failure_is_recorded_with_null_status() {
     let history = sandbox.run_json(&["history", sandbox.root().to_str().unwrap()]);
     let row = &history["runs"][0];
     assert!(row["status"].is_null());
-    assert!(row["error"].as_str().unwrap().len() > 0);
+    assert!(!row["error"].as_str().unwrap().is_empty());
     assert_eq!(row["response"]["body"]["retention"], "none");
 }
 
@@ -2091,4 +2091,60 @@ fn theme_list_shows_built_ins_and_discovers_files() {
             .unwrap()
             .contains("unsupported theme version 9")
     );
+}
+
+#[cfg(feature = "lattice-turso")]
+#[test]
+fn turso_records_real_http_requests_and_recalls_sessions_across_cli_processes() {
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.root().join("config")).unwrap();
+    fs::write(
+        sandbox.root().join("config/config.toml"),
+        "[lattice]\nengine = \"turso\"\n",
+    )
+    .unwrap();
+    let started = sandbox.run_json(&[
+        "session",
+        "start",
+        "--actor",
+        "grok",
+        "--meta",
+        r#"{"omp":"session-1","herdr":"pane-1"}"#,
+    ]);
+    let session = started["session"]["id"].as_str().unwrap();
+    let result = record_run_with(
+        &sandbox,
+        &[("FACET_SESSION", session), ("FACET_ACTOR", "grok")],
+        &[],
+    );
+    assert_eq!(result["lattice"]["recorded"], true);
+    assert_eq!(result["lattice"]["indexed"], true);
+    let id = result["lattice"]["runId"].as_str().unwrap();
+    let history = sandbox.run_json(&["history", "--session", session]);
+    assert_eq!(history["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(history["runs"][0]["id"], id);
+    let shown = sandbox.run_json(&["session", "show", session]);
+    assert_eq!(shown["session"]["id"], session);
+    for path in [".facet/lattice.db", "machine/lattice.db"] {
+        assert_eq!(
+            fs::read_to_string(sandbox.root().join(path).with_added_extension("engine")).unwrap(),
+            "turso\n"
+        );
+    }
+    // Read the live CLI data through the real Rust driver, independently of the
+    // adapter's engine field. No rusqlite open is used for either Turso file.
+    let config = lattice::LatticeConfig {
+        engine: lattice::Engine::Turso,
+        ..Default::default()
+    };
+    let store = lattice::WorkspaceStore::open(sandbox.root(), config.clone()).unwrap();
+    assert_eq!(store.engine(), lattice::Engine::Turso);
+    let run = store.run(id).unwrap().unwrap();
+    assert_eq!(store.response_body(&run).unwrap().unwrap(), ECHO_BODY);
+    let machine =
+        lattice::MachineStore::open_at(&sandbox.root().join("machine/lattice.db"), &config)
+            .unwrap();
+    assert_eq!(machine.engine(), lattice::Engine::Turso);
+    assert_eq!(machine.session(session).unwrap().unwrap().actor, "grok");
+    assert_eq!(machine.count_indexed_runs().unwrap(), 1);
 }
