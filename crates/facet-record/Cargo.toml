@@ -7,6 +7,9 @@ rust-version.workspace = true
 description = "Facet: shared run-recording path into Lattice for the CLI and TUI"
 
 [dependencies]
+base64 = "0.23.1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
 lattice = { path = "../lattice" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
@@ -17,3 +20,4 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }

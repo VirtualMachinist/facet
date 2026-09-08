@@ -2,7 +2,7 @@
 //!
 //! Lattice sits beside an OpenCollection workspace and remembers every run.
 //! It never holds the collection itself; OpenCollection YAML on disk stays
-//! canonical and Git stays the sync layer. Two SQLite files:
+//! canonical and Git stays the sync layer. Two separate database files:
 //!
 //! - **Workspace store** `.facet/lattice.db` next to the YAML. Run history
 //!   for that workspace. Bodies are inline at or under `inline_body_max`,
@@ -11,20 +11,15 @@
 //!   Cross-workspace state: workspace registry, run index, sessions,
 //!   environments, preferences.
 //!
-//! Decisions and defaults come from `FACET_HANDOFF_BRIEF.md` (Surfaces 1,
-//! 3, 4, 5). Engine order: bundled SQLite now, Turso behind a feature later.
-//! DuckDB ATTACHes the SQLite file out of process (`scripts/duckdb-attach-demo.sh`);
-//! the in-process `lattice-duckdb` feature is apiary-only, never lathe.
-//!
-//! **Next slice** (sessions, recall, replay, hash-diff, secret hydration,
-//! `--expect`): `docs/FACET.md` § Next slice. The `sessions` table and
-//! [`WorkspaceStore::run`] exist; they have no CLI yet. `FACET_SESSION` is
-//! written onto the run row without minting a parent session.
+//! Bundled SQLite is the default. With `lattice-turso`, explicit configuration
+//! selects the actual Rust Turso engine for both stores. See
+//! `docs/LATTICE-ENGINES.md` for pins, file safety, configuration and limitations.
 
 #![forbid(unsafe_code)]
 
 mod blobs;
 mod config;
+mod database;
 mod machine;
 mod secrets;
 mod store;
@@ -33,7 +28,7 @@ mod ulid;
 use std::{fmt, io, path::PathBuf};
 
 pub use blobs::{BodyInput, StoredBody, sha256_hex};
-pub use config::{ConfigError, LatticeConfig, Retention, parse_byte_size, parse_retention};
+pub use config::{ConfigError, Engine, LatticeConfig, Retention, parse_byte_size, parse_retention};
 pub use machine::{
     EnvironmentRow, MachineStore, SessionQuery, SessionRow, machine_config_dir, machine_data_dir,
 };
@@ -57,6 +52,13 @@ pub const MACHINE_SCHEMA_VERSION: i64 = 2;
 /// Failures raised by Lattice.
 #[derive(Debug)]
 pub enum LatticeError {
+    /// The selected database engine cannot be opened with this configuration.
+    Engine(String),
+    /// A caller-provided SQL statement could not be parsed or prepared.
+    Query(String),
+    /// Actual Rust Turso driver failure; never mapped to a SQLite fallback.
+    #[cfg(feature = "lattice-turso")]
+    Turso(turso::Error),
     /// SQLite reported an error.
     Sqlite(rusqlite::Error),
     /// A filesystem operation failed.
@@ -79,6 +81,10 @@ pub enum LatticeError {
 impl fmt::Display for LatticeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Engine(message) => write!(f, "lattice engine error: {message}"),
+            Self::Query(message) => write!(f, "lattice query error: {message}"),
+            #[cfg(feature = "lattice-turso")]
+            Self::Turso(error) => write!(f, "lattice Turso error: {error}"),
             Self::Sqlite(error) => write!(f, "lattice store error: {error}"),
             Self::Io { path, source } => {
                 write!(f, "lattice I/O error at {}: {source}", path.display())
@@ -101,6 +107,9 @@ impl std::error::Error for LatticeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Sqlite(error) => Some(error),
+            Self::Engine(_) | Self::Query(_) => None,
+            #[cfg(feature = "lattice-turso")]
+            Self::Turso(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::Config(error) => Some(error),
             Self::Secret(error) => Some(error),
@@ -112,6 +121,13 @@ impl std::error::Error for LatticeError {
 impl From<rusqlite::Error> for LatticeError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+#[cfg(feature = "lattice-turso")]
+impl From<turso::Error> for LatticeError {
+    fn from(error: turso::Error) -> Self {
+        Self::Turso(error)
     }
 }
 
@@ -133,7 +149,7 @@ impl LatticeError {
     #[must_use]
     pub fn is_query_error(&self) -> bool {
         match self {
-            Self::ReadOnlyQuery => true,
+            Self::ReadOnlyQuery | Self::Query(_) => true,
             Self::Sqlite(rusqlite::Error::SqliteFailure(failure, _)) => {
                 failure.code == rusqlite::ErrorCode::Unknown
                     || failure.code == rusqlite::ErrorCode::ReadOnly
