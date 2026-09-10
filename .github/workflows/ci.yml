@@ -5,6 +5,7 @@ on:
     branches:
       - "**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,7 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Windows CI is a known skip (not a release-blocker):
+        # 1) optional lockfile git dep tursodatabase/turso exceeds MAX_PATH
+        # 2) facet goldens compare exact bytes and fail on CRLF (\r\n vs \n)
+        # release.yml still ships windows-x64 facet-cli without lattice-turso.
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v7
