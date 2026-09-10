@@ -46,6 +46,14 @@ jobs:
             libwayland-dev \
             libx11-xcb-dev \
             libxkbcommon-x11-dev
+      # Optional lockfile git deps (turso) are still fetched without --all-features.
+      # Default CARGO_HOME exceeds Windows MAX_PATH on turso sqlite/conformance snaps.
+      - name: Shorten CARGO_HOME on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p /c/c
+          echo "CARGO_HOME=C:\\c" >> "$GITHUB_ENV"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
       - run: cargo test --all-targets ${{ matrix.features }}
