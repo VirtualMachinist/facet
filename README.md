@@ -13,10 +13,10 @@
 
 <p align="center">
   <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=1A1A1A&colorB=C9A227&label=ci" alt="CI"></a>
-  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.7"><img src="https://img.shields.io/badge/Facet-v0.5.7-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.7"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.8"><img src="https://img.shields.io/badge/Facet-v0.5.8-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.8"></a>
+  <a href="https://crates.io/crates/facet-lattice"><img src="https://img.shields.io/crates/v/facet-lattice?style=flat&colorA=1A1A1A&colorB=C9A227" alt="facet-lattice on crates.io"></a>
   <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=1A1A1A&logo=rust&logoColor=white" alt="Rust 1.95"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-C9A227?style=flat&colorA=1A1A1A" alt="License"></a>
-  <a href="https://hedronite.com"><img src="https://img.shields.io/badge/Hedronite-hedronite.com-C9A227?style=flat&colorA=1A1A1A" alt="Hedronite"></a>
 </p>
 
 <p align="center">
@@ -29,9 +29,8 @@
 </p>
 
 <p align="center">
-  Built by <a href="https://hedronite.com">Hedronite</a>'s <a href="https://github.com/VirtualMachinist">VirtualMachinist</a>.
-  Fork of <a href="https://github.com/crizant/probe">Probe</a>.
-  <em>The Facet mark is the graphite honey hex lattice.</em>
+  <a href="https://github.com/VirtualMachinist">VirtualMachinist</a> ·
+  Fork of <a href="https://github.com/crizant/probe">Probe</a>
 </p>
 
 ---
@@ -40,7 +39,7 @@ Facet is a fast, native, local-first API client. Collections stay OpenCollection
 
 It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-**0.5.7** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
+**0.5.8** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
 
 ## Quick start
 
@@ -77,6 +76,25 @@ facet blob <sha256>
 ```
 
 For the TUI, run `facet tui`.
+
+### Use Lattice as a library
+
+The run-history store is published on crates.io as **facet-lattice** 0.5.8:
+
+```bash
+cargo add facet-lattice@0.5.8
+```
+
+```toml
+[dependencies]
+facet-lattice = "0.5.8"
+```
+
+```rust
+use lattice::WorkspaceStore;
+```
+
+See [crates/lattice/README.md](crates/lattice/README.md) and [docs/LATTICE-ENGINES.md](docs/LATTICE-ENGINES.md).
 
 ## What you get
 
@@ -122,7 +140,7 @@ crates/desktop/           # upstream probe-desktop (excluded from default build)
 crates/http/              # upstream HTTP client
 crates/opencollection/    # upstream YAML parser
 crates/facet/             # the facet binary
-crates/lattice/           # run history, blobs, gc, sql
+crates/lattice/           # facet-lattice (run history, blobs, gc, sql)
 crates/facet-tui/         # Ratatui interface
 docs/FACET.md             # Facet-specific documentation
 AGENTS.md                 # project instructions
@@ -132,11 +150,9 @@ AGENTS.md                 # project instructions
 
 ## Status
 
-**G38 / lattice ready / graphite honey**
+Facet is the working tree at 0.5.8; track `main`. The Lattice schema is versioned and migrated automatically.
 
-Facet is the working tree at 0.5.7; track `main`. The Lattice schema is versioned and migrated automatically.
-
-- **Lattice**: Ready. SQLite/rusqlite is the default engine.
+- **Lattice**: Ready. SQLite/rusqlite is the default engine. Published as [`facet-lattice`](https://crates.io/crates/facet-lattice) 0.5.8.
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
 - **Agent CLI**: Ready. Deterministic JSON and SQL querying.
 
@@ -152,9 +168,9 @@ Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [doc
 
 ## Credits and license
 
-Facet is built and maintained by [Hedronite](https://hedronite.com). Upstream lineage: [Probe](https://github.com/crizant/probe).
+Upstream lineage: [Probe](https://github.com/crizant/probe).
 
-- **Facet-original crates** (`facet`, `lattice`, `facet-tui`): MIT License, Copyright 2026 Hedronite.
+- **Facet-original crates** (`facet-cli`, `facet-lattice`, `facet-tui`): MIT License.
 - **Upstream-derived crates and files**: Apache License 2.0 (Probe).
 
-See [LICENSE](LICENSE) and [NOTICE](NOTICE). The Facet mark is Hedronite's.
+See [LICENSE](LICENSE) and [NOTICE](NOTICE).

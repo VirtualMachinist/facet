@@ -47,7 +47,7 @@ pub enum Engine {
     /// Bundled SQLite, the default for existing installations.
     #[default]
     Sqlite,
-    /// The Rust tursodatabase/turso engine (requires `lattice-turso`).
+    /// Reserved; selecting Turso is rejected until a driver is wired in.
     Turso,
 }
 
@@ -287,7 +287,6 @@ mod engine_tests {
         );
     }
 
-    #[cfg(not(feature = "lattice-turso"))]
     #[test]
     fn unavailable_engine_never_creates_a_sqlite_database() {
         let dir = tempfile::tempdir().unwrap();

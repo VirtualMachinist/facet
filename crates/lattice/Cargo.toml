@@ -1,10 +1,19 @@
 [package]
-name = "lattice"
+name = "facet-lattice"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
 rust-version.workspace = true
-description = "Facet run-history store: SQLite or Rust Turso beside OpenCollection YAML"
+description = "Facet run-history store: SQLite beside OpenCollection YAML"
+readme = "README.md"
+repository = "https://github.com/VirtualMachinist/facet"
+homepage = "https://github.com/VirtualMachinist/facet"
+keywords = ["facet", "api-client", "sqlite", "opencollection", "run-history"]
+categories = ["database", "development-tools"]
+publish = true
+
+[lib]
+name = "lattice"
 
 [dependencies]
 base64 = "0.23.1"
@@ -13,17 +22,9 @@ directories = "6"
 hkdf = "0.13.0"
 hmac = "0.13.0"
 keyring = "4.2.0"
-# Actual Rust Turso engine, pinned to the reviewed M1 source. No libSQL and
-# no optional sync/FTS/global allocator; the local driver needs no Tokio runtime.
-turso = { git = "https://github.com/tursodatabase/turso", rev = "87c7a8516511c3ad2745c25b1079ea5c90112692", default-features = false, optional = true }
-turso_parser = { git = "https://github.com/tursodatabase/turso", rev = "87c7a8516511c3ad2745c25b1079ea5c90112692", optional = true }
-futures = { version = "0.3", default-features = false, features = ["std", "executor"], optional = true }
 # Optional SQLite analytics smoke; bundled DuckDB is a heavy native build.
 # Keep this off in ordinary installations and budget build-host resources.
 duckdb = { version = "1.10505.0", optional = true, features = ["bundled"] }
-# Separate knowledge-graph store. This existing coexistence smoke uses the
-# upstream rusqlite-aligned proposal pin; it is not an intent/HQL adapter.
-hedron-core = { git = "https://github.com/VirtualMachinist/hedrondb", rev = "c7210486f915b19d6b1cb9a8d9e0bea25782bb1c", optional = true }
 rand = "0.9"
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 serde = { version = "1", features = ["derive"] }
@@ -33,31 +34,16 @@ toml = "1"
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 tempfile = "3"
-# The Turso application test also verifies use from inside a Tokio runtime.
-tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt"] }
 
 [features]
-# Compiles the Rust Turso adapter. Runtime selection remains explicit in config.
-lattice-turso = ["dep:turso", "dep:turso_parser", "dep:futures"]
+default = []
 # Optional in-process analytics against SQLite stores.
 lattice-duckdb = ["dep:duckdb"]
-# Separate-schema HedronDB coexistence smoke, not a Lattice storage engine.
-lattice-hedron = ["dep:hedron-core"]
-
-# Application storage contract tests for the actual Rust Turso backend.
-[[test]]
-name = "turso"
-required-features = ["lattice-turso"]
 
 # Optional heavy analytics smoke.
 [[test]]
 name = "duckdb"
 required-features = ["lattice-duckdb"]
-
-# Separate HedronDB store plus SQLite Lattice in one binary.
-[[test]]
-name = "hedron"
-required-features = ["lattice-hedron"]
 
 [lints]
 workspace = true

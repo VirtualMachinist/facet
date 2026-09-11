@@ -4,10 +4,11 @@ version.workspace = true
 edition.workspace = true
 license = "MIT"
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 facet-record = { path = "../facet-record" }
-lattice = { path = "../lattice" }
+facet-lattice = { path = "../lattice" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
 probe-opencollection = { path = "../opencollection" }
