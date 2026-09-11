@@ -908,14 +908,21 @@ impl App {
                 EditorSnapshot::from_request(request),
             )
         });
+        // The response pane and status belong to the previously selected
+        // request, so moving off it clears them -- unless a send is in flight,
+        // where clearing would report Idle while the task is still running and
+        // leave `:open` believing nothing is happening.
+        let in_flight = self.is_in_flight();
         let Some((method, editor, snapshot)) = extracted else {
             self.method = "GET".to_string();
             self.editor = Editor::default();
             self.editor_snapshot = EditorSnapshot::default();
             self.editor_dirty = false;
-            self.response = None;
-            self.response_origin = None;
-            self.status = RunStatus::Idle;
+            if !in_flight {
+                self.response = None;
+                self.response_origin = None;
+                self.status = RunStatus::Idle;
+            }
             self.kv_index = 0;
             return;
         };
@@ -923,10 +930,12 @@ impl App {
         self.editor = editor;
         self.editor_snapshot = snapshot;
         self.editor_dirty = false;
-        self.response = None;
-        self.response_origin = None;
-        self.status = RunStatus::Idle;
-        self.response_scroll = 0;
+        if !in_flight {
+            self.response = None;
+            self.response_origin = None;
+            self.status = RunStatus::Idle;
+            self.response_scroll = 0;
+        }
         self.kv_index = 0;
         self.kv_on_value = true;
         self.request_focus = RequestFocus::Url;
@@ -966,10 +975,45 @@ impl App {
         Ok(())
     }
 
+    /// Whether a send is in flight.
+    ///
+    /// The live channels are the truth, not `RunStatus::Running`: the status is
+    /// display state that several paths reset (tree navigation refreshes the
+    /// editor and clears the response pane), while `pending`/`cancel` live
+    /// exactly as long as the background task. `run_selected` already guards on
+    /// `pending`; anything else that must not race a send guards on this.
+    #[must_use]
+    pub fn is_in_flight(&self) -> bool {
+        self.pending.is_some() || self.cancel.is_some()
+    }
+
     /// Cancels the in-flight HTTP request, if any. Idempotent.
     pub fn cancel_run(&mut self) {
         if let Some(sender) = self.cancel.take() {
             let _ = sender.send(true);
+        }
+    }
+
+    /// Cancels an in-flight send and drops its channels, so no completion can
+    /// land after this returns. Used when the collection under the run is
+    /// about to change.
+    fn abandon_run(&mut self) {
+        self.cancel_run();
+        self.pending = None;
+        self.cancel = None;
+    }
+
+    /// Drains a finished background run, if one has completed. Extracted from
+    /// the event loop so the "a completion cannot land on a collection that
+    /// did not issue it" rule is testable without a terminal.
+    fn poll_pending(&mut self) {
+        if let Some(receiver) = self.pending.as_mut()
+            && let Ok((result, recording)) = receiver.try_recv()
+        {
+            self.last_recording = recording;
+            self.apply_run_result(result);
+            self.pending = None;
+            self.cancel = None;
         }
     }
 
@@ -981,14 +1025,7 @@ impl App {
             if self.should_quit {
                 return Ok(());
             }
-            if let Some(receiver) = self.pending.as_mut()
-                && let Ok((result, recording)) = receiver.try_recv()
-            {
-                self.last_recording = recording;
-                self.apply_run_result(result);
-                self.pending = None;
-                self.cancel = None;
-            }
+            self.poll_pending();
 
             if last_draw.elapsed() >= tick {
                 self.draw(terminal)?;
@@ -2157,6 +2194,12 @@ impl App {
     /// (`workspace_root`), so dropping the old view is what actually prevents
     /// one collection's runs showing under another (TUI-02).
     fn remount(&mut self, loaded: LoadedWorkspace) {
+        // Last line of defence for run bleed. `request_open` refuses while a
+        // send is in flight, but a completion that is already queued on the
+        // channel would otherwise be drained by the event loop *after* the swap
+        // and applied to a collection that never issued it. Cancel and drop the
+        // channels here so no result can survive the remount.
+        self.abandon_run();
         self.adopt(loaded);
         // Run state belongs to the collection that produced it.
         self.response = None;
@@ -2185,7 +2228,10 @@ impl App {
     /// cannot record into a store the operator has already navigated away
     /// from, and routes through a confirm when the editor is dirty.
     fn request_open(&mut self, path: PathBuf) {
-        if matches!(self.status, RunStatus::Running) {
+        // Guard on the live channels, not `RunStatus::Running`: tree navigation
+        // resets the status while the background task keeps running, so a
+        // status check here would wave a mid-flight send straight through.
+        if self.is_in_flight() {
             let message = "a run is in flight — Esc cancels it first".to_string();
             match self.open_picker.as_mut() {
                 Some(picker) => picker.notice = Some(message),
@@ -4570,6 +4616,197 @@ mod tests {
         assert_eq!(
             app.workspace_root().unwrap().canonicalize().unwrap(),
             second.parent().unwrap().canonicalize().unwrap(),
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Seats a fake in-flight send: the channels a real `run_selected` would
+    /// hold, without the network. Returns the sender so a test can queue a
+    /// completion the way a finishing background task would.
+    fn seat_in_flight(app: &mut App) -> mpsc::Sender<(RunResult, Option<RecordSummary>)> {
+        let (sender, receiver) = mpsc::channel(1);
+        let (cancel_sender, _cancel_signal) = watch::channel(false);
+        app.cancel = Some(cancel_sender);
+        app.pending = Some(receiver);
+        app.status = RunStatus::Running;
+        sender
+    }
+
+    /// QA Phase 2, TUI-02 regression. The reported chain was:
+    ///   1. tree `j`/`k` reset `status` to Idle even with a send in flight,
+    ///   2. `:open` only refused on `RunStatus::Running`, so it proceeded,
+    ///   3. `remount` left `pending`/`cancel` alive, so the completion landed
+    ///      on the collection that never issued it.
+    /// Each link is asserted separately so a future regression names itself.
+    #[tokio::test]
+    async fn open_refuses_mid_flight_even_after_tree_navigation() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let _sender = seat_in_flight(&mut app);
+
+        // Link 1: navigating the tree must not report Idle over a live send.
+        app.focus = Focus::Tree;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(
+            app.is_in_flight(),
+            "the send is still in flight after tree navigation"
+        );
+        assert!(
+            matches!(app.status(), RunStatus::Running),
+            "tree navigation must not clobber Running: {:?}",
+            app.status()
+        );
+
+        // Link 2: `:open` refuses, and the seated collection is untouched.
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            ":open must not swap collections mid-flight"
+        );
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("in flight")),
+            "the refusal is reported: {:?}",
+            app.status()
+        );
+        assert!(app.is_in_flight(), "refusing does not cancel the run");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Link 3: `remount` is the last line of defence. `request_open` refuses
+    /// while a send is in flight, so this calls the mount path directly -- the
+    /// invariant must hold for any future caller that forgets to check, not
+    /// only for the one path that currently checks.
+    #[tokio::test]
+    async fn a_queued_completion_cannot_land_on_the_next_collection() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let sender = seat_in_flight(&mut app);
+
+        // The background task finishes just as the collection is swapped.
+        sender
+            .send((
+                RunResult::Err("late completion from the previous collection".to_string()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        app.open_path(&second);
+
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+        );
+        assert!(
+            !app.is_in_flight(),
+            "remount drops both channels (pending={}, cancel={})",
+            app.pending.is_some(),
+            app.cancel.is_some()
+        );
+
+        // Draining now must be a no-op -- the queued result has nowhere to land.
+        app.poll_pending();
+        assert!(
+            app.response().is_none(),
+            "a completion from the previous collection must not surface here"
+        );
+        assert!(app.last_recording.is_none(), "nor its recording");
+        assert!(
+            !matches!(app.status(), RunStatus::Failed(_)),
+            "nor its failure: {:?}",
+            app.status()
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The operator's recovery path from the refusal: Esc cancels, the loop
+    /// drains the cancelled run against the collection that issued it, and the
+    /// switch then goes through. Cancelling alone is not enough -- `pending`
+    /// outlives `cancel` until the task actually reports.
+    #[tokio::test]
+    async fn cancel_then_drain_releases_the_switch() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let sender = seat_in_flight(&mut app);
+
+        app.cancel_run();
+        assert!(
+            app.is_in_flight(),
+            "cancelling signals the task; the run is not over until it reports"
+        );
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            "still refused while the cancelled run has not reported"
+        );
+
+        // The task reports, the event loop drains it against collection A.
+        sender
+            .send((RunResult::Err("cancelled".to_string()), None))
+            .await
+            .unwrap();
+        app.poll_pending();
+        assert!(!app.is_in_flight(), "the run is over once it reports");
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+            "the switch goes through once nothing is in flight"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The guard is the live channel, not the status. A run whose status has
+    /// been reset to Idle by unrelated UI work is still a run.
+    #[tokio::test]
+    async fn in_flight_is_the_channel_not_the_status() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let _sender = seat_in_flight(&mut app);
+
+        // Force the exact state the bug produced: channels live, status Idle.
+        app.status = RunStatus::Idle;
+        assert!(app.is_in_flight());
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            "an Idle status over a live channel must still refuse"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Tree navigation keeps its ordinary behaviour when nothing is running:
+    /// the response pane belongs to the request you moved off.
+    #[tokio::test]
+    async fn tree_navigation_still_clears_the_response_when_idle() {
+        let (base, _first, _second, mut app) = two_collections().await;
+        app.response_origin = Some("run 01K… · replayed view".to_string());
+        app.status = RunStatus::Failed("previous".to_string());
+        app.focus = Focus::Tree;
+
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert!(!app.is_in_flight());
+        assert!(app.response().is_none());
+        assert!(
+            matches!(app.status(), RunStatus::Idle),
+            "idle navigation still resets status: {:?}",
+            app.status()
         );
         std::fs::remove_dir_all(&base).ok();
     }
