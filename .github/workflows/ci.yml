@@ -43,3 +43,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
+      # No tag on a PR, so gate the pair that exists: Cargo == `facet --version`.
+      # The tag leg is enforced on release (.github/workflows/release.yml).
+      - name: Version truth (Cargo == facet --version)
+        shell: bash
+        run: |
+          cargo build --release -p facet-cli --bin facet
+          ./scripts/version-check.sh --binary target/release/facet

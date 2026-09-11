@@ -1,6 +1,7 @@
 [package]
 name = "probe-cli"
-version.workspace = true
+# Pinned: vendored Probe cut. Do NOT bump to match the Facet CLI version.
+version = "0.5.9"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

@@ -35,6 +35,8 @@ jobs:
             libwayland-dev \
             libx11-xcb-dev \
             libxkbcommon-x11-dev
+      - name: Version truth (git tag == Cargo)
+        run: ./scripts/version-check.sh --tag "$GITHUB_REF_NAME"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
@@ -71,6 +73,8 @@ jobs:
         id: metadata
         shell: bash
         run: |
+          # The tag is gated against Cargo in `validate` and against the built
+          # binary below, so all three agree by the time an asset is named.
           version="${GITHUB_REF_NAME#v}"
           asset_name="facet-cli-${version}-${{ matrix.platform }}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -85,6 +89,12 @@ jobs:
       - name: Verify CLI starts
         shell: bash
         run: '"dist/package/facet${{ matrix.exe }}" --help'
+      - name: Version truth (git tag == Cargo == facet --version)
+        shell: bash
+        run: |
+          ./scripts/version-check.sh \
+            --tag "$GITHUB_REF_NAME" \
+            --binary "dist/package/facet${{ matrix.exe }}"
       - name: Create tarball
         if: matrix.archive == 'tar.gz'
         shell: bash

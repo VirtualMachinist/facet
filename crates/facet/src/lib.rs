@@ -423,6 +423,42 @@ mod tests {
         assert!(value["probeVersion"].is_string());
     }
 
+    /// `scripts/version-check.sh` parses this exact human line to gate releases
+    /// (git tag == Cargo == binary). Reformatting it silently breaks that gate,
+    /// so the shape is pinned here rather than only in the JSON payload.
+    #[test]
+    fn version_human_line_stays_gateable() {
+        let output = run(["--version"]);
+        assert_eq!(output.exit_code, 0);
+        let human = String::from_utf8(output.stdout).unwrap();
+        let line = human.lines().next().expect("--version prints a line");
+
+        let facet_version = super::version();
+        let probe_version = probe_cli::version();
+        assert_eq!(
+            line,
+            format!("facet {facet_version} (probe {probe_version})")
+        );
+
+        // The gate reads the version as the second whitespace-separated field.
+        let mut fields = line.split_whitespace();
+        assert_eq!(fields.next(), Some("facet"));
+        assert_eq!(fields.next(), Some(facet_version));
+    }
+
+    /// The Facet CLI and the vendored Probe cut are independent version axes.
+    /// Neither is ever bumped just to make the parenthetical read symmetrical,
+    /// so this asserts the line reports each crate's own version, not one twice.
+    #[test]
+    fn version_axes_are_reported_independently() {
+        assert_eq!(super::version(), env!("CARGO_PKG_VERSION"));
+
+        let output = run(["--version", "--json"]);
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(value["probeVersion"], probe_cli::version());
+    }
+
     #[test]
     fn delegates_unknown_commands_to_probe() {
         let output = run(["collection", "validate", "/nonexistent/path.yml", "--json"]);

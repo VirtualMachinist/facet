@@ -18,8 +18,11 @@ die() {
   exit 1
 }
 
+# The Facet CLI version is the release axis. probe-* and facet-lattice are
+# pinned on their own axes (see Cargo.toml), so reading probe-cli here would
+# report a version this release never bumps.
 package_version() {
-  cargo pkgid -p probe-cli | sed 's/.*@//'
+  cargo pkgid -p facet-cli | sed 's/.*[@#]//'
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -78,6 +81,11 @@ updated_version="$(package_version)"
 
 [[ "$updated_version" == "$version" ]] \
   || die "Cargo metadata still reports ${updated_version}, expected ${version}"
+
+# Same gate CI and the release workflow run, before the tag exists to be wrong.
+cargo build --release -p facet-cli --bin facet
+scripts/version-check.sh --tag "$tag" --binary target/release/facet \
+  || die "version truth gate failed; refusing to tag ${tag}"
 
 git add Cargo.toml Cargo.lock
 git commit -m "release: ${tag}"

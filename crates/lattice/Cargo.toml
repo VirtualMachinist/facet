@@ -1,6 +1,8 @@
 [package]
 name = "facet-lattice"
-version.workspace = true
+# Pinned to the live crates.io release. Do NOT bump to match the Facet
+# CLI version; the lattice crate identity is its own version axis.
+version = "0.5.9"
 edition.workspace = true
 license = "MIT"
 rust-version.workspace = true
