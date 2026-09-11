@@ -7,14 +7,14 @@ Facet ships two install paths: the **`facet-lattice`** library on [crates.io](ht
 Add the run-history store to a Rust project:
 
 ```bash
-cargo add facet-lattice@0.5.9
+cargo add facet-lattice@0.5.8
 ```
 
 SQLite-only (default):
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.9"
+facet-lattice = "0.5.8"
 ```
 
 ```rust
@@ -27,7 +27,7 @@ Optional in-process analytics against SQLite files (heavy native build):
 
 ```toml
 [dependencies]
-facet-lattice = { version = "0.5.9", features = ["lattice-duckdb"] }
+facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
 ```
 
 See also [crates/lattice/README.md](../crates/lattice/README.md) and [Lattice engines](LATTICE-ENGINES.md).
@@ -44,7 +44,7 @@ Verify:
 
 ```bash
 facet --version
-# facet 0.5.9 (probe 0.5.9)
+# facet 0.5.8 (probe 0.5.8)
 ```
 
 Release assets are built from the matching `v*` tag. The workspace version on `main` should match the tag you install.
@@ -67,11 +67,11 @@ facet --version
 
 | Artifact | Source | Current target |
 | --- | --- | --- |
-| `facet-lattice` crate | [crates.io](https://crates.io/crates/facet-lattice) | **0.5.9** (next publish after merge) |
-| `facet` / `probe` binaries | GitHub release tag | **v0.5.9** when tagged from `main` |
-| Workspace on `main` | this repository | **0.5.9** |
+| `facet-lattice` crate | [crates.io](https://crates.io/crates/facet-lattice) | **0.5.8** |
+| `facet` / `probe` binaries | GitHub release tag | **v0.5.8** |
+| Workspace on `main` | this repository | **0.5.8** |
 
-Older crates.io releases remain available; new work targets **0.5.9**.
+Workspace, tag, and crates.io release are aligned at **0.5.8**.
 
 ## Next steps
 
