@@ -1,19 +1,14 @@
-//! DuckDB in-process analytics smoke (apiary-only; `lattice-duckdb` feature).
+//! DuckDB in-process analytics smoke (`lattice-duckdb` feature).
 //!
 //! Proves the DuckDB Rust crate can, in-process, ATTACH the SQLite lattice
 //! workspace store (via the `sqlite` extension) and run analytics over
-//! `runs`/`blobs`. The default engine stays rusqlite; this is the
-//! analytics escape hatch the brief calls for ("DuckDB attaches SQLite files
-//! externally for analytics"), here exercised in-process.
-//!
-//! APIARY-ONLY. Never enable on lathe (heavy native build; "No DuckDB on
-//! lathe"). Run on apiary:
+//! `runs`/`blobs`. The default engine stays rusqlite.
 //!
 //! ```text
-//! cargo test -p lattice --features lattice-duckdb --test duckdb
+//! cargo test -p facet-lattice --features lattice-duckdb --test duckdb
 //! ```
 //!
-//! The default `cargo test -p lattice` (feature off) does not build this
+//! The default `cargo test -p facet-lattice` (feature off) does not build this
 //! file or pull the `duckdb` crate.
 
 #![cfg(feature = "lattice-duckdb")]

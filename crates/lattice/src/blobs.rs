@@ -110,7 +110,7 @@ pub(crate) fn place(
     }
 }
 
-/// Hash-only placement (Surface 1, v2): request bodies always live in a
+/// Hash-only placement (v2): request bodies always live in a
 /// content-addressed blob file, never inline. There is no threshold. Used
 /// for `req_body`; response bodies still use [`place`] with the inline
 /// threshold.

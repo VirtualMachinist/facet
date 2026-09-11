@@ -51,12 +51,10 @@ TLS/transport configuration failures are recorded as failed actions when recordi
 is enabled. HTTP 403 is a real response; use `--expect`/MCP `expect` to have Facet
 report the rejected action as a tool failure while retaining its history.
 
-## Turso and session integration
+## Session integration
 
-Build with `--features lattice-turso` and configure `[lattice] engine = "turso"`
-in the project machine configuration for both session commands and workspace
-recording. Use private `FACET_CONFIG_DIR` and `FACET_DATA_DIR`; keep workspace
-engine overrides consistent. See [Lattice engines](LATTICE-ENGINES.md).
+Use private `FACET_CONFIG_DIR` and `FACET_DATA_DIR`; keep workspace and machine
+configuration consistent. See [Lattice engines](LATTICE-ENGINES.md).
 
 `session_start` returns an ID. The harness sets `FACET_SESSION` on the MCP process
 used for subsequent requests, and `FACET_ACTOR` identifies the actor. Restarting

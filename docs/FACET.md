@@ -1,19 +1,19 @@
 # Facet
 
-Facet is Hedronite's in-house fork of Probe: the same core, CLI contract, and
-OpenCollection YAML, cut for the terminal, with **Lattice** underneath to
-remember every run. Codename G38. Upstream is `crizant/probe`; this fork lives
-at `VirtualMachinist/facet` and stays cherry-pickable in both directions.
+Facet is the terminal-native fork of Probe: the same core, CLI contract, and
+OpenCollection YAML, with **`facet-lattice`** underneath to remember every run.
+Upstream is `crizant/probe`; this fork lives at `VirtualMachinist/facet` and
+stays cherry-pickable in both directions.
 
 This document is the canonical reference for everything Facet adds. Everything
 Probe already documents ([CLI](CLI.md), [Architecture](ARCHITECTURE.md)) holds
 unchanged.
 
-## Boundary with upstream (Surface 7)
+## Boundary with upstream
 
 | Stays in Facet | Goes upstream first |
 | --- | --- |
-| `crates/lattice` (run history, blobs, `--sql`, gc) | Agent CLI ergonomics, JSON envelope fixes |
+| **`facet-lattice`** (`crates/lattice`: run history, blobs, `--sql`, gc) | Agent CLI ergonomics, JSON envelope fixes |
 | `crates/facet` (the `facet` binary), `crates/facet-record` (shared recording path) | Performance work in `probe-core` |
 | `crates/facet-tui` (ratatui interface) | Bug fixes in any upstream crate |
 
@@ -29,21 +29,18 @@ Rules:
 
 ### License and attribution
 
-Decided by Evan on 2026-09-06 (Surface 7, closed):
-
 - **Upstream-derived files stay Apache-2.0.** Probe's `LICENSE` (Apache License
   2.0) governs `crates/cli`, `crates/core`, `crates/desktop`, `crates/http`,
   `crates/opencollection`, `crates/postman`, `crates/yaak`, and the docs they
   came with. They are never relicensed, so Probe PRs from this tree stay legal.
   Files modified from upstream carry a change notice (Section 4(b)).
-- **Facet-original crates are MIT:** `crates/facet`, `crates/facet-record`,
-  `crates/lattice`, `crates/facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
+- **Facet-original crates are MIT:** `facet-cli` (`crates/facet`), `facet-record`,
+  **`facet-lattice`** (`crates/lattice`), `facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
   in its own `Cargo.toml`. `crates/facet-tui` adapts palette values from the
   upstream desktop theme; that derivation is noted in `NOTICE`.
-- **Copyright:** `Copyright 2026 Hedronite` for the Facet-original work.
+- **Copyright:** `Copyright 2026 VirtualMachinist` for the Facet-original work.
   Upstream copyright notices are kept as found; the root `LICENSE` text is
-  upstream's and is left byte-identical. Git identity for the fork stays
-  VirtualMachinist; the copyright holder is Hedronite.
+  upstream's and is left byte-identical.
 - The root `NOTICE` file states the fork relationship and the per-crate terms.
   Distributions include `LICENSE`, `NOTICE`, and the per-crate `LICENSE-MIT`.
 - The workspace `Cargo.toml` still declares `license = "MIT OR Apache-2.0"`
@@ -52,22 +49,24 @@ Decided by Evan on 2026-09-06 (Surface 7, closed):
 
 ## Binaries
 
+Install paths for strangers: [install.md](install.md) (`facet-lattice` on crates.io; `facet` from releases or source).
+
 `facet` and `probe` build from the same workspace and coexist on `PATH`:
 
 ```bash
 cargo build --release -p probe-cli -p facet-cli
-facet --version   # facet 0.5.7 (probe 0.5.7)
-probe --version   # probe 0.5.7
+facet --version   # facet 0.5.9 (probe 0.5.9)
+probe --version   # probe 0.5.9
 ```
 
 `facet --version --json` returns `name`, `version`, and `probeVersion`.
 
-## Lattice layout
+## facet-lattice layout
 
-Two SQLite stores, both via bundled `rusqlite` (the default engine). Turso
-and an in-process DuckDB are available behind cargo features (neither is
-the default; both are off in a default build). DuckDB is also usable
-out-of-process: the `duckdb` CLI ATTACHes the SQLite file for analytics
+Two SQLite stores, both via bundled `rusqlite` (the default engine). An
+optional in-process DuckDB analytics feature ships behind `lattice-duckdb`
+(off in a default build). DuckDB is also usable out-of-process: the `duckdb`
+CLI ATTACHes the SQLite file for analytics
 (see [Engines](#engines)).
 
 | Store | Path | Holds |
@@ -83,8 +82,8 @@ file.
 
 Override the machine paths with `FACET_DATA_DIR` and `FACET_CONFIG_DIR`.
 
-The schema is `FACET_HANDOFF_BRIEF.md` Section III, applied as numbered SQL
-migrations under `crates/lattice/migrations/{workspace,machine}/`. Every
+The schema is applied as numbered SQL
+migrations under `crates/lattice/migrations/{workspace,machine}/` (package **`facet-lattice`**). Every
 migration inserts its own `schema_version` row. Times are Unix milliseconds
 UTC; ids are ULIDs.
 
@@ -156,8 +155,7 @@ upstream provider hook); `--expect` is exit **1** (6 stays network); 0003 is
 after this train (now eligible).
 
 CLI remains the harness contract. MCP wraps the same functions and must not
-parse stdout. Sketch: `agents/fullstack/notes/2026-09-07-and-more.md` in the
-Lapis vault.
+parse stdout.
 
 ### Next slice
 
@@ -171,7 +169,7 @@ Two trains. Finish the Facet-owned rest **before** pivoting to Probe.
 | 2 | **Git HEAD auto-tag** | On record, tag `git:<sha>[-dirty]` when cwd is a repo. No column. `history --tag git:…`. | Facet-only |
 | 3 | **Bells** | `facet last`; sparkline on the `:history` grid; pins. Each rides a command that is already green. | Facet-only |
 | 4 | **Theme files** (Probe 05 rest) | Versioned files for `facet-tui`; invalid → Graphite/Porcelain. | Facet TUI; desktop files stay upstream |
-| 5 | **TUI env editor** (Probe 07 rest) + `ctrl+u`/`ctrl+d` | Overlay UI on `facet env` / machine store. Half-page scroll deferred from Surface 2. | Facet TUI |
+| 5 | **TUI env editor** (Probe 07 rest) + `ctrl+u`/`ctrl+d` | Overlay UI on `facet env` / machine store. | Facet TUI |
 
 #### Probe contribution (later, separate)
 
@@ -181,7 +179,7 @@ Give Probe the pieces we already shipped that belong in `probe-cli` / `probe-cor
 | --- | --- | --- |
 | A1 | `--expect` + `--dry-run` on `request run` | Exit **1** `expect_failed`; transport stays 6. Facet-only fallback already shipped. |
 | A2 | Secret-provider hook | Probe still errors `secret_variable_unavailable` with no `--var`. A host trait; do not push Lattice into Probe. |
-| B | Thread A — Probe 02–04 | WebSocket, GraphQL, gRPC. Need `protocol-session` in `probe-core` first. Unpark when Evan says; Facet JSONL + TUI session pane + Lattice events **after** the core PR exists. |
+| B | Thread A — Probe 02–04 | WebSocket, GraphQL, gRPC. Need `protocol-session` in `probe-core` first. Facet JSONL + TUI session pane + Lattice events **after** the core PR exists. |
 
 Do **not** ship 02–04 as Facet-only adapters against an HTTP-only core — that forks the engine.
 
@@ -204,7 +202,7 @@ busy_timeout_ms   = 5000
 Flags: `--inline-body-max`, `--history-retention`. Agents get flags; humans
 get files.
 
-### Secrets at rest (Surface 3)
+### Secrets at rest
 
 Environment values that are secrets (tokens, keys) never sit in plaintext in
 the machine store. Two backends, picked by environment:
@@ -231,7 +229,7 @@ plain value (or deleting the row) cleans up the old keyring entry.
 delete_environment}` are the API; `environments` returns metadata only
 (name, key, `secret`, `updated_at`) and never a secret value.
 
-### Concurrency (Surface 4)
+### Concurrency
 
 Connections open in WAL mode with `busy_timeout` (5 s default) and use short
 immediate write transactions. Readers never block. Schema creation runs inside
@@ -240,25 +238,17 @@ one immediate transaction so concurrent first opens serialize.
 
 ### Engines
 
-The default engine remains **rusqlite** (bundled SQLite). The optional
-`lattice-turso` feature now compiles the **actual Rust Turso engine**, pinned to
-`tursodatabase/turso` commit `87c7a8516511c3ad2745c25b1079ea5c90112692`.
-It replaces the old libSQL-only smoke feature. Both `WorkspaceStore` and
-`MachineStore` use the selected engine for their real application operations:
-recording, sessions, indexes, history, body metadata, SQL queries, and migrations.
-Compiling the feature alone does not change an installation's engine.
+The default engine is **rusqlite** (bundled SQLite). The run-history library is
+published on crates.io as [`facet-lattice`](https://crates.io/crates/facet-lattice)
+0.5.9 with `default = []` and an optional `lattice-duckdb` analytics feature.
 
 | Feature | Engine | Scope |
 | --- | --- | --- |
-| `lattice-turso` | Rust Turso local driver | Explicit `[lattice] engine = "turso"`; real application storage, without libSQL or a silent SQLite fallback. |
-| `lattice-duckdb` | Bundled DuckDB | Existing optional analytics smoke against SQLite files. A heavy native build; not part of the default installation. |
-| `lattice-hedron` | HedronDB `hedron-core` | Separate knowledge-graph schema and authorization boundary. Existing coexistence smoke; intent/reconciliation integration remains separate work. |
+| `lattice-duckdb` | Bundled DuckDB | Optional analytics smoke against SQLite files. A heavy native build; not part of the default installation. |
 
-For configuration, file safety, supported SQL, exact driver settings, tests and
-rollback, see [Lattice engines](LATTICE-ENGINES.md). SQLite files are not silently
-reopened with Turso. HedronDB never opens Lattice as its own Store, and canonical
-OpenCollection YAML remains independent of all database engines. Preserve the
-HedronDB distinction between Warm current state and Cool causal history.
+For configuration, file safety, supported SQL, and rollback, see
+[Lattice engines](LATTICE-ENGINES.md). Canonical OpenCollection YAML remains
+independent of all database engines.
 
 The external DuckDB analytics path remains available for SQLite stores:
 
@@ -508,14 +498,14 @@ live in the machine store (cross-workspace); `request run` stamps
 `session start` prints the new ULID alone in human mode, so
 `export FACET_SESSION=$(facet session start)` needs no `jq`. The actor is
 `--actor`, else `FACET_ACTOR`, else `human`. `meta` is pointers only:
-`herdr: { workspace, tab, pane }` from `HERDR_WORKSPACE_ID` / `HERDR_TAB_ID` /
-`HERDR_PANE_ID` when set, `cwd`, then the `--meta` object merged on top (it
-wins). Never transcripts, never secrets.
+`tool: { workspace, tab, pane }` from host tool environment variables when set
+(`*_WORKSPACE_ID`, `*_TAB_ID`, `*_PANE_ID`), `cwd`, then the `--meta` object
+merged on top (it wins). Never transcripts, never secrets.
 
 ```json
 { "schemaVersion": 1,
-  "session": { "id": "01K…", "actor": "claude.halo-fullstack", "startedAt": 1757250000123, "endedAt": null,
-               "meta": { "herdr": { "workspace": "w1", "tab": "w1:tR", "pane": "w1:pR" }, "cwd": "/…/repos/facet" },
+  "session": { "id": "01K…", "actor": "agent.alpha", "startedAt": 1757250000123, "endedAt": null,
+               "meta": { "tool": { "workspace": "w1", "tab": "w1:tR", "pane": "w1:pR" }, "cwd": "/…/repos/facet" },
                "runs": 0 } }
 ```
 
@@ -608,7 +598,7 @@ Three layers, and the order is the design:
    refuses to interpolate a declared secret with no value:
    `secret_variable_unavailable` (exit 5). That stays the floor.
 2. The Facet machine store holds values keyed `(workspace, environment, key)`,
-   plain or through the secrets layer (Surface 3). `facet env set` writes them.
+   plain or through the secrets layer. `facet env set` writes them.
 3. `--var` is the runtime override channel. Last one wins.
 
 On `request run`, `replay`, and a TUI send, when an environment is selected,
@@ -780,7 +770,7 @@ environment (`FACET_SECRET_KEY`, keyring, `FACET_ACTOR`, `FACET_SESSION`).
 Claude Code (`.mcp.json`):
 
 ```json
-{ "mcpServers": { "facet": { "command": "facet", "args": ["mcp"], "env": { "FACET_ACTOR": "claude.halo-fullstack" } } } }
+{ "mcpServers": { "facet": { "command": "facet", "args": ["mcp"], "env": { "FACET_ACTOR": "agent.alpha" } } } }
 ```
 
 The CLI remains the contract; the shell-out path in `docs/FACET.md` and the
@@ -813,9 +803,8 @@ fields are added compatibly and never removed or retyped within a version.
   `--dry-run` through the binary.
 - `crates/lattice/tests/store.rs`: schema, threshold placement, reader rule
   across threshold changes, gc, machine index, environments (plain + secret).
-- `crates/lattice/tests/contention.rs`: Surface 4 fixture.
+- `crates/lattice/tests/contention.rs`: concurrency fixture.
 - `crates/lattice/src/secrets.rs` (unit): encrypted round-trip, wrong-key
   failure, ref-prefix classification, empty/unknown refs.
 
-Facet is compiled and tested on the build host, not on lathe (see
-`agents/SQUAD.AGENTS.md` in the Lapis vault).
+Facet is compiled and tested on standard CI hosts (Linux and macOS).

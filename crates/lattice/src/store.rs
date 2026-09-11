@@ -369,7 +369,7 @@ impl WorkspaceStore {
         let id = ulid();
         let blobs_dir = self.blobs_dir();
         let threshold = self.config.inline_body_max;
-        // Request bodies are hash-only (Surface 1, v2): always a blob file,
+        // Request bodies are hash-only (v2): always a blob file,
         // never inline. Response bodies keep the inline threshold.
         let req_body = blobs::place_hashed(&blobs_dir, run.req_body)?;
         let res_body = blobs::place(&blobs_dir, run.res_body, threshold)?;
@@ -581,7 +581,7 @@ impl WorkspaceStore {
         Ok(SqlResult { columns, rows: out })
     }
 
-    /// Mark-and-sweep garbage collection (Surface 5). Expired runs are those
+    /// Mark-and-sweep garbage collection. Expired runs are those
     /// older than `history_retention`; orphans are blob files no surviving
     /// run references. Nothing is deleted unless `apply` is true.
     pub fn gc(&self, apply: bool) -> Result<GcReport, LatticeError> {
@@ -733,7 +733,7 @@ fn ensure_workspace_id(facet_dir: &Path) -> Result<String, LatticeError> {
     Ok(id)
 }
 
-/// Opens a connection with Surface 4 defaults: WAL, busy timeout, NORMAL sync.
+/// Opens a connection with WAL, busy timeout, and NORMAL synchronous defaults.
 pub(crate) fn open_connection(
     path: &Path,
     config: &LatticeConfig,

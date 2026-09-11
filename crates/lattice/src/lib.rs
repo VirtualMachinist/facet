@@ -1,6 +1,6 @@
-//! Lattice: the Facet run-history store.
+//! facet-lattice: run-history store for Facet.
 //!
-//! Lattice sits beside an OpenCollection workspace and remembers every run.
+//! Sits beside an OpenCollection workspace and remembers every run.
 //! It never holds the collection itself; OpenCollection YAML on disk stays
 //! canonical and Git stays the sync layer. Two separate database files:
 //!
@@ -11,9 +11,9 @@
 //!   Cross-workspace state: workspace registry, run index, sessions,
 //!   environments, preferences.
 //!
-//! Bundled SQLite is the default. With `lattice-turso`, explicit configuration
-//! selects the actual Rust Turso engine for both stores. See
-//! `docs/LATTICE-ENGINES.md` for pins, file safety, configuration and limitations.
+//! Bundled SQLite is the default engine. See `docs/LATTICE-ENGINES.md` for
+//! configuration, file safety, and limitations. The library is published on
+//! crates.io as `facet-lattice`.
 
 #![forbid(unsafe_code)]
 
@@ -56,9 +56,6 @@ pub enum LatticeError {
     Engine(String),
     /// A caller-provided SQL statement could not be parsed or prepared.
     Query(String),
-    /// Actual Rust Turso driver failure; never mapped to a SQLite fallback.
-    #[cfg(feature = "lattice-turso")]
-    Turso(turso::Error),
     /// SQLite reported an error.
     Sqlite(rusqlite::Error),
     /// A filesystem operation failed.
@@ -70,7 +67,7 @@ pub enum LatticeError {
     },
     /// Configuration could not be parsed.
     Config(ConfigError),
-    /// A secret at rest (Surface 3) operation failed.
+    /// A secret at rest operation failed.
     Secret(SecretError),
     /// A `--sql` query attempted to write.
     ReadOnlyQuery,
@@ -83,8 +80,6 @@ impl fmt::Display for LatticeError {
         match self {
             Self::Engine(message) => write!(f, "lattice engine error: {message}"),
             Self::Query(message) => write!(f, "lattice query error: {message}"),
-            #[cfg(feature = "lattice-turso")]
-            Self::Turso(error) => write!(f, "lattice Turso error: {error}"),
             Self::Sqlite(error) => write!(f, "lattice store error: {error}"),
             Self::Io { path, source } => {
                 write!(f, "lattice I/O error at {}: {source}", path.display())
@@ -108,8 +103,6 @@ impl std::error::Error for LatticeError {
         match self {
             Self::Sqlite(error) => Some(error),
             Self::Engine(_) | Self::Query(_) => None,
-            #[cfg(feature = "lattice-turso")]
-            Self::Turso(error) => Some(error),
             Self::Io { source, .. } => Some(source),
             Self::Config(error) => Some(error),
             Self::Secret(error) => Some(error),
@@ -121,13 +114,6 @@ impl std::error::Error for LatticeError {
 impl From<rusqlite::Error> for LatticeError {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
-    }
-}
-
-#[cfg(feature = "lattice-turso")]
-impl From<turso::Error> for LatticeError {
-    fn from(error: turso::Error) -> Self {
-        Self::Turso(error)
     }
 }
 
