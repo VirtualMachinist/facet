@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=1A1A1A&colorB=C9A227&label=ci" alt="CI"></a>
-  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.9"><img src="https://img.shields.io/badge/Facet-v0.5.9-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.9"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.6.0"><img src="https://img.shields.io/badge/Facet-v0.6.0-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.6.0"></a>
   <a href="https://crates.io/crates/facet-lattice"><img src="https://img.shields.io/crates/v/facet-lattice?style=flat&colorA=1A1A1A&colorB=C9A227" alt="facet-lattice on crates.io"></a>
   <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=1A1A1A&logo=rust&logoColor=white" alt="Rust 1.95"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-C9A227?style=flat&colorA=1A1A1A" alt="License"></a>
@@ -39,7 +39,7 @@
 
 Collections stay YAML; Git stays the sync layer. No account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-**0.5.9** · OpenCollection YAML · Ratatui TUI · SQLite run history
+**0.6.0** · OpenCollection YAML · Ratatui TUI · SQLite run history
 
 ## Quick start
 
@@ -126,9 +126,9 @@ docs/FACET.md             # Facet contracts
 
 ## Status
 
-**0.5.9** on `main` (next release). [`facet-lattice` 0.5.8](https://crates.io/crates/facet-lattice) is live on crates.io; **0.5.9** publishes after this PR merges (no yank of 0.5.8).
+**0.6.0** on `main` (next release). The `facet-lattice` crate is a separate version axis and does not follow the CLI: [`facet-lattice` 0.5.9](https://crates.io/crates/facet-lattice) is live on crates.io, with 0.5.8 still up (no yank).
 
-- **facet-lattice**: SQLite default. Scrubbed crate package ready for **0.5.9** publish.
+- **facet-lattice**: SQLite default. Scrubbed crate package published as **0.5.9**.
 - **CLI + TUI**: shipped. Deterministic JSON, SQL over history, Ratatui interface.
 - **Roadmap**: WebSocket, GraphQL, gRPC, theme files — [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 

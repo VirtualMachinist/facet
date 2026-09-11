@@ -29,8 +29,17 @@ default-members = [
 ]
 resolver = "2"
 
+# Three version axes, each independently true (see docs/FACET.md):
+#   1. Facet CLI     -- [workspace.package].version below. facet-cli, facet-tui,
+#                       and facet-record inherit it; this is the git tag `vX.Y.Z`.
+#   2. facet-lattice -- pinned in crates/lattice/Cargo.toml to its crates.io
+#                       release. NEVER bumped just to match the CLI.
+#   3. probe-*       -- pinned in each probe crate. Vendored Probe cut; NEVER
+#                       bumped just to make `facet --version` read symmetrical.
+# `facet --version` prints axes 1 and 3 together: `facet <facet> (probe <probe>)`.
+# scripts/version-check.sh is the gate that keeps tag == Cargo == binary.
 [workspace.package]
-version = "0.5.9"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.95"
