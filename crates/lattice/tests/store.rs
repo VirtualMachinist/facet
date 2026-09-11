@@ -176,7 +176,7 @@ fn bodies_land_inline_or_as_blobs_by_threshold() {
 
 #[test]
 fn request_bodies_are_hash_only_regardless_of_size() {
-    // Surface 1, v2: request bodies always live in a blob file keyed by
+    // v2: request bodies always live in a blob file keyed by
     // req_body_hash, never inline — even a 4-byte body at a 1 MiB threshold.
     let dir = tempfile::tempdir().unwrap();
     let store = WorkspaceStore::open(dir.path(), config(1 << 20)).unwrap();
@@ -477,7 +477,7 @@ fn machine_store_indexes_runs_by_workspace() {
     assert_eq!(workspaces[0].id, store.workspace_id());
     assert_eq!(workspaces[0].name.as_deref(), Some("Pets"));
 
-    // Surface 1, v2: run_index carries duration_ms and actor.
+    // v2: run_index carries duration_ms and actor.
     let conn = rusqlite::Connection::open(dir.path().join("machine.db")).unwrap();
     let (duration_ms, actor): (Option<i64>, Option<String>) = conn
         .query_row(
@@ -596,18 +596,18 @@ fn session_start_end_list_show_round_trip() {
 
     let started = machine
         .start_session(
-            "claude.halo-fullstack",
-            Some(r#"{"herdr":{"tab":"w1:tH"}}"#),
+            "agent.alpha",
+            Some(r#"{"tool":{"tab":"workspace:task"}}"#),
             1_000,
         )
         .unwrap();
     assert!(lattice::is_ulid(&started.id));
-    assert_eq!(started.actor, "claude.halo-fullstack");
+    assert_eq!(started.actor, "agent.alpha");
     assert_eq!(started.started_at, 1_000);
     assert!(started.ended_at.is_none());
     assert_eq!(
         started.meta.as_deref(),
-        Some(r#"{"herdr":{"tab":"w1:tH"}}"#)
+        Some(r#"{"tool":{"tab":"workspace:task"}}"#)
     );
 
     // show

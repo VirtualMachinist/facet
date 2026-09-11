@@ -5,6 +5,7 @@ edition.workspace = true
 license = "MIT"
 rust-version.workspace = true
 description = "Facet: Probe cut for the terminal, with Lattice underneath"
+publish = false
 
 [[bin]]
 name = "facet"
@@ -14,7 +15,7 @@ path = "src/main.rs"
 crossterm = "0.29"
 facet-record = { path = "../facet-record" }
 facet-tui = { path = "../facet-tui" }
-lattice = { path = "../lattice" }
+facet-lattice = { path = "../lattice" }
 probe-cli = { path = "../cli" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
@@ -22,9 +23,6 @@ probe-opencollection = { path = "../opencollection" }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde_json = "1"
 tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time", "signal"] }
-
-[features]
-lattice-turso = ["lattice/lattice-turso"]
 
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }

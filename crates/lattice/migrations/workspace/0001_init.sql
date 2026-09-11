@@ -1,5 +1,4 @@
 -- Lattice workspace store, migration 0001.
--- Source of truth: FACET_HANDOFF_BRIEF.md, Section III (Surface 1 default).
 -- Times are Unix milliseconds UTC. IDs are ULIDs stored as TEXT.
 
 CREATE TABLE schema_version (

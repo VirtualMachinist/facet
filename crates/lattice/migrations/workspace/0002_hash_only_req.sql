@@ -1,5 +1,4 @@
 -- Lattice workspace store, migration 0002.
--- Source of truth: FACET_HANDOFF_BRIEF.md, Surface 1 (Evan, 2026-09-06).
 --
 -- Request bodies are hash-only. The inline `req_body` column is dropped;
 -- request bodies always live in .facet/blobs/<req_body_hash>. A Rust

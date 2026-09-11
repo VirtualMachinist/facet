@@ -8,10 +8,10 @@ use serde::Deserialize;
 
 /// Default inline body threshold: 64 KiB. A guess until measured.
 pub const DEFAULT_INLINE_BODY_MAX: u64 = 64 * 1024;
-/// Default `busy_timeout` in milliseconds (Surface 4).
+/// Default `busy_timeout` in milliseconds.
 pub const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 
-/// Run-history retention window (Surface 5).
+/// Run-history retention window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Retention {
     /// Never expire runs.
@@ -47,7 +47,7 @@ pub enum Engine {
     /// Bundled SQLite, the default for existing installations.
     #[default]
     Sqlite,
-    /// The Rust tursodatabase/turso engine (requires `lattice-turso`).
+    /// Reserved; selecting Turso is rejected until a driver is wired in.
     Turso,
 }
 
@@ -287,7 +287,6 @@ mod engine_tests {
         );
     }
 
-    #[cfg(not(feature = "lattice-turso"))]
     #[test]
     fn unavailable_engine_never_creates_a_sqlite_database() {
         let dir = tempfile::tempdir().unwrap();
