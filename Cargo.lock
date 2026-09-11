@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "facet-cli"
-version = "0.5.9"
+version = "0.6.0"
 dependencies = [
  "crossterm 0.29.0",
  "facet-lattice",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "facet-record"
-version = "0.5.9"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "facet-lattice",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "facet-tui"
-version = "0.5.9"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "crossterm 0.29.0",
