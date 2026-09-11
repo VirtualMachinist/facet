@@ -64,7 +64,7 @@ pub struct SessionRow {
     pub started_at: i64,
     /// Unix milliseconds UTC, `None` while the session is open.
     pub ended_at: Option<i64>,
-    /// JSON metadata pointer (Herdr ids, omp session id, cwd). Never transcripts.
+    /// JSON metadata pointer (tool session ids, cwd, etc.). Never transcripts.
     pub meta: Option<String>,
 }
 
@@ -340,7 +340,7 @@ impl MachineStore {
         Ok(removed > 0)
     }
 
-    // ----- Environments (Surface 3) --------------------------------------
+    // ----- Environments --------------------------------------------------
 
     /// Sets one environment value for a workspace. When `secret` is true the
     /// value is routed through the secrets layer (OS keyring by default,

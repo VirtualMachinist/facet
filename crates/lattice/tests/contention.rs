@@ -1,4 +1,4 @@
-//! Surface 4 fixture: N writers and M readers on one workspace store.
+//! Concurrency fixture: N writers and M readers on one workspace store.
 //! WAL + busy_timeout must let every write land and every read succeed.
 
 use std::{

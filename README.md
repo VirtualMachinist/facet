@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=1A1A1A&colorB=C9A227&label=ci" alt="CI"></a>
-  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.8"><img src="https://img.shields.io/badge/Facet-v0.5.8-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.8"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.9"><img src="https://img.shields.io/badge/Facet-v0.5.9-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.9"></a>
   <a href="https://crates.io/crates/facet-lattice"><img src="https://img.shields.io/crates/v/facet-lattice?style=flat&colorA=1A1A1A&colorB=C9A227" alt="facet-lattice on crates.io"></a>
   <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=1A1A1A&logo=rust&logoColor=white" alt="Rust 1.95"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-C9A227?style=flat&colorA=1A1A1A" alt="License"></a>
@@ -39,7 +39,7 @@ Facet is a fast, native, local-first API client. Collections stay OpenCollection
 
 It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-**0.5.8** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
+**0.5.9** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
 
 ## Quick start
 
@@ -79,15 +79,15 @@ For the TUI, run `facet tui`.
 
 ### Use Lattice as a library
 
-The run-history store is published on crates.io as **facet-lattice** 0.5.8:
+The run-history store is published on crates.io as **facet-lattice** 0.5.9:
 
 ```bash
-cargo add facet-lattice@0.5.8
+cargo add facet-lattice@0.5.9
 ```
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.8"
+facet-lattice = "0.5.9"
 ```
 
 ```rust
@@ -150,9 +150,9 @@ AGENTS.md                 # project instructions
 
 ## Status
 
-Facet is the working tree at 0.5.8; track `main`. The Lattice schema is versioned and migrated automatically.
+Facet is the working tree at 0.5.9; track `main`. The Lattice schema is versioned and migrated automatically.
 
-- **Lattice**: Ready. SQLite/rusqlite is the default engine. Published as [`facet-lattice`](https://crates.io/crates/facet-lattice) 0.5.8.
+- **Lattice**: Ready. SQLite/rusqlite is the default engine. Published as [`facet-lattice`](https://crates.io/crates/facet-lattice) 0.5.9.
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
 - **Agent CLI**: Ready. Deterministic JSON and SQL querying.
 

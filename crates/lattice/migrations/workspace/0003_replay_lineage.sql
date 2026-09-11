@@ -1,5 +1,5 @@
 -- Lattice workspace store, migration 0003.
--- Source of truth: fullstack deep dive 2026-09-07 §5.2 (Goal 4, replay + diff).
+-- Replay lineage and variable-name metadata.
 --
 -- replayed_from: runs.id of the run this one replayed, NULL otherwise.
 -- var_names:     JSON array of the --var NAMES passed at resolve time. Names
