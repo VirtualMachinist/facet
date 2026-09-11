@@ -24,14 +24,14 @@ Add the run-history store to a Rust project:
 
 ```bash
 cargo add facet-lattice
-# or pin: cargo add facet-lattice@0.5.8
+# or pin: cargo add facet-lattice@0.5.9
 ```
 
 SQLite-only (default):
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.8"
+facet-lattice = "0.5.9"
 ```
 
 ```rust
@@ -42,7 +42,7 @@ Optional in-process analytics against SQLite files (heavy native build):
 
 ```toml
 [dependencies]
-facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
+facet-lattice = { version = "0.5.9", features = ["lattice-duckdb"] }
 ```
 
 See also [crates/lattice/README.md](../crates/lattice/README.md) and [Lattice engines](LATTICE-ENGINES.md).
@@ -61,7 +61,7 @@ The `facet` executable is **not** on crates.io as a one-line `cargo install`. Us
 ```bash
 export PATH="$HOME/.local/bin:$PATH"   # if needed
 facet --version
-# facet 0.5.8 (probe 0.5.8)
+# facet 0.5.9 (probe 0.5.9)
 ```
 
 ### From git (Rust toolchain required)
@@ -73,7 +73,7 @@ cargo install --git https://github.com/VirtualMachinist/facet --package facet-cl
 facet --version
 ```
 
-This compiles from `main` (or pass `--tag v0.5.8` to match a release). Expect a longer build than downloading a release archive.
+This compiles from `main` (or pass `--tag v0.5.9` to match a release). Expect a longer build than downloading a release archive.
 
 ### From a cloned repo (contributors)
 
@@ -92,7 +92,7 @@ facet --version
 ## Verify install
 
 ```bash
-facet --version          # human: facet 0.5.8 (probe 0.5.8)
+facet --version          # human: facet 0.5.9 (probe 0.5.9)
 facet --version --json   # structured version + probeVersion
 facet doctor --json      # machine + workspace stores, secrets backend, env flags
 ```
@@ -103,11 +103,12 @@ facet doctor --json      # machine + workspace stores, secrets backend, env flag
 
 | Artifact | Source | Version |
 | --- | --- | --- |
-| `facet-lattice` crate | [crates.io](https://crates.io/crates/facet-lattice) | **0.5.8** |
-| `facet` / `probe` binaries | GitHub release tag | **v0.5.8** |
-| Workspace on `main` | this repository | **0.5.8** |
+| `facet-lattice` crate (live) | [crates.io](https://crates.io/crates/facet-lattice) | **0.5.8** |
+| `facet-lattice` crate (next) | this branch / post-merge publish | **0.5.9** |
+| `facet` / `probe` binaries | GitHub release tag | **v0.5.9** (when tagged) |
+| Workspace on `main` | this repository | **0.5.9** |
 
-Workspace, tag, and crates.io release are aligned at **0.5.8**.
+**0.5.8** stays on crates.io (no yank). **0.5.9** is the scrubbed publish target after merge.
 
 ## Next steps
 

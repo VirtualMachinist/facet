@@ -55,8 +55,8 @@ Install paths for strangers: [install.md](install.md) (`facet-lattice` on crates
 
 ```bash
 cargo build --release -p probe-cli -p facet-cli
-facet --version   # facet 0.5.8 (probe 0.5.8)
-probe --version   # probe 0.5.8
+facet --version   # facet 0.5.9 (probe 0.5.9)
+probe --version   # probe 0.5.9
 ```
 
 `facet --version --json` returns `name`, `version`, and `probeVersion`.
@@ -240,7 +240,7 @@ one immediate transaction so concurrent first opens serialize.
 
 The default engine is **rusqlite** (bundled SQLite). The run-history library is
 published on crates.io as [`facet-lattice`](https://crates.io/crates/facet-lattice)
-0.5.8 with `default = []` and an optional `lattice-duckdb` analytics feature.
+0.5.9 with `default = []` and an optional `lattice-duckdb` analytics feature.
 
 | Feature | Engine | Scope |
 | --- | --- | --- |
