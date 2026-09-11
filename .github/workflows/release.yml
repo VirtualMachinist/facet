@@ -52,11 +52,6 @@ jobs:
             target: aarch64-apple-darwin
             exe: ""
             archive: tar.gz
-          - platform: windows-x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            exe: ".exe"
-            archive: zip
           - platform: linux-x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -65,11 +60,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-      # Turso git checkout exceeds Windows MAX_PATH under default CARGO_HOME
-      - name: Shorten Cargo home
-        if: matrix.platform == 'windows-x64'
-        shell: bash
-        run: echo "CARGO_HOME=C:\c" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.95.0
