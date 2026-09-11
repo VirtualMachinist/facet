@@ -498,9 +498,9 @@ live in the machine store (cross-workspace); `request run` stamps
 `session start` prints the new ULID alone in human mode, so
 `export FACET_SESSION=$(facet session start)` needs no `jq`. The actor is
 `--actor`, else `FACET_ACTOR`, else `human`. `meta` is pointers only:
-`tool: { workspace, tab, pane }` from `HERDR_WORKSPACE_ID` / `HERDR_TAB_ID` /
-`HERDR_PANE_ID` when set, `cwd`, then the `--meta` object merged on top (it
-wins). Never transcripts, never secrets.
+`tool: { workspace, tab, pane }` from host tool environment variables when set
+(`*_WORKSPACE_ID`, `*_TAB_ID`, `*_PANE_ID`), `cwd`, then the `--meta` object
+merged on top (it wins). Never transcripts, never secrets.
 
 ```json
 { "schemaVersion": 1,

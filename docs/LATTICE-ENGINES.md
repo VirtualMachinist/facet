@@ -8,7 +8,8 @@ crate (0.5.8).**
 ## Install the library
 
 ```sh
-cargo add facet-lattice@0.5.8
+cargo add facet-lattice
+# or pin: cargo add facet-lattice@0.5.8
 ```
 
 SQLite-only (default):
