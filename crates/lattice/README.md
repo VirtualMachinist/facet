@@ -7,21 +7,21 @@ The Rust library name remains `lattice` (`use lattice::…`) so Facet adapters k
 ## Install
 
 ```bash
-cargo add facet-lattice@0.5.8
+cargo add facet-lattice@0.5.9
 ```
 
 SQLite-only (default):
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.8"
+facet-lattice = "0.5.9"
 ```
 
 Optional in-process analytics against SQLite files:
 
 ```toml
 [dependencies]
-facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
+facet-lattice = { version = "0.5.9", features = ["lattice-duckdb"] }
 ```
 
 ## Features

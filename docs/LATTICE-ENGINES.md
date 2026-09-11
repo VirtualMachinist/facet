@@ -3,26 +3,26 @@
 Lattice keeps run history beside canonical OpenCollection YAML, and machine
 sessions/indexes/preferences in a separate file. **Bundled SQLite (rusqlite) is
 the default and only engine in the published [`facet-lattice`](https://crates.io/crates/facet-lattice)
-crate (0.5.8).**
+crate (0.5.9).**
 
 ## Install the library
 
 ```sh
-cargo add facet-lattice@0.5.8
+cargo add facet-lattice@0.5.9
 ```
 
 SQLite-only (default):
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.8"
+facet-lattice = "0.5.9"
 ```
 
 Optional in-process analytics against SQLite files (heavy native build):
 
 ```toml
 [dependencies]
-facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
+facet-lattice = { version = "0.5.9", features = ["lattice-duckdb"] }
 ```
 
 ## Configure Facet

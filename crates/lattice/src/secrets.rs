@@ -1,4 +1,4 @@
-//! Secrets at rest (Surface 3).
+//! Secrets at rest.
 //!
 //! Two backends, picked by configuration:
 //!
@@ -21,9 +21,8 @@
 //! `FACET_SECRET_KEY`) is available. A non-secret value lives in `value` with
 //! `secret_ref` NULL.
 //!
-//! Source of truth: `FACET_HANDOFF_BRIEF.md` Surface 3. The (c) fallback's
-//! master key comes from `FACET_SECRET_KEY` (Evan, 2026-09-06); a passphrase
-//! prompt is ruled out because it breaks agent use.
+//! The encrypted fallback's master key comes from `FACET_SECRET_KEY`; a
+//! passphrase prompt is ruled out because it breaks agent use.
 
 #![forbid(unsafe_code)]
 

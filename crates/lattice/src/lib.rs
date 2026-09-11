@@ -67,7 +67,7 @@ pub enum LatticeError {
     },
     /// Configuration could not be parsed.
     Config(ConfigError),
-    /// A secret at rest (Surface 3) operation failed.
+    /// A secret at rest operation failed.
     Secret(SecretError),
     /// A `--sql` query attempted to write.
     ReadOnlyQuery,

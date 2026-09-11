@@ -36,8 +36,7 @@ impl Connection {
         let flags = if read_only {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
         } else {
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-                | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
         };
         let conn = rusqlite::Connection::open_with_flags(path, flags)?;
         conn.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;
@@ -328,10 +327,8 @@ mod tests {
             false,
         )
         .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
+            .unwrap();
         {
             let tx = conn.transaction().unwrap();
             tx.execute("INSERT INTO entries VALUES (1, 'first')", [])

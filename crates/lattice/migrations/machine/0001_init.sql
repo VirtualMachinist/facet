@@ -1,5 +1,4 @@
 -- Lattice machine store, migration 0001.
--- Source of truth: FACET_HANDOFF_BRIEF.md, Section III (Surface 1 default).
 
 CREATE TABLE schema_version (
   version     INTEGER PRIMARY KEY,
@@ -37,7 +36,7 @@ CREATE TABLE environments (
   name          TEXT NOT NULL,
   key           TEXT NOT NULL,
   value         TEXT,                          -- plain if not secret
-  secret_ref    TEXT,                          -- keyring reference if secret (Surface 3); value NULL
+  secret_ref    TEXT,                          -- keyring reference if secret; value NULL
   updated_at    INTEGER NOT NULL,
   PRIMARY KEY (workspace_id, name, key)
 );

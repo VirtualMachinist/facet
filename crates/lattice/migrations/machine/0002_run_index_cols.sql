@@ -1,5 +1,4 @@
 -- Lattice machine store, migration 0002.
--- Source of truth: FACET_HANDOFF_BRIEF.md, Surface 1 (Evan, 2026-09-06).
 --
 -- The cross-workspace run_index gains duration_ms and actor so the machine
 -- index can answer "how long did this run take" and "who ran it" without

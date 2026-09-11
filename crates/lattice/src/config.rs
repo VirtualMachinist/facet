@@ -8,10 +8,10 @@ use serde::Deserialize;
 
 /// Default inline body threshold: 64 KiB. A guess until measured.
 pub const DEFAULT_INLINE_BODY_MAX: u64 = 64 * 1024;
-/// Default `busy_timeout` in milliseconds (Surface 4).
+/// Default `busy_timeout` in milliseconds.
 pub const DEFAULT_BUSY_TIMEOUT_MS: u64 = 5_000;
 
-/// Run-history retention window (Surface 5).
+/// Run-history retention window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Retention {
     /// Never expire runs.
