@@ -8,21 +8,21 @@ The Rust library import is `lattice` (`use lattice::…`). The Cargo package nam
 
 ```bash
 cargo add facet-lattice
-# or: cargo add facet-lattice@0.5.8
+# or: cargo add facet-lattice@0.5.9
 ```
 
 SQLite-only (default):
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.8"
+facet-lattice = "0.5.9"
 ```
 
 Optional in-process analytics against SQLite files:
 
 ```toml
 [dependencies]
-facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
+facet-lattice = { version = "0.5.9", features = ["lattice-duckdb"] }
 ```
 
 ## Features
