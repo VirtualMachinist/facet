@@ -59,13 +59,33 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some((title, lines)) = app.data_overlay() {
         render_data_overlay(frame, shell[1], title, lines, styles);
     }
+    if app.open_picker().is_some() {
+        render_open_picker(frame, shell[1], app, styles);
+    }
+    if let Some(path) = app.open_confirm() {
+        render_open_confirm(frame, shell[1], path, styles);
+    }
 }
 
 fn render_title(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
     let dirty = if app.editor_dirty() { " •" } else { "" };
-    let title_text = match app.collection_name() {
-        Some(name) => format!(" facet · {name}{dirty} "),
-        None => format!(" facet{dirty} "),
+    // The path is what tells two same-named collections apart, so it rides
+    // beside the name and is the first thing dropped when the terminal is
+    // narrow (TUI-03).
+    let path = app.collection_path_short();
+    let title_text = match (app.collection_name(), path.as_deref()) {
+        (Some(name), Some(path)) => format!(" facet · {name}{dirty} · {path} "),
+        (Some(name), None) => format!(" facet · {name}{dirty} "),
+        (None, Some(path)) => format!(" facet · {path}{dirty} "),
+        (None, None) => format!(" facet{dirty} "),
+    };
+    let title_text = if title_text.width() > area.width as usize {
+        match app.collection_name() {
+            Some(name) => format!(" facet · {name}{dirty} "),
+            None => format!(" facet{dirty} "),
+        }
+    } else {
+        title_text
     };
     let appearance = app
         .custom_theme_name()
@@ -877,6 +897,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
         "help · Esc close".to_string()
     } else if app.history_grid().is_some() {
         "history · Enter hydrate · y yank · / filter · Esc close".to_string()
+    } else if app.open_confirm().is_some() {
+        "unsaved changes · w write+open · y discard · n cancel".to_string()
+    } else if app.open_picker().is_some() {
+        "open · j/k select · Enter mount · / filter · r refresh · Esc close".to_string()
     } else if app.env_overlay().is_some() {
         "env · a add · e set value · d delete · Esc close".to_string()
     } else if app.data_overlay().is_some() {
@@ -1030,7 +1054,7 @@ fn render_running_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
 /// actions in editor text. This is option A's discoverability device —
 /// one overlay, no which-key.
 fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
-    const KEYS: [(&str, &str); 18] = [
+    const KEYS: [(&str, &str); 21] = [
         ("j/k · arrows", "move (tree, rows, response scroll)"),
         ("Ctrl-U / Ctrl-D", "half-page up / down (focused pane)"),
         ("gg / G", "first / last row (tree, request, response)"),
@@ -1046,8 +1070,17 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, styles: Styles) {
         ("Ctrl-S", "save to disk · :w"),
         (":", "command line (:w :q :send :theme :history :sql)"),
         (
+            ":open [path]",
+            "mount a collection without quitting · bare opens the picker",
+        ),
+        (":recent", "recently seen collections · Enter mounts"),
+        (
             ":history grid",
             "j/k · Enter hydrate · y yank id · / filter",
+        ),
+        (
+            ":open picker",
+            "j/k · Enter mount · / filter · r refresh · Esc close",
         ),
         (
             ":env overlay",
@@ -1461,6 +1494,127 @@ fn render_data_overlay(
     );
 }
 
+/// `:open` / `:recent` collection picker (TUI-01). Recents come from the
+/// machine store, nearby rows from a one-level scan of the cwd; the origin
+/// column says which, so an operator can tell a remembered workspace from a
+/// file that merely sits next to them.
+fn render_open_picker(frame: &mut Frame, area: Rect, app: &App, styles: Styles) {
+    use crate::app::OpenOrigin;
+
+    let Some(picker) = app.open_picker() else {
+        return;
+    };
+
+    const ORIGIN_W: usize = 6;
+    let visible = picker.visible_indices();
+    let width = 72u16.min(area.width);
+    let height = (visible.len().max(1) as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(5);
+    let rect = centered(area, width, height);
+    frame.render_widget(Clear, rect);
+
+    let title = if picker.recents_only {
+        " recent collections "
+    } else {
+        " open collection "
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(title, styles.brand));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    if inner.height < 2 {
+        return;
+    }
+
+    let body_height = inner.height.saturating_sub(1) as usize;
+    let offset = if picker.selected >= body_height {
+        picker.selected + 1 - body_height
+    } else {
+        0
+    };
+
+    let mut lines = Vec::new();
+    if visible.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (nothing to show — `:open <path>` takes a path directly)",
+            styles.placeholder,
+        )));
+    }
+    let label_w = (inner.width as usize).saturating_sub(ORIGIN_W + 3);
+    for (position, &index) in visible.iter().enumerate().skip(offset).take(body_height) {
+        let row = &picker.rows[index];
+        let origin = match row.origin {
+            OpenOrigin::Recent => OpenOrigin::Recent.label(),
+            OpenOrigin::Nearby => OpenOrigin::Nearby.label(),
+        };
+        let text = format!(" {} {}", cell(&row.label, label_w), cell(origin, ORIGIN_W));
+        if position == picker.selected {
+            lines.push(Line::from(Span::styled(text, styles.selected_row)));
+        } else {
+            lines.push(Line::from(Span::styled(text, styles.editor)));
+        }
+    }
+
+    let footer = if picker.filtering {
+        format!(" /{}", picker.filter)
+    } else if let Some(notice) = &picker.notice {
+        format!(" {notice}")
+    } else if picker.filter.is_empty() {
+        " j/k move · Enter mount · / filter · r refresh · Esc close".to_string()
+    } else {
+        format!(" filter /{} · Esc clears", picker.filter)
+    };
+    lines.push(Line::from(Span::styled(footer, styles.muted)));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Dirty-buffer confirm before a remount (TUI-02). Cancel is the default:
+/// no key other than `w` or `y` discards the operator's edit.
+fn render_open_confirm(frame: &mut Frame, area: Rect, path: &std::path::Path, styles: Styles) {
+    let target = path.display().to_string();
+    let width = 68u16.min(area.width);
+    let rect = centered(area, width, 7u16.min(area.height));
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(styles.border)
+        .style(styles.editor)
+        .title(Span::styled(" unsaved changes ", styles.brand));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let body_w = inner.width as usize;
+    let lines = vec![
+        Line::from(Span::styled(
+            format!(
+                " {}",
+                cell("This request has unsaved edits.", body_w.saturating_sub(1))
+            ),
+            styles.editor,
+        )),
+        Line::from(Span::styled(
+            format!(" open {}", cell(&target, body_w.saturating_sub(6))),
+            styles.muted,
+        )),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(" w ", styles.accent_text),
+            Span::styled("write and open   ", styles.editor),
+            Span::styled("y ", styles.accent_text),
+            Span::styled("discard and open   ", styles.editor),
+            Span::styled("n ", styles.accent_text),
+            Span::styled("stay", styles.editor),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     Rect {
         x: area.x + (area.width.saturating_sub(width)) / 2,
@@ -1520,6 +1674,70 @@ mod tests {
             text.contains("List pets") || text.contains("Pets"),
             "{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn open_picker_renders_rows_and_hints() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.command_for_test("open");
+        app.execute_command_for_test().await;
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("open collection"), "picker title: {text}");
+        assert!(text.contains("Enter mount"), "picker hints: {text}");
+        assert!(text.contains("Esc close"), "picker hints: {text}");
+    }
+
+    #[tokio::test]
+    async fn dirty_confirm_renders_its_three_choices() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.apply_theme(Theme::new(Appearance::Dark).with_depth(Depth::Truecolor));
+        app.mark_dirty_for_test();
+        app.command_for_test("open /somewhere/else.yml");
+        app.execute_command_for_test().await;
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("unsaved changes"), "confirm title: {text}");
+        assert!(text.contains("write and open"), "{text}");
+        assert!(text.contains("discard and open"), "{text}");
+        assert!(text.contains("stay"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn title_bar_shows_the_collection_path() {
+        let app = App::load(Some(&fixture())).await;
+        let backend = TestBackend::new(160, 32);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains("Pet Store"), "name still shown: {text}");
+        assert!(
+            text.contains("phase1-bundled.yml"),
+            "chrome shows the collection path (TUI-03): {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn help_lists_open_and_recent() {
+        let mut app = App::load(Some(&fixture())).await;
+        app.open_help_for_test();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("backend");
+        app.render_to(&mut terminal).expect("render");
+        let text = dump(terminal.backend().buffer());
+
+        assert!(text.contains(":open"), "help lists :open: {text}");
+        assert!(text.contains(":recent"), "help lists :recent: {text}");
     }
 
     #[tokio::test]
