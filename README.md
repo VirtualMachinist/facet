@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/VirtualMachinist/facet/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/VirtualMachinist/facet/ci.yml?branch=main&style=flat&colorA=1A1A1A&colorB=C9A227&label=ci" alt="CI"></a>
-  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.9"><img src="https://img.shields.io/badge/Facet-v0.5.9-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.9"></a>
+  <a href="https://github.com/VirtualMachinist/facet/releases/tag/v0.5.8"><img src="https://img.shields.io/badge/Facet-v0.5.8-C9A227?style=flat&colorA=1A1A1A" alt="Facet v0.5.8"></a>
   <a href="https://crates.io/crates/facet-lattice"><img src="https://img.shields.io/crates/v/facet-lattice?style=flat&colorA=1A1A1A&colorB=C9A227" alt="facet-lattice on crates.io"></a>
   <a href="https://rustup.rs"><img src="https://img.shields.io/badge/Rust-1.95-F46623?style=flat&colorA=1A1A1A&logo=rust&logoColor=white" alt="Rust 1.95"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-C9A227?style=flat&colorA=1A1A1A" alt="License"></a>
@@ -40,19 +40,19 @@ Facet is a fast, native, local-first API client. Collections stay OpenCollection
 
 It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-**0.5.9** · OpenCollection YAML · Ratatui TUI · SQLite run history
+**0.5.8** · OpenCollection YAML · Ratatui TUI · SQLite run history
 
 ## Quick start
 
 ### 1. Add the library (crates.io)
 
 ```bash
-cargo add facet-lattice@0.5.9
+cargo add facet-lattice@0.5.8
 ```
 
 ```toml
 [dependencies]
-facet-lattice = "0.5.9"
+facet-lattice = "0.5.8"
 ```
 
 ```rust
@@ -142,7 +142,7 @@ AGENTS.md                 # project instructions
 
 ## Status
 
-Development on `main` tracks **0.5.9**. Release binaries ship from matching `v0.5.9` tags; the **`facet-lattice`** crate on crates.io is being advanced to **0.5.9** after the current alignment PR merges.
+Development on `main` tracks **0.5.8**, matching tag **v0.5.8** and the [`facet-lattice`](https://crates.io/crates/facet-lattice) release on crates.io. Release binaries ship from the same version tag.
 
 - **facet-lattice**: Ready. SQLite/rusqlite default. Published on [crates.io](https://crates.io/crates/facet-lattice).
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.

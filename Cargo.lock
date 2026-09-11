@@ -2332,7 +2332,7 @@ dependencies = [
 
 [[package]]
 name = "facet-cli"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "crossterm 0.29.0",
  "facet-lattice",
@@ -2351,7 +2351,7 @@ dependencies = [
 
 [[package]]
 name = "facet-lattice"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "base64 0.23.1",
  "chacha20poly1305",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "facet-record"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "base64 0.23.1",
  "facet-lattice",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "facet-tui"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "base64 0.23.1",
  "crossterm 0.29.0",
@@ -5696,7 +5696,7 @@ dependencies = [
 
 [[package]]
 name = "probe-cli"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "criterion",
  "probe-core",
@@ -5710,11 +5710,11 @@ dependencies = [
 
 [[package]]
 name = "probe-core"
-version = "0.5.9"
+version = "0.5.8"
 
 [[package]]
 name = "probe-desktop"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "atomic-write-file",
  "chrono",
@@ -5741,7 +5741,7 @@ dependencies = [
 
 [[package]]
 name = "probe-http"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "probe-core",
  "rcgen",
@@ -5753,7 +5753,7 @@ dependencies = [
 
 [[package]]
 name = "probe-opencollection"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "atomic-write-file",
  "fs4",
@@ -5764,7 +5764,7 @@ dependencies = [
 
 [[package]]
 name = "probe-postman"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "probe-core",
  "probe-opencollection",
@@ -5774,7 +5774,7 @@ dependencies = [
 
 [[package]]
 name = "probe-yaak"
-version = "0.5.9"
+version = "0.5.8"
 dependencies = [
  "probe-core",
  "serde",
