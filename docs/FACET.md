@@ -56,8 +56,8 @@ Decided by Evan on 2026-09-06 (Surface 7, closed):
 
 ```bash
 cargo build --release -p probe-cli -p facet-cli
-facet --version   # facet 0.5.7 (probe 0.5.7)
-probe --version   # probe 0.5.7
+facet --version   # facet 0.5.8 (probe 0.5.8)
+probe --version   # probe 0.5.8
 ```
 
 `facet --version --json` returns `name`, `version`, and `probeVersion`.
@@ -240,25 +240,17 @@ one immediate transaction so concurrent first opens serialize.
 
 ### Engines
 
-The default engine remains **rusqlite** (bundled SQLite). The optional
-`lattice-turso` feature now compiles the **actual Rust Turso engine**, pinned to
-`tursodatabase/turso` commit `87c7a8516511c3ad2745c25b1079ea5c90112692`.
-It replaces the old libSQL-only smoke feature. Both `WorkspaceStore` and
-`MachineStore` use the selected engine for their real application operations:
-recording, sessions, indexes, history, body metadata, SQL queries, and migrations.
-Compiling the feature alone does not change an installation's engine.
+The default engine is **rusqlite** (bundled SQLite). The run-history library is
+published on crates.io as [`facet-lattice`](https://crates.io/crates/facet-lattice)
+0.5.8 with `default = []` and an optional `lattice-duckdb` analytics feature.
 
 | Feature | Engine | Scope |
 | --- | --- | --- |
-| `lattice-turso` | Rust Turso local driver | Explicit `[lattice] engine = "turso"`; real application storage, without libSQL or a silent SQLite fallback. |
-| `lattice-duckdb` | Bundled DuckDB | Existing optional analytics smoke against SQLite files. A heavy native build; not part of the default installation. |
-| `lattice-hedron` | HedronDB `hedron-core` | Separate knowledge-graph schema and authorization boundary. Existing coexistence smoke; intent/reconciliation integration remains separate work. |
+| `lattice-duckdb` | Bundled DuckDB | Optional analytics smoke against SQLite files. A heavy native build; not part of the default installation. |
 
-For configuration, file safety, supported SQL, exact driver settings, tests and
-rollback, see [Lattice engines](LATTICE-ENGINES.md). SQLite files are not silently
-reopened with Turso. HedronDB never opens Lattice as its own Store, and canonical
-OpenCollection YAML remains independent of all database engines. Preserve the
-HedronDB distinction between Warm current state and Cool causal history.
+For configuration, file safety, supported SQL, and rollback, see
+[Lattice engines](LATTICE-ENGINES.md). Canonical OpenCollection YAML remains
+independent of all database engines.
 
 The external DuckDB analytics path remains available for SQLite stores:
 

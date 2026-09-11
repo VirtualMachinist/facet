@@ -18,9 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         # Windows CI is a known skip (not a release-blocker):
-        # 1) optional lockfile git dep tursodatabase/turso exceeds MAX_PATH
-        # 2) facet goldens compare exact bytes and fail on CRLF (\r\n vs \n)
-        # release.yml still ships windows-x64 facet-cli without lattice-turso.
+        # facet goldens compare exact bytes and fail on CRLF (\r\n vs \n)
         os: [ubuntu-latest, macos-latest]
 
     steps:
