@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>Native, local-first API client.</strong><br>
-  The terminal-native fork of Probe, with Lattice run history.
+  The terminal-native fork of Probe, with persistent run history.
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="docs/install.md">Install</a> ·
   <a href="#what-you-get">What you get</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#status">Status</a> ·
@@ -35,51 +36,15 @@
 
 ---
 
-Facet is a fast, native, local-first API client. Collections stay OpenCollection YAML on disk; Git stays the sync layer. **Lattice** remembers what surrounds them — runs, bodies, timings, sessions — in local SQLite. A Ratatui TUI and an agent-friendly CLI sit on the same core.
+Facet is a fast, native, local-first API client. Collections stay OpenCollection YAML on disk; Git stays the sync layer. **facet-lattice** remembers what surrounds them — runs, bodies, timings, sessions — in local SQLite. A Ratatui TUI and an agent-friendly CLI sit on the same core.
 
 It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
-**0.5.9** · OpenCollection YAML · Ratatui TUI · SQLite Lattice
+**0.5.9** · OpenCollection YAML · Ratatui TUI · SQLite run history
 
 ## Quick start
 
-Three steps to run your first request and query its history.
-
-**1. Build and install.**
-
-```bash
-cargo build --release -p probe-cli -p facet-cli
-export PATH="$PWD/target/release:$PATH"
-```
-
-**2. Run a request.**
-
-Facet uses the exact same OpenCollection YAML as Probe.
-
-```bash
-facet request run ./api users/list-users.yml --environment development --json
-```
-
-**3. Explore your history.**
-
-Lattice remembers the run automatically.
-
-```bash
-# View recent runs
-facet history --json
-
-# Query history with SQL
-facet history --sql "SELECT status, count(*) FROM runs GROUP BY status"
-
-# Extract a specific response body by hash
-facet blob <sha256>
-```
-
-For the TUI, run `facet tui`.
-
-### Use Lattice as a library
-
-The run-history store is published on crates.io as **facet-lattice** 0.5.9:
+### 1. Add the library (crates.io)
 
 ```bash
 cargo add facet-lattice@0.5.9
@@ -94,7 +59,33 @@ facet-lattice = "0.5.9"
 use lattice::WorkspaceStore;
 ```
 
-See [crates/lattice/README.md](crates/lattice/README.md) and [docs/LATTICE-ENGINES.md](docs/LATTICE-ENGINES.md).
+The Cargo package is **`facet-lattice`**; the Rust import name is `lattice`. Details: [docs/install.md](docs/install.md) and [crates/lattice/README.md](crates/lattice/README.md).
+
+### 2. Install the CLI
+
+**From a release** (recommended): download `facet` from [GitHub Releases](https://github.com/VirtualMachinist/facet/releases) for your platform.
+
+**From source** (contributors):
+
+```bash
+cargo build --release -p probe-cli -p facet-cli
+export PATH="$PWD/target/release:$PATH"
+```
+
+### 3. Run a request and query history
+
+Facet uses the same OpenCollection YAML as Probe.
+
+```bash
+facet request run ./api users/list-users.yml --environment development --json
+facet history --json
+facet history --sql "SELECT status, count(*) FROM runs GROUP BY status"
+facet blob <sha256>
+```
+
+For the TUI: `facet tui`.
+
+Full install paths (library, binary, versions): **[docs/install.md](docs/install.md)**.
 
 ## What you get
 
@@ -105,7 +96,7 @@ Everything below builds on Probe's core engine, running natively in your termina
 | Core Engine | Rust, fast, filesystem-first | Same core engine, cherry-pickable |
 | Collections | OpenCollection YAML | Same YAML, 100% compatible |
 | Interface | GPUI Desktop + CLI | Ratatui TUI (`facet tui`) + Agent CLI |
-| History | In-memory session | **Lattice**: SQLite workspace & machine store |
+| History | In-memory session | **facet-lattice**: SQLite workspace & machine store |
 | Binaries | `probe` | `facet` (coexists with `probe` on `PATH`) |
 | Data | Ephemeral CLI runs | Persistent, queryable, content-addressed blobs |
 | Output | Human-readable & JSON | Deterministic, versioned JSON optimized for agents |
@@ -123,10 +114,10 @@ Facet rebuilds the terminal and history layers. The core domain and HTTP executi
 
 ## How it works
 
-One rule drives the design: **YAML holds the collection; Lattice holds the history.** Terminal UI and run memory are Facet; shared core stays cherry-pickable.
+One rule drives the design: **YAML holds the collection; facet-lattice holds the history.** Terminal UI and run memory are Facet; shared core stays cherry-pickable.
 
-- The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML; Git stays the sync layer. Lattice never holds the collection itself.
-- **Lattice** uses SQLite beside the YAML (`.facet/lattice.db`) plus a machine store for secrets, sessions, and a cross-workspace run index.
+- The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML; Git stays the sync layer. Run history never replaces the collection itself.
+- **facet-lattice** uses SQLite beside the YAML (`.facet/lattice.db`) plus a machine store for secrets, sessions, and a cross-workspace run index.
 - Agent CLI commands (`history`, `blob`, `gc`) are built for machine consumption. Metadata is cheap, and large bodies are content-addressed.
 - Secrets are stored securely at rest using the OS keyring or XChaCha20-Poly1305 encryption.
 
@@ -139,10 +130,11 @@ crates/core/              # upstream probe-core
 crates/desktop/           # upstream probe-desktop (excluded from default build)
 crates/http/              # upstream HTTP client
 crates/opencollection/    # upstream YAML parser
-crates/facet/             # the facet binary
-crates/lattice/           # facet-lattice (run history, blobs, gc, sql)
+crates/facet/             # facet-cli binary
+crates/lattice/           # facet-lattice crate (crates.io)
 crates/facet-tui/         # Ratatui interface
 docs/FACET.md             # Facet-specific documentation
+docs/install.md           # install guide (library + binary)
 AGENTS.md                 # project instructions
 ```
 
@@ -150,21 +142,21 @@ AGENTS.md                 # project instructions
 
 ## Status
 
-Facet is the working tree at 0.5.9; track `main`. The Lattice schema is versioned and migrated automatically.
+Development on `main` tracks **0.5.9**. Release binaries ship from matching `v0.5.9` tags; the **`facet-lattice`** crate on crates.io is being advanced to **0.5.9** after the current alignment PR merges.
 
-- **Lattice**: Ready. SQLite/rusqlite is the default engine. Published as [`facet-lattice`](https://crates.io/crates/facet-lattice) 0.5.9.
+- **facet-lattice**: Ready. SQLite/rusqlite default. Published on [crates.io](https://crates.io/crates/facet-lattice).
 - **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
 - **Agent CLI**: Ready. Deterministic JSON and SQL querying.
 
-HTTP is live. Lattice's week-1 loop (sessions, recall, replay, diff, secret
-overlay, `--expect` / `--dry-run`) shipped 2026-09-07. Still folded from
+HTTP is live. Core Facet loops (sessions, recall, replay, diff, secret overlay,
+`--expect` / `--dry-run`) are shipped. Still folded from
 [Probe's roadmap](https://rusty-probe.pages.dev): WebSocket, GraphQL, gRPC
-streaming (Thread A, parked), user-defined theme files, git HEAD auto-tag,
-and a TUI env editor. Details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+streaming, user-defined theme files, git HEAD auto-tag, and a TUI env editor.
+Details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md). Roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Development practices for this tree: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md). Roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Development practices: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Credits and license
 

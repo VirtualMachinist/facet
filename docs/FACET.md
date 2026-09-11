@@ -1,7 +1,7 @@
 # Facet
 
 Facet is the terminal-native fork of Probe: the same core, CLI contract, and
-OpenCollection YAML, with **Lattice** underneath to remember every run.
+OpenCollection YAML, with **`facet-lattice`** underneath to remember every run.
 Upstream is `crizant/probe`; this fork lives at `VirtualMachinist/facet` and
 stays cherry-pickable in both directions.
 
@@ -13,7 +13,7 @@ unchanged.
 
 | Stays in Facet | Goes upstream first |
 | --- | --- |
-| `crates/lattice` (run history, blobs, `--sql`, gc) | Agent CLI ergonomics, JSON envelope fixes |
+| **`facet-lattice`** (`crates/lattice`: run history, blobs, `--sql`, gc) | Agent CLI ergonomics, JSON envelope fixes |
 | `crates/facet` (the `facet` binary), `crates/facet-record` (shared recording path) | Performance work in `probe-core` |
 | `crates/facet-tui` (ratatui interface) | Bug fixes in any upstream crate |
 
@@ -34,8 +34,8 @@ Rules:
   `crates/opencollection`, `crates/postman`, `crates/yaak`, and the docs they
   came with. They are never relicensed, so Probe PRs from this tree stay legal.
   Files modified from upstream carry a change notice (Section 4(b)).
-- **Facet-original crates are MIT:** `crates/facet`, `crates/facet-record`,
-  `crates/lattice` (`facet-lattice` on crates.io), `crates/facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
+- **Facet-original crates are MIT:** `facet-cli` (`crates/facet`), `facet-record`,
+  **`facet-lattice`** (`crates/lattice`), `facet-tui`. Each carries `LICENSE-MIT` and declares `license = "MIT"`
   in its own `Cargo.toml`. `crates/facet-tui` adapts palette values from the
   upstream desktop theme; that derivation is noted in `NOTICE`.
 - **Copyright:** `Copyright 2026 VirtualMachinist` for the Facet-original work.
@@ -49,6 +49,8 @@ Rules:
 
 ## Binaries
 
+Install paths for strangers: [install.md](install.md) (`facet-lattice` on crates.io; `facet` from releases or source).
+
 `facet` and `probe` build from the same workspace and coexist on `PATH`:
 
 ```bash
@@ -59,7 +61,7 @@ probe --version   # probe 0.5.9
 
 `facet --version --json` returns `name`, `version`, and `probeVersion`.
 
-## Lattice layout
+## facet-lattice layout
 
 Two SQLite stores, both via bundled `rusqlite` (the default engine). An
 optional in-process DuckDB analytics feature ships behind `lattice-duckdb`
@@ -81,7 +83,7 @@ file.
 Override the machine paths with `FACET_DATA_DIR` and `FACET_CONFIG_DIR`.
 
 The schema is applied as numbered SQL
-migrations under `crates/lattice/migrations/{workspace,machine}/`. Every
+migrations under `crates/lattice/migrations/{workspace,machine}/` (package **`facet-lattice`**). Every
 migration inserts its own `schema_version` row. Times are Unix milliseconds
 UTC; ids are ULIDs.
 
