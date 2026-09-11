@@ -36,7 +36,7 @@ facet-lattice = { version = "0.5.8", features = ["lattice-duckdb"] }
 
 - [Install guide](https://github.com/VirtualMachinist/facet/blob/main/docs/install.md)
 - [Facet guide](https://github.com/VirtualMachinist/facet/blob/main/docs/FACET.md)
-- [Lattice engines](https://github.com/VirtualMachinist/facet/blob/main/docs/LATTICE-ENGINES.md)
+- [facet-lattice engines](https://github.com/VirtualMachinist/facet/blob/main/docs/LATTICE-ENGINES.md)
 
 ## License
 

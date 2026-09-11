@@ -1,6 +1,6 @@
-//! Lattice: the Facet run-history store.
+//! facet-lattice: run-history store for Facet.
 //!
-//! Lattice sits beside an OpenCollection workspace and remembers every run.
+//! Sits beside an OpenCollection workspace and remembers every run.
 //! It never holds the collection itself; OpenCollection YAML on disk stays
 //! canonical and Git stays the sync layer. Two separate database files:
 //!

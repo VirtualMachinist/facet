@@ -3,7 +3,7 @@
 --
 -- replayed_from: runs.id of the run this one replayed, NULL otherwise.
 -- var_names:     JSON array of the --var NAMES passed at resolve time. Names
---                only; values never persist anywhere in Lattice.
+--                only; values never persist in the store.
 --
 -- Reader rule for rows recorded before this migration:
 --   replayed_from IS NULL -> not a replay
