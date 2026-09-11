@@ -2232,7 +2232,12 @@ impl App {
         // resets the status while the background task keeps running, so a
         // status check here would wave a mid-flight send straight through.
         if self.is_in_flight() {
-            let message = "a run is in flight — Esc cancels it first".to_string();
+            // Esc only signals the task; `pending` outlives `cancel` until the
+            // run actually reports, so the message must not imply that one
+            // keypress clears the way (PM ruling 2026-09-11: keep `cancel_run`
+            // semantics, fix the wording).
+            let message =
+                "a run is in flight — Esc to cancel, then wait for it to finish".to_string();
             match self.open_picker.as_mut() {
                 Some(picker) => picker.notice = Some(message),
                 None => self.status = RunStatus::Failed(message),
@@ -4667,10 +4672,16 @@ mod tests {
             original_root,
             ":open must not swap collections mid-flight"
         );
+        // The wording is pinned, not just the fact of a refusal: Esc alone does
+        // not clear the way, because `pending` outlives `cancel` until the task
+        // reports. A message that says otherwise sends the operator in a loop.
+        let RunStatus::Failed(message) = app.status() else {
+            panic!("the refusal is reported: {:?}", app.status())
+        };
+        assert!(message.contains("in flight"), "{message}");
         assert!(
-            matches!(app.status(), RunStatus::Failed(message) if message.contains("in flight")),
-            "the refusal is reported: {:?}",
-            app.status()
+            message.contains("wait for it to finish"),
+            "the refusal must not imply Esc alone unblocks :open: {message}"
         );
         assert!(app.is_in_flight(), "refusing does not cancel the run");
 
