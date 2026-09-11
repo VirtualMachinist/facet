@@ -452,6 +452,10 @@ pub struct App {
     history_grid: Option<HistoryGrid>,
     /// `:env` overlay (Facet rest 5): machine-store env metadata editor.
     env_overlay: Option<EnvOverlay>,
+    /// `:open` / `:recent` collection picker.
+    open_picker: Option<OpenPicker>,
+    /// Collection waiting on a dirty-buffer confirm before it is mounted.
+    open_confirm: Option<PathBuf>,
     /// Test hook: redirects the env overlay's machine store away from the
     /// platform data dir (the workspace lints forbid env-var unsafe).
     machine_dir: Option<PathBuf>,
@@ -621,6 +625,100 @@ impl HistoryGrid {
     }
 }
 
+/// Where a `:open` candidate came from. Recents are ordered by the machine
+/// store's `last_seen`; nearby entries are a one-level scan of the current
+/// directory, so the picker works on a machine with no run history yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenOrigin {
+    Recent,
+    Nearby,
+}
+
+impl OpenOrigin {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Recent => "recent",
+            Self::Nearby => "nearby",
+        }
+    }
+}
+
+/// One row of the `:open` picker.
+#[derive(Clone, Debug)]
+pub struct OpenEntry {
+    /// Path handed to `load_workspace`: a bundled YAML file or an unbundled
+    /// root directory.
+    pub(crate) path: PathBuf,
+    /// Display text — the path shortened against `$HOME` and the cwd.
+    pub(crate) label: String,
+    pub(crate) origin: OpenOrigin,
+}
+
+/// `:open` / `:recent` collection picker. Same grammar as the `:history`
+/// grid (`j/k`, `gg`/`G`, `/` filter, Enter, Esc) so there is one list idiom
+/// in the TUI rather than two.
+pub struct OpenPicker {
+    pub(crate) rows: Vec<OpenEntry>,
+    /// Selection index into the *filtered* view, not `rows`.
+    pub(crate) selected: usize,
+    pub(crate) filter: String,
+    pub(crate) filtering: bool,
+    pub(crate) g_pending: bool,
+    /// Footer notice (load failures). Cleared on move.
+    pub(crate) notice: Option<String>,
+    /// True when `:recent` opened this picker, so nearby rows were skipped.
+    pub(crate) recents_only: bool,
+}
+
+impl OpenPicker {
+    fn new(rows: Vec<OpenEntry>, recents_only: bool) -> Self {
+        Self {
+            rows,
+            selected: 0,
+            filter: String::new(),
+            filtering: false,
+            g_pending: false,
+            notice: None,
+            recents_only,
+        }
+    }
+
+    /// Indices into `rows` that pass the `/` filter, in display order.
+    pub(crate) fn visible_indices(&self) -> Vec<usize> {
+        let needle = self.filter.to_lowercase();
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| needle.is_empty() || row.label.to_lowercase().contains(&needle))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The focused entry, if any survive the filter.
+    pub(crate) fn selected_entry(&self) -> Option<&OpenEntry> {
+        let visible = self.visible_indices();
+        visible.get(self.selected).map(|&index| &self.rows[index])
+    }
+
+    fn clamp_selection(&mut self) {
+        let len = self.visible_indices().len();
+        self.selected = if len == 0 {
+            0
+        } else {
+            self.selected.min(len - 1)
+        };
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.visible_indices().len() as isize;
+        if len == 0 {
+            return;
+        }
+        self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+        self.notice = None;
+    }
+}
+
 /// `:env` overlay (Facet rest 5): the machine store's environment metadata
 /// for this workspace. Values are never displayed — the list is metadata
 /// only, and the set form masks secret input.
@@ -729,6 +827,8 @@ impl App {
             data_overlay: None,
             history_grid: None,
             env_overlay: None,
+            open_picker: None,
+            open_confirm: None,
             machine_dir: None,
             viewports: Viewports::default(),
             response_origin: None,
@@ -808,14 +908,21 @@ impl App {
                 EditorSnapshot::from_request(request),
             )
         });
+        // The response pane and status belong to the previously selected
+        // request, so moving off it clears them -- unless a send is in flight,
+        // where clearing would report Idle while the task is still running and
+        // leave `:open` believing nothing is happening.
+        let in_flight = self.is_in_flight();
         let Some((method, editor, snapshot)) = extracted else {
             self.method = "GET".to_string();
             self.editor = Editor::default();
             self.editor_snapshot = EditorSnapshot::default();
             self.editor_dirty = false;
-            self.response = None;
-            self.response_origin = None;
-            self.status = RunStatus::Idle;
+            if !in_flight {
+                self.response = None;
+                self.response_origin = None;
+                self.status = RunStatus::Idle;
+            }
             self.kv_index = 0;
             return;
         };
@@ -823,10 +930,12 @@ impl App {
         self.editor = editor;
         self.editor_snapshot = snapshot;
         self.editor_dirty = false;
-        self.response = None;
-        self.response_origin = None;
-        self.status = RunStatus::Idle;
-        self.response_scroll = 0;
+        if !in_flight {
+            self.response = None;
+            self.response_origin = None;
+            self.status = RunStatus::Idle;
+            self.response_scroll = 0;
+        }
         self.kv_index = 0;
         self.kv_on_value = true;
         self.request_focus = RequestFocus::Url;
@@ -866,10 +975,45 @@ impl App {
         Ok(())
     }
 
+    /// Whether a send is in flight.
+    ///
+    /// The live channels are the truth, not `RunStatus::Running`: the status is
+    /// display state that several paths reset (tree navigation refreshes the
+    /// editor and clears the response pane), while `pending`/`cancel` live
+    /// exactly as long as the background task. `run_selected` already guards on
+    /// `pending`; anything else that must not race a send guards on this.
+    #[must_use]
+    pub fn is_in_flight(&self) -> bool {
+        self.pending.is_some() || self.cancel.is_some()
+    }
+
     /// Cancels the in-flight HTTP request, if any. Idempotent.
     pub fn cancel_run(&mut self) {
         if let Some(sender) = self.cancel.take() {
             let _ = sender.send(true);
+        }
+    }
+
+    /// Cancels an in-flight send and drops its channels, so no completion can
+    /// land after this returns. Used when the collection under the run is
+    /// about to change.
+    fn abandon_run(&mut self) {
+        self.cancel_run();
+        self.pending = None;
+        self.cancel = None;
+    }
+
+    /// Drains a finished background run, if one has completed. Extracted from
+    /// the event loop so the "a completion cannot land on a collection that
+    /// did not issue it" rule is testable without a terminal.
+    fn poll_pending(&mut self) {
+        if let Some(receiver) = self.pending.as_mut()
+            && let Ok((result, recording)) = receiver.try_recv()
+        {
+            self.last_recording = recording;
+            self.apply_run_result(result);
+            self.pending = None;
+            self.cancel = None;
         }
     }
 
@@ -881,14 +1025,7 @@ impl App {
             if self.should_quit {
                 return Ok(());
             }
-            if let Some(receiver) = self.pending.as_mut()
-                && let Ok((result, recording)) = receiver.try_recv()
-            {
-                self.last_recording = recording;
-                self.apply_run_result(result);
-                self.pending = None;
-                self.cancel = None;
-            }
+            self.poll_pending();
 
             if last_draw.elapsed() >= tick {
                 self.draw(terminal)?;
@@ -971,6 +1108,12 @@ impl App {
         }
         if self.help_open {
             return self.handle_help_key(code);
+        }
+        if self.open_confirm.is_some() {
+            return self.handle_open_confirm_key(code);
+        }
+        if self.open_picker.is_some() {
+            return self.handle_open_picker_key(code, modifiers);
         }
         if self.history_grid.is_some() {
             return self.handle_history_key(code, modifiers);
@@ -1316,6 +1459,16 @@ impl App {
                 self.data_overlay = None;
                 self.help_open = true;
             }
+            // `:open` mounts a collection without quitting (TUI-01). `:e` is
+            // the vim spelling of the same verb.
+            "open" | "e" | "edit" => {
+                if arg.is_empty() {
+                    self.show_open_picker(false);
+                } else {
+                    self.request_open(Self::expand_home(arg));
+                }
+            }
+            "recent" | "recents" => self.show_open_picker(true),
             "history" => self.show_history(),
             "sql" => self.show_sql(arg),
             "theme" | "appearance" => match arg {
@@ -1799,6 +1952,411 @@ impl App {
         } else {
             source.parent().map(Path::to_path_buf)
         }
+    }
+
+    /// Expands a leading `~` so `:open ~/work/api.yml` behaves like the shell.
+    fn expand_home(raw: &str) -> PathBuf {
+        let Some(rest) = raw.strip_prefix('~') else {
+            return PathBuf::from(raw);
+        };
+        let Some(home) = std::env::home_dir() else {
+            return PathBuf::from(raw);
+        };
+        match rest.strip_prefix('/') {
+            Some(tail) => home.join(tail),
+            None if rest.is_empty() => home,
+            // `~other/...` is another user's home; leave it for the OS to reject.
+            None => PathBuf::from(raw),
+        }
+    }
+
+    /// Turns a remembered or typed path into something `load_workspace`
+    /// accepts.
+    ///
+    /// The machine store remembers a workspace by its *root* directory, which
+    /// is all `facet replay` needs. But a bundled collection whose file is not
+    /// named `opencollection.yml` cannot be loaded from that directory alone,
+    /// so a recents row would be dead on Enter. Resolve the directory to the
+    /// single collection file inside it when that is unambiguous; otherwise
+    /// hand the path back untouched and let `load_workspace` report why.
+    fn resolve_collection(path: &Path) -> PathBuf {
+        if !path.is_dir() {
+            return path.to_path_buf();
+        }
+        if path.join("opencollection.yml").is_file() || path.join("opencollection.yaml").is_file() {
+            return path.to_path_buf();
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return path.to_path_buf();
+        };
+        let mut candidates: Vec<PathBuf> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|candidate| {
+                candidate.is_file()
+                    && candidate
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| {
+                            ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+                        })
+            })
+            .collect();
+        candidates.sort();
+        match candidates.len() {
+            1 => candidates.remove(0),
+            _ => path.to_path_buf(),
+        }
+    }
+
+    /// Shortens a path for chrome: relative to the cwd when it is below it,
+    /// else `~`-prefixed, else absolute.
+    fn shorten_path(path: &Path) -> String {
+        if let Ok(cwd) = std::env::current_dir()
+            && let Ok(relative) = path.strip_prefix(&cwd)
+            && !relative.as_os_str().is_empty()
+        {
+            return relative.display().to_string();
+        }
+        if let Some(home) = std::env::home_dir()
+            && let Ok(relative) = path.strip_prefix(&home)
+        {
+            return format!("~/{}", relative.display());
+        }
+        path.display().to_string()
+    }
+
+    /// Path of the collection currently mounted, shortened for the title bar.
+    #[must_use]
+    pub fn collection_path_short(&self) -> Option<String> {
+        self.loaded
+            .as_ref()
+            .and_then(LoadedWorkspace::source_path)
+            .map(Self::shorten_path)
+    }
+
+    /// Recents from the machine store, newest first. The machine store is the
+    /// cross-workspace registry `facet` already writes on every recorded run
+    /// (handoff two-store law), so recents need no new state of their own.
+    /// Paths that no longer exist are dropped rather than offered.
+    fn recent_entries(&self) -> Vec<OpenEntry> {
+        let Ok(machine) = self.env_machine() else {
+            return Vec::new();
+        };
+        let Ok(rows) = machine.workspaces() else {
+            return Vec::new();
+        };
+        let current = self.workspace_root();
+        rows.into_iter()
+            .map(|row| PathBuf::from(row.path))
+            .filter(|path| path.exists())
+            .filter(|path| current.as_ref() != Some(path))
+            .map(|path| Self::resolve_collection(&path))
+            .map(|path| OpenEntry {
+                label: Self::shorten_path(&path),
+                path,
+                origin: OpenOrigin::Recent,
+            })
+            .collect()
+    }
+
+    /// One-level scan of the current directory for things `load_workspace`
+    /// accepts: `*.yml`/`*.yaml` files, and subdirectories holding an
+    /// `opencollection.yml`. Depth stays at one so `:open` is predictable and
+    /// cheap in a large tree.
+    fn nearby_entries() -> Vec<OpenEntry> {
+        fn is_root(dir: &Path) -> bool {
+            dir.join("opencollection.yml").is_file() || dir.join("opencollection.yaml").is_file()
+        }
+
+        let Ok(cwd) = std::env::current_dir() else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        if is_root(&cwd) {
+            found.push(cwd.clone());
+        }
+        let Ok(entries) = std::fs::read_dir(&cwd) else {
+            return Vec::new();
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                if is_root(&path) {
+                    found.push(path);
+                }
+                continue;
+            }
+            let is_yaml = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml")
+                });
+            if is_yaml {
+                found.push(path);
+            }
+        }
+        found
+            .into_iter()
+            .map(|path| OpenEntry {
+                label: Self::shorten_path(&path),
+                path,
+                origin: OpenOrigin::Nearby,
+            })
+            .collect()
+    }
+
+    /// Opens the `:open` picker. `recents_only` is the `:recent` entry point.
+    fn show_open_picker(&mut self, recents_only: bool) {
+        let mut rows = self.recent_entries();
+        if !recents_only {
+            let seen: Vec<PathBuf> = rows.iter().map(|row| row.path.clone()).collect();
+            rows.extend(
+                Self::nearby_entries()
+                    .into_iter()
+                    .filter(|entry| !seen.contains(&entry.path)),
+            );
+        }
+        let mut picker = OpenPicker::new(rows, recents_only);
+        if picker.rows.is_empty() {
+            picker.notice = Some(if recents_only {
+                "no recent collections yet".to_string()
+            } else {
+                "nothing to open here — try `:open <path>`".to_string()
+            });
+        }
+        self.help_open = false;
+        self.data_overlay = None;
+        self.history_grid = None;
+        self.env_overlay = None;
+        self.open_picker = Some(picker);
+    }
+
+    /// Records a mounted collection in the machine store so it shows up under
+    /// `:recent` next time. Only workspaces that already have a store get an
+    /// id, so browsing never creates a `.facet/` directory as a side effect.
+    fn remember_recent(&self) {
+        let Some(root) = self.workspace_root() else {
+            return;
+        };
+        let Ok(Some(store)) = WorkspaceStore::open_existing(&root, LatticeConfig::default()) else {
+            return;
+        };
+        let Ok(machine) = self.env_machine() else {
+            return;
+        };
+        let name = self.collection_name().map(str::to_string);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+            });
+        let _ = machine.touch_workspace(store.workspace_id(), store.root(), name.as_deref(), now);
+    }
+
+    /// Mounts `path` in place, without quitting the TUI (TUI-01).
+    ///
+    /// A failed load leaves the current collection mounted: a typo in `:open`
+    /// must not cost the operator their seated workspace.
+    fn open_path(&mut self, path: &Path) {
+        let path = &Self::resolve_collection(path);
+        match load_workspace(path) {
+            Ok(loaded) => {
+                self.remount(loaded);
+                let shown = self
+                    .collection_path_short()
+                    .unwrap_or_else(|| path.display().to_string());
+                self.status = RunStatus::Idle;
+                self.remember_recent();
+                self.open_picker = None;
+                self.open_confirm = None;
+                self.notice_opened(&shown);
+            }
+            Err(error) => {
+                let message = format!("open failed: {error}");
+                match self.open_picker.as_mut() {
+                    Some(picker) => picker.notice = Some(message),
+                    None => self.status = RunStatus::Failed(message),
+                }
+                self.open_confirm = None;
+            }
+        }
+    }
+
+    fn notice_opened(&mut self, shown: &str) {
+        self.response_origin = Some(format!("opened {shown}"));
+    }
+
+    /// Swaps the mounted collection and clears everything scoped to the old
+    /// one. The workspace Lattice is resolved from `loaded` on every access
+    /// (`workspace_root`), so dropping the old view is what actually prevents
+    /// one collection's runs showing under another (TUI-02).
+    fn remount(&mut self, loaded: LoadedWorkspace) {
+        // Last line of defence for run bleed. `request_open` refuses while a
+        // send is in flight, but a completion that is already queued on the
+        // channel would otherwise be drained by the event loop *after* the swap
+        // and applied to a collection that never issued it. Cancel and drop the
+        // channels here so no result can survive the remount.
+        self.abandon_run();
+        self.adopt(loaded);
+        // Run state belongs to the collection that produced it.
+        self.response = None;
+        self.response_origin = None;
+        self.response_scroll = 0;
+        self.response_tab = ResponseTab::Pretty;
+        self.last_recording = None;
+        self.status = RunStatus::Idle;
+        // Overlays are views onto the old workspace store.
+        self.history_grid = None;
+        self.data_overlay = None;
+        self.env_overlay = None;
+        self.help_open = false;
+        // The editor was refreshed from the new selection by `adopt`.
+        self.editor_dirty = false;
+        self.searching = false;
+        self.mode = Mode::Normal;
+        self.focus = Focus::Tree;
+        self.section = Section::Path;
+        self.request_focus = RequestFocus::Url;
+        self.g_pending = false;
+        self.ctrl_w_pending = false;
+    }
+
+    /// `:open` / `:recent` entry point. Refuses mid-run so an in-flight send
+    /// cannot record into a store the operator has already navigated away
+    /// from, and routes through a confirm when the editor is dirty.
+    fn request_open(&mut self, path: PathBuf) {
+        // Guard on the live channels, not `RunStatus::Running`: tree navigation
+        // resets the status while the background task keeps running, so a
+        // status check here would wave a mid-flight send straight through.
+        if self.is_in_flight() {
+            // Esc only signals the task; `pending` outlives `cancel` until the
+            // run actually reports, so the message must not imply that one
+            // keypress clears the way (PM ruling 2026-09-11: keep `cancel_run`
+            // semantics, fix the wording).
+            let message =
+                "a run is in flight — Esc to cancel, then wait for it to finish".to_string();
+            match self.open_picker.as_mut() {
+                Some(picker) => picker.notice = Some(message),
+                None => self.status = RunStatus::Failed(message),
+            }
+            return;
+        }
+        if self.editor_dirty {
+            self.open_picker = None;
+            self.open_confirm = Some(path);
+            return;
+        }
+        self.open_path(&path);
+    }
+
+    /// `:open` picker keys, mirroring the `:history` grid grammar.
+    fn handle_open_picker_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<bool, TuiError> {
+        let Some(picker) = self.open_picker.as_mut() else {
+            return Ok(true);
+        };
+
+        if picker.filtering {
+            match code {
+                KeyCode::Esc => {
+                    picker.filtering = false;
+                    picker.filter.clear();
+                    picker.clamp_selection();
+                }
+                KeyCode::Enter => picker.filtering = false,
+                KeyCode::Backspace => {
+                    picker.filter.pop();
+                    picker.clamp_selection();
+                }
+                KeyCode::Char(ch) => {
+                    picker.filter.push(ch);
+                    picker.selected = 0;
+                }
+                _ => {}
+            }
+            return Ok(true);
+        }
+
+        if picker.g_pending {
+            picker.g_pending = false;
+            match code {
+                KeyCode::Char('g') => {
+                    picker.selected = 0;
+                    picker.notice = None;
+                    return Ok(true);
+                }
+                KeyCode::Char('G') => {
+                    picker.selected = picker.visible_indices().len().saturating_sub(1);
+                    picker.notice = None;
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
+
+        match (code, modifiers) {
+            (KeyCode::Esc | KeyCode::Char('q'), _) => self.open_picker = None,
+            (KeyCode::Char('j') | KeyCode::Down, _) => picker.move_selection(1),
+            (KeyCode::Char('k') | KeyCode::Up, _) => picker.move_selection(-1),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => picker.move_selection(5),
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => picker.move_selection(-5),
+            (KeyCode::Char('g'), _) => picker.g_pending = true,
+            (KeyCode::Char('G'), _) => {
+                picker.selected = picker.visible_indices().len().saturating_sub(1);
+                picker.notice = None;
+            }
+            (KeyCode::Char('/'), _) => {
+                picker.filtering = true;
+                picker.filter.clear();
+                picker.selected = 0;
+            }
+            (KeyCode::Char('r'), _) => {
+                let recents_only = picker.recents_only;
+                self.show_open_picker(recents_only);
+            }
+            (KeyCode::Enter, _) => {
+                if let Some(entry) = picker.selected_entry() {
+                    let path = entry.path.clone();
+                    self.request_open(path);
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// Dirty-buffer confirm (TUI-02). `w` writes first, `y` discards, anything
+    /// else keeps the operator where they are — the safe default.
+    fn handle_open_confirm_key(&mut self, code: KeyCode) -> Result<bool, TuiError> {
+        let Some(path) = self.open_confirm.clone() else {
+            return Ok(true);
+        };
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.open_confirm = None;
+                self.open_path(&path);
+            }
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                if let Err(error) = self.save_current() {
+                    self.open_confirm = None;
+                    self.status = RunStatus::Failed(format!("save: {error}"));
+                    return Ok(true);
+                }
+                self.open_confirm = None;
+                self.open_path(&path);
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.open_confirm = None;
+            }
+            _ => {}
+        }
+        Ok(true)
     }
 
     fn open_lattice(&self) -> Result<Option<WorkspaceStore>, String> {
@@ -2848,6 +3406,43 @@ impl App {
             .and_then(|loaded| loaded.workspace().metadata().name.as_deref())
     }
 
+    /// Test hook: seeds the `:` buffer so render tests can drive a command
+    /// without going through key events.
+    #[cfg(test)]
+    pub(crate) fn command_for_test(&mut self, input: &str) {
+        self.command = input.to_string();
+    }
+
+    /// Test hook: runs the seeded `:` buffer.
+    #[cfg(test)]
+    pub(crate) async fn execute_command_for_test(&mut self) {
+        self.execute_command().await.expect("command");
+    }
+
+    /// Test hook: marks the editor dirty without synthesising an edit.
+    #[cfg(test)]
+    pub(crate) fn mark_dirty_for_test(&mut self) {
+        self.editor_dirty = true;
+    }
+
+    /// Test hook: opens the `?` overlay.
+    #[cfg(test)]
+    pub(crate) fn open_help_for_test(&mut self) {
+        self.help_open = true;
+    }
+
+    /// The `:open` picker, when open.
+    #[must_use]
+    pub fn open_picker(&self) -> Option<&OpenPicker> {
+        self.open_picker.as_ref()
+    }
+
+    /// The collection awaiting a dirty-buffer confirm, when one is pending.
+    #[must_use]
+    pub fn open_confirm(&self) -> Option<&Path> {
+        self.open_confirm.as_deref()
+    }
+
     /// Whether a collection is loaded (the splash shows when it is not).
     pub fn has_collection(&self) -> bool {
         self.loaded.is_some()
@@ -3802,6 +4397,465 @@ mod tests {
         drop(store);
         let app = App::load(Some(&yaml)).await;
         (dir, app)
+    }
+
+    /// Two collections in separate directories, each with its own store.
+    async fn two_collections() -> (PathBuf, PathBuf, PathBuf, App) {
+        let base = std::env::temp_dir().join(format!(
+            "facet-tui-open-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = base.join("alpha");
+        let second = base.join("beta");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let first_yaml = first.join("collection.yml");
+        let second_yaml = second.join("collection.yml");
+        std::fs::copy(fixture(), &first_yaml).unwrap();
+        std::fs::copy(fixture(), &second_yaml).unwrap();
+
+        // Only the first collection has a recorded run, so a run from it would
+        // be visible if the remount leaked state.
+        let store = WorkspaceStore::open(&first, LatticeConfig::default()).unwrap();
+        store
+            .record_run(&lattice::NewRun {
+                started_at: lattice::now_ms(),
+                duration_ms: Some(12),
+                request_path: "Pets/List pets",
+                request_hash: "abc",
+                method: "GET",
+                url: "https://example.com/pets",
+                status: Some(200),
+                actor: "human",
+                ..Default::default()
+            })
+            .unwrap();
+        drop(store);
+        WorkspaceStore::open(&second, LatticeConfig::default()).unwrap();
+
+        let mut app = App::load(Some(&first_yaml)).await;
+        app.preview_machine_dir(base.join("machine"));
+        (base, first_yaml, second_yaml, app)
+    }
+
+    #[tokio::test]
+    async fn open_mounts_another_collection_without_quitting() {
+        let (base, _first, second, mut app) = two_collections().await;
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+
+        assert!(!app.should_quit, ":open must not quit the TUI");
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+            "the workspace root follows the newly opened collection"
+        );
+        assert!(app.has_collection());
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_remount_does_not_bleed_runs_between_collections() {
+        let (base, _first, second, mut app) = two_collections().await;
+
+        // Seat a history grid and a response against the first collection.
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        assert!(
+            app.history_grid().is_some(),
+            "first collection has a recorded run"
+        );
+        app.response_origin = Some("run 01K… · replayed view".to_string());
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+
+        assert!(
+            app.history_grid().is_none(),
+            "the previous collection's history grid must not survive a remount"
+        );
+        assert!(app.response().is_none(), "response pane is cleared");
+        assert!(app.last_recording.is_none());
+
+        // The second store is real but empty, so its own history is empty too.
+        app.command = "history".to_string();
+        app.execute_command().await.unwrap();
+        let rows = app.history_grid().map(|grid| grid.rows.len()).unwrap_or(0);
+        assert_eq!(rows, 0, "no runs from the prior collection appear");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_picker_lists_recents_from_the_machine_store() {
+        let (base, first, second, mut app) = two_collections().await;
+
+        // Mounting registers each collection in the machine store.
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        app.command = format!("open {}", first.display());
+        app.execute_command().await.unwrap();
+
+        app.command = "recent".to_string();
+        app.execute_command().await.unwrap();
+        let picker = app.open_picker().expect(":recent opens the picker");
+        assert!(picker.recents_only);
+        assert!(
+            picker
+                .rows
+                .iter()
+                .all(|row| row.origin == OpenOrigin::Recent),
+            ":recent shows recents only"
+        );
+        let parents: Vec<PathBuf> = picker
+            .rows
+            .iter()
+            .filter_map(|row| row.path.parent().map(Path::to_path_buf))
+            .collect();
+        assert!(
+            parents.iter().any(|parent| parent.ends_with("beta")),
+            "the previously mounted collection is remembered: {:?}",
+            picker.rows
+        );
+        assert!(
+            !parents.iter().any(|parent| parent.ends_with("alpha")),
+            "the collection already mounted is not offered as a recent"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_picker_enter_mounts_the_selected_collection() {
+        let (base, first, second, mut app) = two_collections().await;
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        app.command = format!("open {}", first.display());
+        app.execute_command().await.unwrap();
+
+        app.command = "recent".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.open_picker().unwrap().selected_entry().is_some());
+
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert!(app.open_picker().is_none(), "Enter closes the picker");
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_picker_filters_and_escapes() {
+        let (base, _first, _second, mut app) = two_collections().await;
+        app.command = "open".to_string();
+        app.execute_command().await.unwrap();
+        assert!(app.open_picker().is_some());
+
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.open_picker().unwrap().filtering);
+        for ch in "zzzznomatch".chars() {
+            app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE)
+                .await
+                .unwrap();
+        }
+        assert!(app.open_picker().unwrap().visible_indices().is_empty());
+
+        // Esc clears the filter, a second Esc closes the picker.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(!app.open_picker().unwrap().filtering);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.open_picker().is_none());
+        assert!(!app.should_quit, "Esc closes the picker, it never quits");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_confirms_before_discarding_a_dirty_buffer() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+
+        app.editor.url = "https://example.com/edited".to_string();
+        app.editor_dirty = true;
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+
+        // Nothing is mounted yet: the confirm is holding the remount.
+        assert_eq!(
+            app.open_confirm().map(Path::to_path_buf),
+            Some(second.clone())
+        );
+        assert_eq!(app.workspace_root().unwrap(), original_root);
+
+        // `n` keeps the operator where they are, edit intact.
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.open_confirm().is_none());
+        assert_eq!(app.workspace_root().unwrap(), original_root);
+        assert!(app.editor_dirty, "declining the switch keeps the edit");
+
+        // `y` discards and mounts.
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(app.open_confirm().is_none());
+        assert!(!app.editor_dirty, "remount resets the dirty flag");
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Seats a fake in-flight send: the channels a real `run_selected` would
+    /// hold, without the network. Returns the sender so a test can queue a
+    /// completion the way a finishing background task would.
+    fn seat_in_flight(app: &mut App) -> mpsc::Sender<(RunResult, Option<RecordSummary>)> {
+        let (sender, receiver) = mpsc::channel(1);
+        let (cancel_sender, _cancel_signal) = watch::channel(false);
+        app.cancel = Some(cancel_sender);
+        app.pending = Some(receiver);
+        app.status = RunStatus::Running;
+        sender
+    }
+
+    /// QA Phase 2, TUI-02 regression. The reported chain was:
+    ///   1. tree `j`/`k` reset `status` to Idle even with a send in flight,
+    ///   2. `:open` only refused on `RunStatus::Running`, so it proceeded,
+    ///   3. `remount` left `pending`/`cancel` alive, so the completion landed
+    ///      on the collection that never issued it.
+    /// Each link is asserted separately so a future regression names itself.
+    #[tokio::test]
+    async fn open_refuses_mid_flight_even_after_tree_navigation() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let _sender = seat_in_flight(&mut app);
+
+        // Link 1: navigating the tree must not report Idle over a live send.
+        app.focus = Focus::Tree;
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+        assert!(
+            app.is_in_flight(),
+            "the send is still in flight after tree navigation"
+        );
+        assert!(
+            matches!(app.status(), RunStatus::Running),
+            "tree navigation must not clobber Running: {:?}",
+            app.status()
+        );
+
+        // Link 2: `:open` refuses, and the seated collection is untouched.
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            ":open must not swap collections mid-flight"
+        );
+        // The wording is pinned, not just the fact of a refusal: Esc alone does
+        // not clear the way, because `pending` outlives `cancel` until the task
+        // reports. A message that says otherwise sends the operator in a loop.
+        let RunStatus::Failed(message) = app.status() else {
+            panic!("the refusal is reported: {:?}", app.status())
+        };
+        assert!(message.contains("in flight"), "{message}");
+        assert!(
+            message.contains("wait for it to finish"),
+            "the refusal must not imply Esc alone unblocks :open: {message}"
+        );
+        assert!(app.is_in_flight(), "refusing does not cancel the run");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Link 3: `remount` is the last line of defence. `request_open` refuses
+    /// while a send is in flight, so this calls the mount path directly -- the
+    /// invariant must hold for any future caller that forgets to check, not
+    /// only for the one path that currently checks.
+    #[tokio::test]
+    async fn a_queued_completion_cannot_land_on_the_next_collection() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let sender = seat_in_flight(&mut app);
+
+        // The background task finishes just as the collection is swapped.
+        sender
+            .send((
+                RunResult::Err("late completion from the previous collection".to_string()),
+                None,
+            ))
+            .await
+            .unwrap();
+
+        app.open_path(&second);
+
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+        );
+        assert!(
+            !app.is_in_flight(),
+            "remount drops both channels (pending={}, cancel={})",
+            app.pending.is_some(),
+            app.cancel.is_some()
+        );
+
+        // Draining now must be a no-op -- the queued result has nowhere to land.
+        app.poll_pending();
+        assert!(
+            app.response().is_none(),
+            "a completion from the previous collection must not surface here"
+        );
+        assert!(app.last_recording.is_none(), "nor its recording");
+        assert!(
+            !matches!(app.status(), RunStatus::Failed(_)),
+            "nor its failure: {:?}",
+            app.status()
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The operator's recovery path from the refusal: Esc cancels, the loop
+    /// drains the cancelled run against the collection that issued it, and the
+    /// switch then goes through. Cancelling alone is not enough -- `pending`
+    /// outlives `cancel` until the task actually reports.
+    #[tokio::test]
+    async fn cancel_then_drain_releases_the_switch() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let sender = seat_in_flight(&mut app);
+
+        app.cancel_run();
+        assert!(
+            app.is_in_flight(),
+            "cancelling signals the task; the run is not over until it reports"
+        );
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            "still refused while the cancelled run has not reported"
+        );
+
+        // The task reports, the event loop drains it against collection A.
+        sender
+            .send((RunResult::Err("cancelled".to_string()), None))
+            .await
+            .unwrap();
+        app.poll_pending();
+        assert!(!app.is_in_flight(), "the run is over once it reports");
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap().canonicalize().unwrap(),
+            second.parent().unwrap().canonicalize().unwrap(),
+            "the switch goes through once nothing is in flight"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The guard is the live channel, not the status. A run whose status has
+    /// been reset to Idle by unrelated UI work is still a run.
+    #[tokio::test]
+    async fn in_flight_is_the_channel_not_the_status() {
+        let (base, _first, second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+        let _sender = seat_in_flight(&mut app);
+
+        // Force the exact state the bug produced: channels live, status Idle.
+        app.status = RunStatus::Idle;
+        assert!(app.is_in_flight());
+
+        app.command = format!("open {}", second.display());
+        app.execute_command().await.unwrap();
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            "an Idle status over a live channel must still refuse"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Tree navigation keeps its ordinary behaviour when nothing is running:
+    /// the response pane belongs to the request you moved off.
+    #[tokio::test]
+    async fn tree_navigation_still_clears_the_response_when_idle() {
+        let (base, _first, _second, mut app) = two_collections().await;
+        app.response_origin = Some("run 01K… · replayed view".to_string());
+        app.status = RunStatus::Failed("previous".to_string());
+        app.focus = Focus::Tree;
+
+        app.handle_key(KeyCode::Char('j'), KeyModifiers::NONE)
+            .await
+            .unwrap();
+
+        assert!(!app.is_in_flight());
+        assert!(app.response().is_none());
+        assert!(
+            matches!(app.status(), RunStatus::Idle),
+            "idle navigation still resets status: {:?}",
+            app.status()
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn open_failure_keeps_the_current_collection() {
+        let (base, _first, _second, mut app) = two_collections().await;
+        let original_root = app.workspace_root().unwrap();
+
+        app.command = "open /nonexistent/nope.yml".to_string();
+        app.execute_command().await.unwrap();
+
+        assert_eq!(
+            app.workspace_root().unwrap(),
+            original_root,
+            "a bad path must not unmount the seated collection"
+        );
+        assert!(
+            matches!(app.status(), RunStatus::Failed(message) if message.contains("open failed")),
+            "the failure is reported: {:?}",
+            app.status()
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[tokio::test]
+    async fn collection_path_is_available_for_chrome() {
+        let (base, first, _second, app) = two_collections().await;
+        let shown = app.collection_path_short().expect("a mounted path");
+        assert!(
+            first
+                .display()
+                .to_string()
+                .ends_with(shown.trim_start_matches("~/"))
+                || shown.contains("collection.yml"),
+            "chrome shows a usable path: {shown}"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[tokio::test]
