@@ -8,7 +8,7 @@
 
 <p align="center">
   <strong>Native, local-first API client.</strong><br>
-  The terminal-native fork of Probe, with persistent run history.
+  Terminal CLI and TUI on Probe, with persistent run history.
 </p>
 
 <p align="center">
@@ -30,24 +30,23 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/VirtualMachinist">VirtualMachinist</a> ·
   Fork of <a href="https://github.com/crizant/probe">Probe</a>
 </p>
 
 ---
 
-Facet is a fast, native, local-first API client. Collections stay OpenCollection YAML on disk; Git stays the sync layer. **facet-lattice** remembers what surrounds them — runs, bodies, timings, sessions — in local SQLite. A Ratatui TUI and an agent-friendly CLI sit on the same core.
+**Facet** is the terminal product: a `facet` CLI and Ratatui TUI on the same OpenCollection YAML as [Probe](https://github.com/crizant/probe). **[facet-lattice](https://crates.io/crates/facet-lattice)** is the run-history library underneath — SQLite for runs, bodies, timings, and sessions beside your YAML on disk.
 
-It is for people who want a durable terminal workflow: deterministic JSON, content-addressed blobs, and SQL over history, without an account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
+Collections stay YAML; Git stays the sync layer. No account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
 
 **0.5.8** · OpenCollection YAML · Ratatui TUI · SQLite run history
 
 ## Quick start
 
-### 1. Add the library (crates.io)
+### Library — `facet-lattice` on crates.io
 
 ```bash
-cargo add facet-lattice@0.5.8
+cargo add facet-lattice
 ```
 
 ```toml
@@ -59,110 +58,84 @@ facet-lattice = "0.5.8"
 use lattice::WorkspaceStore;
 ```
 
-The Cargo package is **`facet-lattice`**; the Rust import name is `lattice`. Details: [docs/install.md](docs/install.md) and [crates/lattice/README.md](crates/lattice/README.md).
+The Cargo package is **`facet-lattice`** (not `lattice` — that name on crates.io is unrelated). The Rust import name is `lattice`.
 
-### 2. Install the CLI
+### CLI — the `facet` binary
 
-**From a release** (recommended): download `facet` from [GitHub Releases](https://github.com/VirtualMachinist/facet/releases) for your platform.
+The CLI is **not** `cargo install facet`. Pick one:
 
-**From source** (contributors):
+**Release archive** (fastest): download from [GitHub Releases](https://github.com/VirtualMachinist/facet/releases), extract `facet`, add to `PATH`.
+
+**From git** (Rust required):
 
 ```bash
-cargo build --release -p probe-cli -p facet-cli
-export PATH="$PWD/target/release:$PATH"
+cargo install --git https://github.com/VirtualMachinist/facet --package facet-cli --bin facet
 ```
 
-### 3. Run a request and query history
+**From a clone** (contributors): `cargo build --release -p probe-cli -p facet-cli` — see [docs/install.md](docs/install.md).
 
-Facet uses the same OpenCollection YAML as Probe.
+Verify: `facet --version` and `facet doctor --json`.
+
+### Run a request and query history
 
 ```bash
-facet request run ./api users/list-users.yml --environment development --json
+facet request run ./api/users/list-users.yml --environment development --json
 facet history --json
 facet history --sql "SELECT status, count(*) FROM runs GROUP BY status"
 facet blob <sha256>
+facet tui
 ```
 
-For the TUI: `facet tui`.
-
-Full install paths (library, binary, versions): **[docs/install.md](docs/install.md)**.
+Full install guide (wrong-name traps, PATH, versions): **[docs/install.md](docs/install.md)**.
 
 ## What you get
 
-Everything below builds on Probe's core engine, running natively in your terminal.
-
 | | Probe | Facet |
 |---|---|---|
-| Core Engine | Rust, fast, filesystem-first | Same core engine, cherry-pickable |
+| Core Engine | Rust, filesystem-first | Same core, cherry-pickable |
 | Collections | OpenCollection YAML | Same YAML, 100% compatible |
-| Interface | GPUI Desktop + CLI | Ratatui TUI (`facet tui`) + Agent CLI |
-| History | In-memory session | **facet-lattice**: SQLite workspace & machine store |
-| Binaries | `probe` | `facet` (coexists with `probe` on `PATH`) |
-| Data | Ephemeral CLI runs | Persistent, queryable, content-addressed blobs |
-| Output | Human-readable & JSON | Deterministic, versioned JSON optimized for agents |
+| Interface | GPUI Desktop + CLI | Ratatui TUI (`facet tui`) + agent CLI |
+| History | In-memory session | **facet-lattice** (SQLite workspace & machine store) |
+| Binaries | `probe` | `facet` (coexists with `probe`) |
+| Output | Human-readable & JSON | Deterministic, versioned JSON for automation |
 
-### What stays upstream, on purpose
-
-Facet rebuilds the terminal and history layers. The core domain and HTTP execution belong to Probe, and every place the two meet is written down rather than papered over. The full boundary is documented in [docs/FACET.md](docs/FACET.md).
-
-| Upstream | On Facet |
-|---|---|
-| `probe-core`, `probe-cli` | Untouched. Fixes go upstream first. |
-| GPUI Desktop | Out of default build. `cargo build --workspace` to include. |
-| OpenCollection YAML | Canonical format. No proprietary database extensions. |
-| CLI Contracts | `facet` delegates standard commands to `probe-cli` verbatim. |
+Facet rebuilds the terminal and history layers; Probe owns the core domain and HTTP execution. Boundary: [docs/FACET.md](docs/FACET.md).
 
 ## How it works
 
-One rule drives the design: **YAML holds the collection; facet-lattice holds the history.** Terminal UI and run memory are Facet; shared core stays cherry-pickable.
+**YAML holds the collection; facet-lattice holds the history.**
 
-- The `facet` binary coexists with `probe` on `PATH`. Collection files stay YAML; Git stays the sync layer. Run history never replaces the collection itself.
-- **facet-lattice** uses SQLite beside the YAML (`.facet/lattice.db`) plus a machine store for secrets, sessions, and a cross-workspace run index.
-- Agent CLI commands (`history`, `blob`, `gc`) are built for machine consumption. Metadata is cheap, and large bodies are content-addressed.
-- Secrets are stored securely at rest using the OS keyring or XChaCha20-Poly1305 encryption.
+- `.facet/lattice.db` beside your collection stores run history; a machine store holds secrets, sessions, and a cross-workspace index.
+- Agent commands (`history`, `blob`, `gc`) emit deterministic JSON. Large bodies are content-addressed.
+- Secrets use the OS keyring or XChaCha20-Poly1305 via `FACET_SECRET_KEY`.
 
 <details>
 <summary><strong>Repository map</strong></summary>
 
 ```
+crates/facet/             # facet CLI binary (facet-cli)
+crates/lattice/           # facet-lattice library (crates.io)
+crates/facet-tui/         # Ratatui interface
 crates/cli/               # upstream probe-cli
 crates/core/              # upstream probe-core
-crates/desktop/           # upstream probe-desktop (excluded from default build)
-crates/http/              # upstream HTTP client
-crates/opencollection/    # upstream YAML parser
-crates/facet/             # facet-cli binary
-crates/lattice/           # facet-lattice crate (crates.io)
-crates/facet-tui/         # Ratatui interface
-docs/FACET.md             # Facet-specific documentation
-docs/install.md           # install guide (library + binary)
-AGENTS.md                 # project instructions
+docs/install.md           # install guide
+docs/FACET.md             # Facet contracts
 ```
 
 </details>
 
 ## Status
 
-Development on `main` tracks **0.5.8**, matching tag **v0.5.8** and the [`facet-lattice`](https://crates.io/crates/facet-lattice) release on crates.io. Release binaries ship from the same version tag.
+**v0.5.8** on `main`, matching tag [v0.5.8](https://github.com/VirtualMachinist/facet/releases/tag/v0.5.8) and [`facet-lattice` 0.5.8](https://crates.io/crates/facet-lattice) on crates.io.
 
-- **facet-lattice**: Ready. SQLite/rusqlite default. Published on [crates.io](https://crates.io/crates/facet-lattice).
-- **TUI**: Ready. Graphite Honey / Porcelain Honey themes via Ratatui.
-- **Agent CLI**: Ready. Deterministic JSON and SQL querying.
-
-HTTP is live. Core Facet loops (sessions, recall, replay, diff, secret overlay,
-`--expect` / `--dry-run`) are shipped. Still folded from
-[Probe's roadmap](https://rusty-probe.pages.dev): WebSocket, GraphQL, gRPC
-streaming, user-defined theme files, git HEAD auto-tag, and a TUI env editor.
-Details: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
+- **facet-lattice**: shipped. SQLite default. Run-history library on crates.io.
+- **CLI + TUI**: shipped. Deterministic JSON, SQL over history, Ratatui interface.
+- **Roadmap**: WebSocket, GraphQL, gRPC, theme files — [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md). Roadmap: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md). Development practices: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Issues and pull requests welcome. Start with [AGENTS.md](AGENTS.md) and [docs/FACET.md](docs/FACET.md).
 
-## Credits and license
+## License
 
-Upstream lineage: [Probe](https://github.com/crizant/probe).
-
-- **Facet-original crates** (`facet-cli`, `facet-lattice`, `facet-tui`): MIT License.
-- **Upstream-derived crates and files**: Apache License 2.0 (Probe).
-
-See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Upstream lineage: [Probe](https://github.com/crizant/probe) (Apache-2.0). Facet-original crates (`facet-cli`, `facet-lattice`, `facet-tui`): MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
