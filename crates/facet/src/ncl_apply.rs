@@ -173,7 +173,7 @@ fn apply_cluster(cluster: &Value) -> Result<ClusterAction, FacetError> {
             .result
             .as_ref()
             .map(|response| response.status)
-            .map_err(|error| FacetError::http(error))?;
+            .map_err(FacetError::http)?;
         results.push(ClusterPostResult {
             kind: object["kind"].as_str().unwrap_or("").to_owned(),
             name: object["metadata"]["name"].as_str().unwrap_or("").to_owned(),
@@ -343,10 +343,10 @@ fn hedron_error(error: hedron_core::Error) -> FacetError {
 
 fn open_hedron_store(path: &std::path::Path) -> Result<(Store, String), FacetError> {
     let mut store = Store::open(path).map_err(hedron_error)?;
-    if let Ok(token) = std::env::var("FACET_HEDRON_TOKEN") {
-        if !token.is_empty() {
-            return Ok((store, token));
-        }
+    if let Ok(token) = std::env::var("FACET_HEDRON_TOKEN")
+        && !token.is_empty()
+    {
+        return Ok((store, token));
     }
     if hedrondb_empty(path)? {
         let boot = store

@@ -376,7 +376,6 @@ fn delegate(argv: &[&str]) -> Result<CommandOutput, FacetError> {
 /// MCP must not take raw secrets as tool arguments when a Lattice env key
 /// exists: the value would sit in the client's transcript. Hydration
 /// supplies stored values; `facet env set` changes them.
-
 fn ncl_overrides(args: &Args) -> Result<Vec<String>, FacetError> {
     let pairs = args.vars("var")?;
     let overrides: Vec<String> = pairs
