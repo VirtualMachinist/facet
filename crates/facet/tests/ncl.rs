@@ -121,3 +121,120 @@ fn ncl_rejects_secret_var() {
     assert_eq!(code, 2);
     assert_eq!(value["error"]["category"], "invalid_arguments");
 }
+
+#[test]
+fn ncl_export_records_ledger_tags_and_blobs() {
+    let sandbox = Sandbox::new();
+    let world = write_world(sandbox.root());
+    let export = sandbox.run_json(&["ncl", "export", world.to_str().unwrap()]);
+    let module_hash = export["moduleHash"].as_str().unwrap();
+    let export_hash = export["exportHash"].as_str().unwrap();
+    let contract_set = export["contractSet"].as_str().unwrap();
+
+    let root = sandbox.root().to_str().unwrap();
+    let history = sandbox.run_json(&["history", root, "--bodies"]);
+    let runs = history["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "expected one ledger row");
+    let row = &runs[0];
+    assert_eq!(row["requestPath"], "ncl:export");
+    assert_eq!(row["method"], "NCL");
+
+    let tags: Vec<&str> = row["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tag| tag.as_str().unwrap())
+        .collect();
+    assert!(tags.contains(&format!("ncl:module:{module_hash}").as_str()));
+    assert!(tags.contains(&format!("ncl:export:{export_hash}").as_str()));
+    assert!(tags.contains(&format!("ncl:contracts:{contract_set}").as_str()));
+
+    let source_hash = row["request"]["body"]["hash"].as_str().unwrap();
+    let freeze_hash = row["response"]["body"]["hash"].as_str().unwrap();
+    assert!(sandbox.root().join(".facet/blobs").join(source_hash).is_file());
+    assert!(sandbox.root().join(".facet/blobs").join(freeze_hash).is_file());
+
+    let source_blob = sandbox.run_json(&["blob", source_hash, root]);
+    let content = &source_blob["blob"]["body"]["content"];
+    let snapshot: Value = if content.is_string() {
+        serde_json::from_str(content.as_str().unwrap()).expect("source snapshot JSON")
+    } else {
+        content.clone()
+    };
+    let sources = &snapshot["sources"];
+    assert!(sources.get("world.ncl").is_some());
+    assert!(sources.get("lib.ncl").is_some());
+
+    let freeze_blob = sandbox.run_json(&["blob", freeze_hash, root]);
+    let freeze_content = &freeze_blob["blob"]["body"]["content"];
+    let frozen: Value = if freeze_content.is_string() {
+        serde_json::from_str(freeze_content.as_str().unwrap()).expect("freeze artifact JSON")
+    } else {
+        freeze_content.clone()
+    };
+    assert_eq!(frozen["exportHash"], export_hash);
+    assert_eq!(frozen["moduleHash"], module_hash);
+    assert_eq!(frozen["contractSet"], contract_set);
+    assert!(frozen.get("cluster").is_some());
+    assert!(frozen.get("intent").is_some());
+    assert!(frozen.get("calls").is_some());
+    assert!(frozen.get("plaintext_token").is_none());
+}
+
+fn run_count(sandbox: &common::Sandbox, root: &str) -> usize {
+    sandbox
+        .run_json(&["history", root])["runs"]
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn ncl_export_frozen_passes_when_unchanged() {
+    let sandbox = Sandbox::new();
+    let world = write_world(sandbox.root());
+    let path = world.to_str().unwrap();
+    let root = sandbox.root().to_str().unwrap();
+    let first = sandbox.run_json(&["ncl", "export", path]);
+    let second = sandbox.run_json(&["ncl", "export", path, "--frozen"]);
+    assert_eq!(first["exportHash"], second["exportHash"]);
+    assert_eq!(run_count(&sandbox, root), 2, "frozen pass still records the export");
+}
+
+#[test]
+fn ncl_export_frozen_refuses_on_drift() {
+    let sandbox = Sandbox::new();
+    let world = write_world(sandbox.root());
+    let path = world.to_str().unwrap();
+    let root = sandbox.root().to_str().unwrap();
+    let recorded = sandbox.run_json(&["ncl", "export", path]);
+    let run_id = sandbox.run_json(&["history", root, "--bodies"])["runs"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    std::fs::write(
+        &world,
+        WORLD.replace("replicas = 1", "replicas = 2"),
+    )
+    .unwrap();
+
+    let before = run_count(&sandbox, root);
+    let (code, error) = sandbox.run_error_json(&["ncl", "export", path, "--frozen"]);
+    assert_eq!(code, 1);
+    assert_eq!(error["error"]["category"], "replay_changed");
+    assert_eq!(error["error"]["details"]["replayedFrom"], run_id);
+    assert_eq!(
+        error["error"]["details"]["recordedHash"],
+        recorded["exportHash"]
+    );
+    assert_ne!(
+        error["error"]["details"]["recordedHash"],
+        error["error"]["details"]["currentHash"]
+    );
+    assert_eq!(
+        run_count(&sandbox, root),
+        before,
+        "no ledger row when --frozen refuses"
+    );
+}

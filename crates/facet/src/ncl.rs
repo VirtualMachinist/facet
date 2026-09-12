@@ -104,6 +104,13 @@ pub fn check(path: &Path, vars: &[String]) -> Result<NclCheck, FacetError> {
 /// Evaluate the module at `path` for export with `vars` applied and split the
 /// frozen value into the three `World` projections.
 pub fn export(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
+    let export = evaluate(path, vars)?;
+    crate::ncl_ledger::record_export(path, &export, vars);
+    Ok(export)
+}
+
+/// Evaluate for export without persisting to Lattice.
+pub(crate) fn evaluate(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
     let module_hash = module_hash(path)?;
     let world = eval::export(Input::Path(path), vars).map_err(ncl_error)?;
     let export_hash = sha256_hex(canonical(&world).as_bytes());
@@ -122,7 +129,7 @@ pub fn export(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
             });
         }
     };
-    Ok(NclExport {
+    let export = NclExport {
         path: path.to_path_buf(),
         module_hash,
         export_hash,
@@ -130,7 +137,8 @@ pub fn export(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
         cluster: world.remove("cluster").unwrap_or(Value::Null),
         intent: world.remove("intent").unwrap_or(Value::Null),
         calls: world.remove("calls").unwrap_or(Value::Null),
-    })
+    };
+    Ok(export)
 }
 
 fn module_hash(path: &Path) -> Result<String, FacetError> {
