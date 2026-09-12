@@ -4,6 +4,12 @@
 
 use crate::FacetError;
 
+use std::path::{Path, PathBuf};
+
+use crate::{CommandOutput, ncl, versioned_json};
+use facet_record::{ConfigOverrides, open_store};
+use lattice::{HistoryQuery, WorkspaceStore};
+
 #[derive(Debug, Default)]
 pub(crate) struct Parsed {
     positionals: Vec<String>,
@@ -99,49 +105,6 @@ impl Parsed {
             .transpose()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::parse;
-
-    fn args(list: &[&str]) -> Vec<String> {
-        list.iter().map(|item| (*item).to_owned()).collect()
-    }
-
-    #[test]
-    fn parses_values_switches_and_positionals() {
-        let parsed = parse(
-            &args(&["a", "--limit", "5", "--tag=x", "--tag", "y", "--yes", "b"]),
-            &["--limit", "--tag"],
-            &["--yes"],
-        )
-        .unwrap();
-        assert_eq!(parsed.positionals(), ["a", "b"]);
-        assert_eq!(parsed.value("--limit").unwrap(), Some("5"));
-        assert_eq!(parsed.values("--tag"), ["x", "y"]);
-        assert!(parsed.switch("--yes"));
-        assert_eq!(
-            parsed.parsed_value::<usize>("--limit", "a number").unwrap(),
-            Some(5)
-        );
-    }
-
-    #[test]
-    fn rejects_unknown_and_duplicate_options() {
-        assert!(parse(&args(&["--nope"]), &[], &[]).is_err());
-        assert!(parse(&args(&["--yes", "--yes"]), &[], &["--yes"]).is_err());
-        assert!(parse(&args(&["--limit"]), &["--limit"], &[]).is_err());
-        let parsed = parse(&args(&["--limit", "1", "--limit", "2"]), &["--limit"], &[]).unwrap();
-        assert!(parsed.value("--limit").is_err());
-        assert!(parsed.parsed_value::<usize>("--limit", "a number").is_err());
-    }
-}
-
-use std::path::{Path, PathBuf};
-
-use crate::{CommandOutput, ncl, versioned_json};
-use facet_record::{ConfigOverrides, open_store};
-use lattice::{HistoryQuery, WorkspaceStore};
 
 const NCL_VALUE_FLAGS: &[&str] = &["--var"];
 const NCL_SWITCH_FLAGS: &[&str] = &["--frozen"];
@@ -338,4 +301,41 @@ fn module_url(workspace_root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn parses_values_switches_and_positionals() {
+        let parsed = parse(
+            &args(&["a", "--limit", "5", "--tag=x", "--tag", "y", "--yes", "b"]),
+            &["--limit", "--tag"],
+            &["--yes"],
+        )
+        .unwrap();
+        assert_eq!(parsed.positionals(), ["a", "b"]);
+        assert_eq!(parsed.value("--limit").unwrap(), Some("5"));
+        assert_eq!(parsed.values("--tag"), ["x", "y"]);
+        assert!(parsed.switch("--yes"));
+        assert_eq!(
+            parsed.parsed_value::<usize>("--limit", "a number").unwrap(),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_and_duplicate_options() {
+        assert!(parse(&args(&["--nope"]), &[], &[]).is_err());
+        assert!(parse(&args(&["--yes", "--yes"]), &[], &["--yes"]).is_err());
+        assert!(parse(&args(&["--limit"]), &["--limit"], &[]).is_err());
+        let parsed = parse(&args(&["--limit", "1", "--limit", "2"]), &["--limit"], &[]).unwrap();
+        assert!(parsed.value("--limit").is_err());
+        assert!(parsed.parsed_value::<usize>("--limit", "a number").is_err());
+    }
 }
