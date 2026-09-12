@@ -16,6 +16,8 @@ crossterm = "0.29"
 facet-record = { path = "../facet-record" }
 facet-tui = { path = "../facet-tui" }
 facet-lattice = { path = "../lattice" }
+# The only Nickel VM on the platform: in-process, never a `nickel` subprocess.
+hedron-ncl = { path = "../hedron-ncl" }
 probe-cli = { path = "../cli" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }
