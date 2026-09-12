@@ -35,12 +35,53 @@ pub fn http_engine_from_env() -> Result<HttpEngine, HttpError> {
     http_engine_from_kubeconfig(Path::new(&path), context.as_deref())
 }
 
+/// Returns the Kubernetes API server URL from `FACET_KUBECONFIG` when set.
+pub fn kube_api_base_from_env() -> Result<Option<String>, HttpError> {
+    let Some(path) = std::env::var_os("FACET_KUBECONFIG") else {
+        return Ok(None);
+    };
+    if path.is_empty() {
+        return Err(config("FACET_KUBECONFIG is empty"));
+    }
+    let context = match std::env::var("FACET_KUBE_CONTEXT") {
+        Ok(value) if !value.is_empty() => Some(value),
+        Ok(_) => return Err(config("FACET_KUBE_CONTEXT is empty")),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err(config("FACET_KUBE_CONTEXT is not valid UTF-8")),
+    };
+    let resolved = resolve_kubeconfig(Path::new(&path), context.as_deref())?;
+    Ok(Some(
+        resolved.cluster.server.trim_end_matches('/').to_owned(),
+    ))
+}
+
 /// Loads a single kubeconfig and creates a verified client-certificate engine.
 /// This synchronous filesystem work belongs off the UI event thread.
 pub fn http_engine_from_kubeconfig(
     path: &Path,
     selected: Option<&str>,
 ) -> Result<HttpEngine, HttpError> {
+    let resolved = resolve_kubeconfig(path, selected)?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    let ca = material(base, &resolved.cluster.ca_data, &resolved.cluster.ca_file)?;
+    let cert = material(base, &resolved.user.cert_data, &resolved.user.cert_file)?;
+    let key = material(base, &resolved.user.key_data, &resolved.user.key_file)?;
+    let mut identity = cert;
+    identity.push(b'\n');
+    identity.extend_from_slice(&key);
+    HttpEngine::with_cluster_tls(ClusterTls::from_pem(
+        &resolved.cluster.server,
+        &ca,
+        &identity,
+    )?)
+}
+
+struct ResolvedKube {
+    cluster: Cluster,
+    user: User,
+}
+
+fn resolve_kubeconfig(path: &Path, selected: Option<&str>) -> Result<ResolvedKube, HttpError> {
     let source = read_bounded(path)?;
     let kube: Kubeconfig =
         serde_yaml_ng::from_slice(&source).map_err(|_| config("invalid kubeconfig document"))?;
@@ -49,24 +90,20 @@ pub fn http_engine_from_kubeconfig(
     }
     let context_name = selected.unwrap_or(&kube.current_context);
     let context = unique(&kube.contexts, context_name, |entry| &entry.name)?;
-    let cluster = &unique(&kube.clusters, &context.context.cluster, |entry| {
+    let cluster = unique(&kube.clusters, &context.context.cluster, |entry| {
         &entry.name
     })?
-    .cluster;
-    let user = &unique(&kube.users, &context.context.user, |entry| &entry.name)?.user;
+    .cluster
+    .clone();
+    let user = unique(&kube.users, &context.context.user, |entry| &entry.name)?
+        .user
+        .clone();
     if cluster.insecure_skip_tls_verify || !cluster.extra.is_empty() || !user.extra.is_empty() {
         return Err(config(
             "unsupported kubeconfig transport/authentication: use verified CA and client certificate/key; exec, auth-provider, bearer tokens, proxies, TLS-name overrides and impersonation are not supported by this profile",
         ));
     }
-    let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let ca = material(base, &cluster.ca_data, &cluster.ca_file)?;
-    let cert = material(base, &user.cert_data, &user.cert_file)?;
-    let key = material(base, &user.key_data, &user.key_file)?;
-    let mut identity = cert;
-    identity.push(b'\n');
-    identity.extend_from_slice(&key);
-    HttpEngine::with_cluster_tls(ClusterTls::from_pem(&cluster.server, &ca, &identity)?)
+    Ok(ResolvedKube { cluster, user })
 }
 
 fn unique<'a, T>(
@@ -154,7 +191,7 @@ struct Context {
     cluster: String,
     user: String,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Cluster {
     server: String,
     #[serde(default, rename = "certificate-authority-data")]
@@ -166,7 +203,7 @@ struct Cluster {
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct User {
     #[serde(default, rename = "client-certificate-data")]
     cert_data: Option<String>,
