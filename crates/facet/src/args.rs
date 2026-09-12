@@ -136,3 +136,94 @@ mod tests {
         assert!(parsed.parsed_value::<usize>("--limit", "a number").is_err());
     }
 }
+
+use std::path::PathBuf;
+
+use crate::{CommandOutput, ncl, versioned_json};
+
+const NCL_VALUE_FLAGS: &[&str] = &["--var"];
+
+const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authorization", "secret"];
+
+pub(crate) fn ncl(args: &[String]) -> Result<CommandOutput, FacetError> {
+    let Some((verb, rest)) = args.split_first() else {
+        return Err(FacetError::invalid_arguments(
+            "ncl requires a subcommand: check or export",
+        ));
+    };
+    match verb.as_str() {
+        "check" => ncl_check(rest),
+        "export" => ncl_export(rest),
+        other => Err(FacetError::invalid_arguments(format!(
+            "unknown ncl subcommand: {other} (expected check or export)"
+        ))),
+    }
+}
+
+pub(crate) fn reject_secret_overrides(overrides: &[String]) -> Result<(), FacetError> {
+    for assignment in overrides {
+        let path = assignment
+            .split_once("=")
+            .map(|(path, _)| path)
+            .unwrap_or(assignment.as_str());
+        for segment in path.split(".") {
+            let lower = segment.to_ascii_lowercase();
+            if NCL_SECRET_SEGMENTS.iter().any(|secret| lower == *secret) {
+                return Err(FacetError::invalid_arguments(format!(
+                    "refuses secret field override `{path}`; use secret_ref and Facet env hydration instead"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
+    let (path, overrides) = parse_ncl_cli(args)?;
+    let result = ncl::check(&path, &overrides)?;
+    let json = versioned_json(result.to_json());
+    let human = format!(
+        "ok {} (moduleHash={} contractSet={})\n",
+        result.path.display(),
+        result.module_hash,
+        result.contract_set,
+    );
+    Ok(CommandOutput::new(human, json))
+}
+
+fn ncl_export(args: &[String]) -> Result<CommandOutput, FacetError> {
+    let (path, overrides) = parse_ncl_cli(args)?;
+    let result = ncl::export(&path, &overrides)?;
+    let json = versioned_json(result.to_json());
+    let human = format!(
+        "ok {} (moduleHash={} exportHash={} contractSet={})\n",
+        result.path.display(),
+        result.module_hash,
+        result.export_hash,
+        result.contract_set,
+    );
+    Ok(CommandOutput::new(human, json))
+}
+
+fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>), FacetError> {
+    let parsed = parse(args, NCL_VALUE_FLAGS, &[])?;
+    let [path] = parsed.positionals() else {
+        return Err(FacetError::invalid_arguments(
+            "ncl requires <path> to a .ncl module",
+        ));
+    };
+    let overrides = parsed
+        .values("--var")
+        .into_iter()
+        .map(|entry| {
+            if !entry.contains("=") {
+                return Err(FacetError::invalid_arguments(format!(
+                    "--var expects path.to.field=value, got {entry:?}"
+                )));
+            }
+            Ok(entry.to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    reject_secret_overrides(&overrides)?;
+    Ok((PathBuf::from(path), overrides))
+}

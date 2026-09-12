@@ -353,6 +353,54 @@
       "name": "run_replay"
     },
     {
+      "description": "Parse, typecheck and evaluate a Nickel world module in-process. Returns { path, moduleHash, contractSet }. Nothing persisted.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Path to a .ncl module",
+            "type": "string"
+          },
+          "var": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Nickel field overrides (path.to.field → expression). Never a secret value or secret field path.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "ncl_check"
+    },
+    {
+      "description": "eval_full_for_export on a Nickel world module. Returns { path, moduleHash, exportHash, contractSet, cluster, intent, calls }. Fields marked | not_exported are absent.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Path to a .ncl module",
+            "type": "string"
+          },
+          "var": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Nickel field overrides (path.to.field → expression). Never a secret value or secret field path.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "ncl_export"
+    },
+    {
       "description": "Read-only SQL over the workspace store (runs, blobs). Writes fail with sql_read_only. The machine store is never attached.",
       "inputSchema": {
         "additionalProperties": false,
