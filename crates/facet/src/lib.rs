@@ -293,7 +293,7 @@ where
         None => true,
         Some(
             "history" | "last" | "pin" | "mcp" | "session" | "replay" | "diff" | "env" | "doctor"
-            | "blob" | "gc" | "theme" | "tui" | "-V" | "--version" | "-h" | "--help",
+            | "blob" | "gc" | "theme" | "tui" | "ncl" | "-V" | "--version" | "-h" | "--help",
         ) => true,
         Some("request") => args.get(1).map(String::as_str) == Some("run"),
         Some(_) => false,
@@ -347,6 +347,7 @@ where
         "blob" => history::blob(&args[1..]),
         "gc" => history::gc(&args[1..]),
         "theme" => theme::theme(&args[1..]),
+        "ncl" => args::ncl(&args[1..]),
         "tui" => Err(FacetError::invalid_arguments(
             "tui is interactive and must be started from the facet binary",
         )),
