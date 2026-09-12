@@ -24,4 +24,7 @@ pub mod pack;
 
 pub use eval::{eval_export, eval_export_with_prelude, Error};
 pub use overlay::{contract_set_id, prelude, CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL};
-pub use pack::{contract_set_marker_bytes, read_contract_set_marker, write_contract_set_marker, CONTRACT_SET_MARKER_FILE};
+pub use pack::{
+    contract_set_marker_bytes, read_contract_set_marker, write_contract_set_marker,
+    CONTRACT_SET_MARKER_FILE,
+};
