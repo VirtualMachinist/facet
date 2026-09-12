@@ -106,7 +106,7 @@ impl Parsed {
     }
 }
 
-const NCL_VALUE_FLAGS: &[&str] = &["--var"];
+const NCL_VALUE_FLAGS: &[&str] = &["--var", "--import-path"];
 const NCL_SWITCH_FLAGS: &[&str] = &["--frozen"];
 
 const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authorization", "secret"];
@@ -114,15 +114,16 @@ const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authoriz
 pub(crate) fn ncl(args: &[String]) -> Result<CommandOutput, FacetError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(FacetError::invalid_arguments(
-            "ncl requires a subcommand: check, export, or apply",
+            "ncl requires a subcommand: check, export, apply, or pack",
         ));
     };
     match verb.as_str() {
         "check" => ncl_check(rest),
         "export" => ncl_export(rest),
         "apply" => ncl_apply(rest),
+        "pack" => crate::ncl_pack::pack(rest),
         other => Err(FacetError::invalid_arguments(format!(
-            "unknown ncl subcommand: {other} (expected check, export, or apply)"
+            "unknown ncl subcommand: {other} (expected check, export, apply, or pack)"
         ))),
     }
 }
@@ -146,13 +147,13 @@ pub(crate) fn reject_secret_overrides(overrides: &[String]) -> Result<(), FacetE
 }
 
 fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
-    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    let (path, overrides, frozen, import_paths) = parse_ncl_cli(args)?;
     if frozen {
         return Err(FacetError::invalid_arguments(
             "ncl check does not support --frozen; use ncl export --frozen",
         ));
     }
-    let result = ncl::check(&path, &overrides)?;
+    let result = ncl::check(&path, &overrides, &import_paths)?;
     let json = versioned_json(result.to_json());
     let human = format!(
         "ok {} (moduleHash={} contractSet={})\n",
@@ -164,13 +165,13 @@ fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
 }
 
 fn ncl_apply(args: &[String]) -> Result<CommandOutput, FacetError> {
-    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    let (path, overrides, frozen, import_paths) = parse_ncl_cli(args)?;
     if frozen {
         return Err(FacetError::invalid_arguments(
             "ncl apply does not support --frozen; use ncl export --frozen",
         ));
     }
-    let result = ncl::apply(&path, &overrides)?;
+    let result = ncl::apply(&path, &overrides, &import_paths)?;
     let json = versioned_json(result.to_json());
     let human = format!(
         "ok {} (moduleHash={} exportHash={} contractSet={} cluster.posted={} intent.put={})\n",
@@ -185,11 +186,11 @@ fn ncl_apply(args: &[String]) -> Result<CommandOutput, FacetError> {
 }
 
 fn ncl_export(args: &[String]) -> Result<CommandOutput, FacetError> {
-    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    let (path, overrides, frozen, import_paths) = parse_ncl_cli(args)?;
     if frozen {
-        refuse_if_export_changed(&path, &overrides)?;
+        refuse_if_export_changed(&path, &overrides, &import_paths)?;
     }
-    let result = ncl::export(&path, &overrides)?;
+    let result = ncl::export(&path, &overrides, &import_paths)?;
     let json = versioned_json(result.to_json());
     let human = format!(
         "ok {} (moduleHash={} exportHash={} contractSet={})\n",
@@ -201,7 +202,9 @@ fn ncl_export(args: &[String]) -> Result<CommandOutput, FacetError> {
     Ok(CommandOutput::new(human, json))
 }
 
-fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>, bool), FacetError> {
+fn parse_ncl_cli(
+    args: &[String],
+) -> Result<(PathBuf, Vec<String>, bool, Vec<PathBuf>), FacetError> {
     let parsed = parse(args, NCL_VALUE_FLAGS, NCL_SWITCH_FLAGS)?;
     let [path] = parsed.positionals() else {
         return Err(FacetError::invalid_arguments(
@@ -221,18 +224,59 @@ fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>, bool), FacetE
         })
         .collect::<Result<Vec<_>, _>>()?;
     reject_secret_overrides(&overrides)?;
-    Ok((PathBuf::from(path), overrides, parsed.switch("--frozen")))
+    let import_paths = resolve_ncl_import_paths(parsed.value("--import-path")?)?;
+    Ok((
+        PathBuf::from(path),
+        overrides,
+        parsed.switch("--frozen"),
+        import_paths,
+    ))
+}
+
+/// `--import-path` wins over `FACET_NCL_IMPORT_PATH`. The directory must contain
+/// a materialized pack (`facet ncl pack --out`).
+pub(crate) fn resolve_ncl_import_paths(cli: Option<&str>) -> Result<Vec<PathBuf>, FacetError> {
+    let chosen = cli
+        .map(str::to_owned)
+        .or_else(|| std::env::var("FACET_NCL_IMPORT_PATH").ok())
+        .filter(|value| !value.is_empty());
+    match chosen {
+        None => Ok(Vec::new()),
+        Some(path) => {
+            let root = PathBuf::from(&path);
+            if !root.is_dir() {
+                return Err(FacetError::invalid_arguments(format!(
+                    "--import-path {path} is not a directory"
+                )));
+            }
+            let drift = hedron_ncl::pack::verify(&root).map_err(|error| {
+                FacetError::invalid_arguments(format!(
+                    "import path {path} is not a materialized pack: {error}"
+                ))
+            })?;
+            if !drift.is_empty() {
+                return Err(FacetError::invalid_arguments(format!(
+                    "import path {path} pack drift: {drift:?}"
+                )));
+            }
+            Ok(vec![root])
+        }
+    }
 }
 
 /// Re-evaluates without recording and refuses when the export hash drifted.
-fn refuse_if_export_changed(path: &Path, overrides: &[String]) -> Result<(), FacetError> {
+fn refuse_if_export_changed(
+    path: &Path,
+    overrides: &[String],
+    import_paths: &[PathBuf],
+) -> Result<(), FacetError> {
     let Some((run_id, recorded_hash)) = lookup_recorded_export(path)? else {
         return Err(FacetError::invalid_arguments(
             "--frozen requires a prior ncl export recorded in Lattice for this module",
         ));
     };
 
-    let current = ncl::evaluate(path, overrides)?;
+    let current = ncl::evaluate(path, overrides, import_paths)?;
 
     if current.export_hash != recorded_hash {
         return Err(FacetError::replay_changed(

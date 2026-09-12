@@ -338,19 +338,22 @@ fn dispatch(name: &str, arguments: &Map<String, Value>) -> Result<CommandOutput,
         "ncl_check" => {
             let path = args.required("path")?;
             let overrides = ncl_overrides(&args)?;
-            let result = crate::ncl::check(Path::new(&path), &overrides)?;
+            let import_paths = ncl_import_paths(&args)?;
+            let result = crate::ncl::check(Path::new(&path), &overrides, &import_paths)?;
             Ok(CommandOutput::new(Vec::new(), result.to_json()))
         }
         "ncl_export" => {
             let path = args.required("path")?;
             let overrides = ncl_overrides(&args)?;
-            let result = crate::ncl::export(Path::new(&path), &overrides)?;
+            let import_paths = ncl_import_paths(&args)?;
+            let result = crate::ncl::export(Path::new(&path), &overrides, &import_paths)?;
             Ok(CommandOutput::new(Vec::new(), result.to_json()))
         }
         "ncl_apply" => {
             let path = args.required("path")?;
             let overrides = ncl_overrides(&args)?;
-            let result = crate::ncl::apply(Path::new(&path), &overrides)?;
+            let import_paths = ncl_import_paths(&args)?;
+            let result = crate::ncl::apply(Path::new(&path), &overrides, &import_paths)?;
             Ok(CommandOutput::new(Vec::new(), result.to_json()))
         }
         other => Err(FacetError::invalid_arguments(format!(
@@ -376,6 +379,10 @@ fn delegate(argv: &[&str]) -> Result<CommandOutput, FacetError> {
 /// MCP must not take raw secrets as tool arguments when a Lattice env key
 /// exists: the value would sit in the client's transcript. Hydration
 /// supplies stored values; `facet env set` changes them.
+fn ncl_import_paths(args: &Args) -> Result<Vec<std::path::PathBuf>, FacetError> {
+    crate::args::resolve_ncl_import_paths(args.string("import_path")?.as_deref())
+}
+
 fn ncl_overrides(args: &Args) -> Result<Vec<String>, FacetError> {
     let pairs = args.vars("var")?;
     let overrides: Vec<String> = pairs
@@ -723,6 +730,7 @@ pub(crate) fn tool_descriptions() -> Vec<Value> {
                 json!({
                     "path": string("Path to a .ncl module"),
                     "var": ncl_var.clone(),
+                    "import_path": string("Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)"),
                 }),
                 &["path"],
             ),
@@ -734,6 +742,7 @@ pub(crate) fn tool_descriptions() -> Vec<Value> {
                 json!({
                     "path": string("Path to a .ncl module"),
                     "var": ncl_var.clone(),
+                    "import_path": string("Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)"),
                 }),
                 &["path"],
             ),
@@ -745,6 +754,7 @@ pub(crate) fn tool_descriptions() -> Vec<Value> {
                 json!({
                     "path": string("Path to a .ncl module"),
                     "var": ncl_var.clone(),
+                    "import_path": string("Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)"),
                 }),
                 &["path"],
             ),
