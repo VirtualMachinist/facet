@@ -50,7 +50,9 @@ pub fn kube_api_base_from_env() -> Result<Option<String>, HttpError> {
         Err(_) => return Err(config("FACET_KUBE_CONTEXT is not valid UTF-8")),
     };
     let resolved = resolve_kubeconfig(Path::new(&path), context.as_deref())?;
-    Ok(Some(resolved.cluster.server.trim_end_matches('/').to_owned()))
+    Ok(Some(
+        resolved.cluster.server.trim_end_matches('/').to_owned(),
+    ))
 }
 
 /// Loads a single kubeconfig and creates a verified client-certificate engine.
@@ -88,9 +90,11 @@ fn resolve_kubeconfig(path: &Path, selected: Option<&str>) -> Result<ResolvedKub
     }
     let context_name = selected.unwrap_or(&kube.current_context);
     let context = unique(&kube.contexts, context_name, |entry| &entry.name)?;
-    let cluster = unique(&kube.clusters, &context.context.cluster, |entry| &entry.name)?
-        .cluster
-        .clone();
+    let cluster = unique(&kube.clusters, &context.context.cluster, |entry| {
+        &entry.name
+    })?
+    .cluster
+    .clone();
     let user = unique(&kube.users, &context.context.user, |entry| &entry.name)?
         .user
         .clone();

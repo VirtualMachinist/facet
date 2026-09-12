@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use hedron_ncl::eval::{Error, export, Input};
+use hedron_ncl::eval::{export, Error, Input};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ncl/fixtures")

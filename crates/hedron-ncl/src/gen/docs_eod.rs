@@ -45,7 +45,6 @@ pub fn check_shape(spec: &Value) -> Result<DocsEodSpec, DocsEodShapeError> {
         )));
     }
 
-    serde_json::from_value(spec.clone()).map_err(|err| {
-        DocsEodShapeError::invalid(format!("{KIND} spec: {err}"))
-    })
+    serde_json::from_value(spec.clone())
+        .map_err(|err| DocsEodShapeError::invalid(format!("{KIND} spec: {err}")))
 }

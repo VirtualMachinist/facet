@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use nickel_lang_core::error::report::{ColorOpt, report_as_str};
+use nickel_lang_core::error::report::{report_as_str, ColorOpt};
 use nickel_lang_core::eval::cache::CacheImpl;
 use nickel_lang_core::program::{Program, ProgramBuilder};
-use nickel_lang_core::serialize::{ExportFormat, to_string};
+use nickel_lang_core::serialize::{to_string, ExportFormat};
 use nickel_lang_core::term::{MergePriority, Number};
 use nickel_lang_core::typecheck::TypecheckMode;
 
@@ -49,7 +49,10 @@ pub enum Input<'a> {
     Path(&'a Path),
 }
 
-fn render<E: nickel_lang_core::error::IntoDiagnostics>(program: &Program<CacheImpl>, e: E) -> Error {
+fn render<E: nickel_lang_core::error::IntoDiagnostics>(
+    program: &Program<CacheImpl>,
+    e: E,
+) -> Error {
     let mut files = program.files();
     Error::Nickel(report_as_str(&mut files, e, ColorOpt::Never))
 }
@@ -82,8 +85,11 @@ fn build(input: Input<'_>, overrides: &[String]) -> Result<Program<CacheImpl>, E
 }
 
 fn export_value(program: &mut Program<CacheImpl>) -> Result<serde_json::Value, Error> {
-    let value = program.eval_full_for_export().map_err(|e| render(program, e))?;
-    let json = to_string(ExportFormat::Json, &value).map_err(|e| Error::Export(format!("{e:?}")))?;
+    let value = program
+        .eval_full_for_export()
+        .map_err(|e| render(program, e))?;
+    let json =
+        to_string(ExportFormat::Json, &value).map_err(|e| Error::Export(format!("{e:?}")))?;
     Ok(serde_json::from_str(&json)?)
 }
 
@@ -136,24 +142,51 @@ mod tests {
     fn override_is_operator_priority() {
         let src = r#"{ replicas = 1, image | priority 1000 = "pinned" }"#;
         let v = export(
-            Input::Text { name: "t", source: src },
+            Input::Text {
+                name: "t",
+                source: src,
+            },
             &["replicas=3".into(), "image=\"mine\"".into()],
         )
         .unwrap();
         assert_eq!(v["replicas"], 3, "override beats plain agent value");
-        assert_eq!(v["image"], "pinned", "release overlay priority beats override");
+        assert_eq!(
+            v["image"], "pinned",
+            "release overlay priority beats override"
+        );
     }
 
     #[test]
     fn bad_override_shape() {
-        let err = export(Input::Text { name: "t", source: "{}" }, &["nope".into()]).unwrap_err();
+        let err = export(
+            Input::Text {
+                name: "t",
+                source: "{}",
+            },
+            &["nope".into()],
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Override(_)), "{err}");
     }
 
     #[test]
     fn check_reports_type_errors_without_output() {
-        let err = check(Input::Text { name: "t", source: r#"(1 + "a" : Number)"# }, &[]).unwrap_err();
+        let err = check(
+            Input::Text {
+                name: "t",
+                source: r#"(1 + "a" : Number)"#,
+            },
+            &[],
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Nickel(_)), "{err}");
-        check(Input::Text { name: "t", source: "{ ok = true }" }, &[]).unwrap();
+        check(
+            Input::Text {
+                name: "t",
+                source: "{ ok = true }",
+            },
+            &[],
+        )
+        .unwrap();
     }
 }
