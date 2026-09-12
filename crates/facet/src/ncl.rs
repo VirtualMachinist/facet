@@ -178,7 +178,9 @@ fn kind(value: &Value) -> &'static str {
 
 fn ncl_error(error: eval::Error) -> FacetError {
     match error {
-        eval::Error::Override(message) => FacetError::invalid_arguments(format!("--var: {message}")),
+        eval::Error::Override(message) => {
+            FacetError::invalid_arguments(format!("--var: {message}"))
+        }
         eval::Error::Build(message) => FacetError::invalid_workspace(message),
         eval::Error::Nickel(report) => FacetError {
             category: NCL_INVALID,
@@ -241,13 +243,27 @@ let lib = import "lib.ncl" in
         assert_eq!(out.cluster[0]["kind"], "Pod");
         assert_eq!(out.cluster[0]["metadata"]["annotations"]["replicas"], "1");
         assert_eq!(out.intent[0]["spec"]["kind"], "docs_eod");
-        assert_eq!(out.calls["environments"][0]["variables"][0]["secret_ref"], "kr:me");
-        assert!(out.calls.get("plaintext_token").is_none(), "not_exported must not leak");
+        assert_eq!(
+            out.calls["environments"][0]["variables"][0]["secret_ref"],
+            "kr:me"
+        );
+        assert!(
+            out.calls.get("plaintext_token").is_none(),
+            "not_exported must not leak"
+        );
         assert!(!canonical(&out.to_json()).contains("hunter2"));
         assert_eq!(out.module_hash, sha256_hex(WORLD.as_bytes()));
         assert_eq!(out.export_hash.len(), 64);
         let json = out.to_json();
-        for key in ["path", "moduleHash", "exportHash", "contractSet", "cluster", "intent", "calls"] {
+        for key in [
+            "path",
+            "moduleHash",
+            "exportHash",
+            "contractSet",
+            "cluster",
+            "intent",
+            "calls",
+        ] {
             assert!(json.get(key).is_some(), "missing {key}");
         }
     }
@@ -261,7 +277,10 @@ let lib = import "lib.ncl" in
         let c = export(&world, &["replicas=3".to_owned()]).unwrap();
         assert_eq!(c.cluster[0]["metadata"]["annotations"]["replicas"], "3");
         assert_ne!(a.export_hash, c.export_hash);
-        assert_eq!(a.module_hash, c.module_hash, "--var changes the export, not the module");
+        assert_eq!(
+            a.module_hash, c.module_hash,
+            "--var changes the export, not the module"
+        );
     }
 
     #[test]

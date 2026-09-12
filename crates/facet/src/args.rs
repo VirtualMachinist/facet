@@ -139,9 +139,9 @@ mod tests {
 
 use std::path::{Path, PathBuf};
 
-use facet_record::{open_store, ConfigOverrides};
-use lattice::{HistoryQuery, WorkspaceStore};
 use crate::{CommandOutput, ncl, versioned_json};
+use facet_record::{ConfigOverrides, open_store};
+use lattice::{HistoryQuery, WorkspaceStore};
 
 const NCL_VALUE_FLAGS: &[&str] = &["--var"];
 const NCL_SWITCH_FLAGS: &[&str] = &["--frozen"];
@@ -284,7 +284,9 @@ fn refuse_if_export_changed(path: &Path, overrides: &[String]) -> Result<(), Fac
 fn lookup_recorded_export(path: &Path) -> Result<Option<(String, String)>, FacetError> {
     let workspace_root = workspace_root_for(path)?;
     let store = match WorkspaceStore::discover(&workspace_root) {
-        Some(root) => open_store(&root, &ConfigOverrides::default()).map_err(FacetError::lattice)?,
+        Some(root) => {
+            open_store(&root, &ConfigOverrides::default()).map_err(FacetError::lattice)?
+        }
         None => return Ok(None),
     };
     let module_url = module_url(&workspace_root, path);
@@ -319,7 +321,6 @@ fn export_hash_from_tags(tags: Option<&str>) -> Option<String> {
     tags.into_iter()
         .find_map(|tag| tag.strip_prefix("ncl:export:").map(str::to_owned))
 }
-
 
 fn workspace_root_for(path: &Path) -> Result<PathBuf, FacetError> {
     if let Some(root) = WorkspaceStore::discover(path) {

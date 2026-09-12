@@ -8,14 +8,14 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use facet_record::{
-    actor_from_env, open_store, recording_disabled, session_from_env, ConfigOverrides,
+    ConfigOverrides, actor_from_env, open_store, recording_disabled, session_from_env,
 };
 use lattice::{BodyInput, MachineStore, NewRun, RunRow, WorkspaceStore, now_ms};
 use serde_json::{Value, json};
 
+use crate::FacetError;
 use crate::ncl::NclExport;
 use crate::ncl_apply::ApplyAction;
-use crate::FacetError;
 
 const METHOD: &str = "NCL";
 const EXPORT_SELECTOR: &str = "ncl:export";
@@ -32,12 +32,7 @@ pub(crate) fn record_export(path: &Path, export: &NclExport, vars: &[String]) {
 }
 
 /// Best-effort Lattice row for a successful Nickel apply. Never fails the apply.
-pub(crate) fn record_apply(
-    path: &Path,
-    export: &NclExport,
-    action: &ApplyAction,
-    vars: &[String],
-) {
+pub(crate) fn record_apply(path: &Path, export: &NclExport, action: &ApplyAction, vars: &[String]) {
     if recording_disabled() {
         return;
     }
@@ -54,7 +49,8 @@ fn try_record_export(path: &Path, export: &NclExport, vars: &[String]) -> Result
             inline_body_max: Some(0),
             history_retention: None,
         },
-    ).map_err(FacetError::lattice)?;
+    )
+    .map_err(FacetError::lattice)?;
 
     let source_blob = source_snapshot(path)?;
     let freeze_blob = serde_json::to_vec(&export.to_json())
@@ -157,10 +153,7 @@ pub(crate) fn workspace_root(path: &Path) -> Result<PathBuf, FacetError> {
     if let Some(root) = WorkspaceStore::discover(&absolute) {
         return Ok(root);
     }
-    Ok(absolute
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or(absolute))
+    Ok(absolute.parent().map(Path::to_path_buf).unwrap_or(absolute))
 }
 
 pub(crate) fn module_path(workspace_root: &Path, path: &Path) -> String {
@@ -229,8 +222,7 @@ fn source_snapshot(path: &Path) -> Result<Vec<u8>, FacetError> {
             .unwrap_or_default(),
         "sources": sources,
     });
-    serde_json::to_vec(&snapshot)
-        .map_err(|error| FacetError::invalid_arguments(error.to_string()))
+    serde_json::to_vec(&snapshot).map_err(|error| FacetError::invalid_arguments(error.to_string()))
 }
 
 fn index_run(store: &WorkspaceStore, run: &RunRow) {

@@ -61,11 +61,7 @@ fn normalize_ncl(value: Value) -> Value {
 fn ncl_check_json_is_golden() {
     let sandbox = Sandbox::new();
     let world = write_world(sandbox.root());
-    let value = sandbox.run_json(&[
-        "ncl",
-        "check",
-        world.to_str().unwrap(),
-    ]);
+    let value = sandbox.run_json(&["ncl", "check", world.to_str().unwrap()]);
     assert_eq!(value["schemaVersion"], 1);
     assert_eq!(value["contractSet"], "k8s-1.34-h3s-0.9.1");
     assert!(value["moduleHash"].as_str().unwrap().len() == 64);
@@ -76,11 +72,7 @@ fn ncl_check_json_is_golden() {
 fn ncl_export_json_is_golden_and_drops_not_exported() {
     let sandbox = Sandbox::new();
     let world = write_world(sandbox.root());
-    let value = sandbox.run_json(&[
-        "ncl",
-        "export",
-        world.to_str().unwrap(),
-    ]);
+    let value = sandbox.run_json(&["ncl", "export", world.to_str().unwrap()]);
     assert_eq!(value["schemaVersion"], 1);
     assert_eq!(value["contractSet"], "k8s-1.34-h3s-0.9.1");
     assert!(value.get("plaintext_token").is_none());
@@ -89,7 +81,10 @@ fn ncl_export_json_is_golden_and_drops_not_exported() {
         "kr:me"
     );
     let text = value.to_string();
-    assert!(!text.contains("hunter2"), "not_exported leaked into export JSON");
+    assert!(
+        !text.contains("hunter2"),
+        "not_exported leaked into export JSON"
+    );
     assert_golden("ncl_export.json", &normalize_ncl(value));
 }
 
@@ -157,8 +152,20 @@ fn ncl_export_records_ledger_tags_and_blobs() {
 
     let source_hash = row["request"]["body"]["hash"].as_str().unwrap();
     let freeze_hash = row["response"]["body"]["hash"].as_str().unwrap();
-    assert!(sandbox.root().join(".facet/blobs").join(source_hash).is_file());
-    assert!(sandbox.root().join(".facet/blobs").join(freeze_hash).is_file());
+    assert!(
+        sandbox
+            .root()
+            .join(".facet/blobs")
+            .join(source_hash)
+            .is_file()
+    );
+    assert!(
+        sandbox
+            .root()
+            .join(".facet/blobs")
+            .join(freeze_hash)
+            .is_file()
+    );
 
     let source_blob = sandbox.run_json(&["blob", source_hash, root]);
     let content = &source_blob["blob"]["body"]["content"];
@@ -188,8 +195,7 @@ fn ncl_export_records_ledger_tags_and_blobs() {
 }
 
 fn run_count(sandbox: &common::Sandbox, root: &str) -> usize {
-    sandbox
-        .run_json(&["history", root])["runs"]
+    sandbox.run_json(&["history", root])["runs"]
         .as_array()
         .unwrap()
         .len()
@@ -204,7 +210,11 @@ fn ncl_export_frozen_passes_when_unchanged() {
     let first = sandbox.run_json(&["ncl", "export", path]);
     let second = sandbox.run_json(&["ncl", "export", path, "--frozen"]);
     assert_eq!(first["exportHash"], second["exportHash"]);
-    assert_eq!(run_count(&sandbox, root), 2, "frozen pass still records the export");
+    assert_eq!(
+        run_count(&sandbox, root),
+        2,
+        "frozen pass still records the export"
+    );
 }
 
 #[test]
@@ -219,11 +229,7 @@ fn ncl_export_frozen_refuses_on_drift() {
         .unwrap()
         .to_owned();
 
-    std::fs::write(
-        &world,
-        WORLD.replace("replicas = 1", "replicas = 2"),
-    )
-    .unwrap();
+    std::fs::write(&world, WORLD.replace("replicas = 1", "replicas = 2")).unwrap();
 
     let before = run_count(&sandbox, root);
     let (code, error) = sandbox.run_error_json(&["ncl", "export", path, "--frozen"]);
