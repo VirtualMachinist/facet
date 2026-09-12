@@ -2396,6 +2396,7 @@ dependencies = [
  "facet-lattice",
  "facet-record",
  "facet-tui",
+ "hedron-ncl",
  "probe-cli",
  "probe-core",
  "probe-http",
