@@ -357,6 +357,10 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "import_path": {
+            "description": "Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)",
+            "type": "string"
+          },
           "path": {
             "description": "Path to a .ncl module",
             "type": "string"
@@ -381,6 +385,10 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "import_path": {
+            "description": "Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)",
+            "type": "string"
+          },
           "path": {
             "description": "Path to a .ncl module",
             "type": "string"
@@ -405,6 +413,10 @@
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
+          "import_path": {
+            "description": "Materialized pack root (--import-path / FACET_NCL_IMPORT_PATH)",
+            "type": "string"
+          },
           "path": {
             "description": "Path to a .ncl module",
             "type": "string"

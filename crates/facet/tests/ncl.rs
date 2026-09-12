@@ -307,3 +307,127 @@ fn ncl_apply_puts_intent_when_hedron_db_present() {
     assert_eq!(value["action"]["intent"]["put"], 1);
     assert_eq!(value["action"]["intent"]["names"], json!(["test-docs-eod"]));
 }
+
+const OUT_TREE_LIB: &str = r#"
+let platform = import "hedron-ncl/platform.ncl" in
+let overlay = import "hedron-ncl/overlay/k8s-1.34-h3s-0.9.1.ncl" in
+{
+  supported_pod = fun args =>
+    overlay.restrict_pod (platform.harden_pod {
+      apiVersion = "v1",
+      kind = "Pod",
+      metadata = { name = args.name },
+      spec = {
+        dnsPolicy = "Default",
+        containers = [
+          {
+            name = "pause",
+            image = "registry.k8s.io/pause:3.10",
+            securityContext = {
+              runAsUser = 65534,
+              seccompProfile = { type = "RuntimeDefault" },
+            },
+          },
+        ],
+      },
+    }),
+}
+"#;
+
+const OUT_TREE_WORLD: &str = r#"
+let lib = import "lib.ncl" in
+let World = import "hedron-ncl/contracts/world.ncl" in
+{
+  cluster = [ lib.supported_pod { name = "supported-pod" } ],
+  intent = [
+    {
+      name = "nickel-g5-docs-eod",
+      importance = 0.5,
+      spec = {
+        kind = "docs_eod",
+        date = "2026-09-12",
+        required_briefs = [ "foundry/hedronetes/CHECKLIST-nickel" ],
+      },
+    },
+  ],
+  calls = {
+    opencollection = "1.0.0",
+    info = {
+      name = "hedronetes-world-fixture",
+      summary = "G5a in-tree World export (cluster + intent + calls)",
+    },
+    config = {
+      environments = [
+        {
+          name = "lima",
+          variables = [ { name = "FACET_PROBE", secret_ref = "kr:probe" } ],
+        },
+      ],
+    },
+  },
+} | World
+"#;
+
+fn in_tree_fixture_world() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../hedron-ncl/ncl/fixtures/world.ncl")
+}
+
+fn write_out_of_tree_world(root: &std::path::Path) -> std::path::PathBuf {
+    fs::write(root.join("lib.ncl"), OUT_TREE_LIB).unwrap();
+    let world = root.join("world.ncl");
+    fs::write(&world, OUT_TREE_WORLD).unwrap();
+    world
+}
+
+#[test]
+fn out_of_tree_world_same_export_hash() {
+    let sandbox = Sandbox::new();
+    let in_tree = in_tree_fixture_world();
+    assert!(
+        in_tree.is_file(),
+        "missing in-tree fixture at {}",
+        in_tree.display()
+    );
+    let in_tree_path = in_tree.to_str().unwrap();
+
+    let in_tree_export = sandbox.run_json(&["ncl", "export", in_tree_path]);
+    let pack_root = sandbox.root().join("pack");
+    sandbox
+        .run_json(&["ncl", "pack", "--out", pack_root.to_str().unwrap()]);
+
+    let world_dir = sandbox.root().join("out-of-tree");
+    fs::create_dir_all(&world_dir).unwrap();
+    let out_tree = write_out_of_tree_world(&world_dir);
+    let out_tree_path = out_tree.to_str().unwrap();
+    let pack_path = pack_root.to_str().unwrap();
+
+    let out_tree_export = sandbox.run_json(&[
+        "ncl",
+        "export",
+        out_tree_path,
+        "--import-path",
+        pack_path,
+    ]);
+    assert_eq!(
+        in_tree_export["exportHash"],
+        out_tree_export["exportHash"],
+        "out-of-tree exportHash must match in-tree fixture"
+    );
+
+    let env_export = sandbox
+        .facet()
+        .env("FACET_NCL_IMPORT_PATH", pack_path)
+        .args(["ncl", "export", out_tree_path, "--json"])
+        .output()
+        .expect("facet ncl export with FACET_NCL_IMPORT_PATH");
+    assert!(
+        env_export.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        env_export.status.code(),
+        String::from_utf8_lossy(&env_export.stdout),
+        String::from_utf8_lossy(&env_export.stderr)
+    );
+    let env_value: Value = serde_json::from_slice(&env_export.stdout).expect("export JSON");
+    assert_eq!(in_tree_export["exportHash"], env_value["exportHash"]);
+}

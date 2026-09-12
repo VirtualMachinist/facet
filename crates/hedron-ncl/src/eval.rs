@@ -4,7 +4,7 @@
 //! `| not_exported`, which is how plaintext secret fields stay out of every
 //! frozen projection. Nothing here persists, hydrates or reads secrets.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nickel_lang_core::error::report::{report_as_str, ColorOpt};
 use nickel_lang_core::eval::cache::CacheImpl;
@@ -57,8 +57,17 @@ fn render<E: nickel_lang_core::error::IntoDiagnostics>(
     Error::Nickel(report_as_str(&mut files, e, ColorOpt::Never))
 }
 
-fn build(input: Input<'_>, overrides: &[String]) -> Result<Program<CacheImpl>, Error> {
+fn build(
+    input: Input<'_>,
+    overrides: &[String],
+    import_paths: &[PathBuf],
+) -> Result<Program<CacheImpl>, Error> {
     let builder = ProgramBuilder::new();
+    let builder = if import_paths.is_empty() {
+        builder
+    } else {
+        builder.add_import_paths(import_paths)
+    };
     let builder = match input {
         Input::Text { name, source } => builder.add_source_string(source, name),
         Input::Path(path) => builder.add_path(path),
@@ -95,8 +104,12 @@ fn export_value(program: &mut Program<CacheImpl>) -> Result<serde_json::Value, E
 
 /// Parse, typecheck and fully evaluate (so every contract fires) without
 /// returning or persisting anything. `Ok(())` means the program would export.
-pub fn check(input: Input<'_>, overrides: &[String]) -> Result<(), Error> {
-    let mut program = build(input, overrides)?;
+pub fn check(
+    input: Input<'_>,
+    overrides: &[String],
+    import_paths: &[PathBuf],
+) -> Result<(), Error> {
+    let mut program = build(input, overrides, import_paths)?;
     program
         .typecheck(TypecheckMode::Walk)
         .map_err(|e| render(&program, e))?;
@@ -104,15 +117,19 @@ pub fn check(input: Input<'_>, overrides: &[String]) -> Result<(), Error> {
 }
 
 /// Evaluate for export with caller overrides and return the frozen value as JSON.
-pub fn export(input: Input<'_>, overrides: &[String]) -> Result<serde_json::Value, Error> {
-    let mut program = build(input, overrides)?;
+pub fn export(
+    input: Input<'_>,
+    overrides: &[String],
+    import_paths: &[PathBuf],
+) -> Result<serde_json::Value, Error> {
+    let mut program = build(input, overrides, import_paths)?;
     export_value(&mut program)
 }
 
 /// Evaluate `source` (named `name` in diagnostics) for export and return the
 /// frozen value as JSON.
 pub fn eval_export(name: &str, source: &str) -> Result<serde_json::Value, Error> {
-    export(Input::Text { name, source }, &[])
+    export(Input::Text { name, source }, &[], &[])
 }
 
 /// Like [`eval_export`], with `platform` and `overlay` bound in scope
@@ -147,6 +164,7 @@ mod tests {
                 source: src,
             },
             &["replicas=3".into(), "image=\"mine\"".into()],
+            &[],
         )
         .unwrap();
         assert_eq!(v["replicas"], 3, "override beats plain agent value");
@@ -164,6 +182,7 @@ mod tests {
                 source: "{}",
             },
             &["nope".into()],
+            &[],
         )
         .unwrap_err();
         assert!(matches!(err, Error::Override(_)), "{err}");
@@ -177,6 +196,7 @@ mod tests {
                 source: r#"(1 + "a" : Number)"#,
             },
             &[],
+            &[],
         )
         .unwrap_err();
         assert!(matches!(err, Error::Nickel(_)), "{err}");
@@ -185,6 +205,7 @@ mod tests {
                 name: "t",
                 source: "{ ok = true }",
             },
+            &[],
             &[],
         )
         .unwrap();
