@@ -393,8 +393,7 @@ fn out_of_tree_world_same_export_hash() {
 
     let in_tree_export = sandbox.run_json(&["ncl", "export", in_tree_path]);
     let pack_root = sandbox.root().join("pack");
-    sandbox
-        .run_json(&["ncl", "pack", "--out", pack_root.to_str().unwrap()]);
+    sandbox.run_json(&["ncl", "pack", "--out", pack_root.to_str().unwrap()]);
 
     let world_dir = sandbox.root().join("out-of-tree");
     fs::create_dir_all(&world_dir).unwrap();
@@ -402,16 +401,10 @@ fn out_of_tree_world_same_export_hash() {
     let out_tree_path = out_tree.to_str().unwrap();
     let pack_path = pack_root.to_str().unwrap();
 
-    let out_tree_export = sandbox.run_json(&[
-        "ncl",
-        "export",
-        out_tree_path,
-        "--import-path",
-        pack_path,
-    ]);
+    let out_tree_export =
+        sandbox.run_json(&["ncl", "export", out_tree_path, "--import-path", pack_path]);
     assert_eq!(
-        in_tree_export["exportHash"],
-        out_tree_export["exportHash"],
+        in_tree_export["exportHash"], out_tree_export["exportHash"],
         "out-of-tree exportHash must match in-tree fixture"
     );
 
