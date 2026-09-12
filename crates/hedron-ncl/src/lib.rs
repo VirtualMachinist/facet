@@ -12,6 +12,7 @@
 //!   priority overlay, not eternal law).
 //! - [`eval`] — thin wrapper over `nickel-lang-core`: source in, frozen JSON out.
 //! - [`gen`] — generated Rust predicates (backend owns `gen::docs_eod`).
+//! - [`pack`] — contract-set marker for `facet ncl pack --out` (backend G0b).
 //! - `ncl/contracts/` — `docs_eod.ncl` (backend), `opencollection.ncl` (frontend).
 
 #![forbid(unsafe_code)]
@@ -19,6 +20,8 @@
 pub mod eval;
 pub mod r#gen;
 pub mod overlay;
+pub mod pack;
 
 pub use eval::{eval_export, eval_export_with_prelude, Error};
 pub use overlay::{contract_set_id, prelude, CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL};
+pub use pack::{contract_set_marker_bytes, read_contract_set_marker, write_contract_set_marker, CONTRACT_SET_MARKER_FILE};
