@@ -20,5 +20,5 @@ pub mod eval;
 pub mod r#gen;
 pub mod overlay;
 
-pub use eval::{Error, eval_export, eval_export_with_prelude};
-pub use overlay::{CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL, contract_set_id, prelude};
+pub use eval::{eval_export, eval_export_with_prelude, Error};
+pub use overlay::{contract_set_id, prelude, CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL};

@@ -14,7 +14,7 @@
 //! volume restriction are **0.9 gaps**: they live in the overlay and leave with
 //! the h3s minor that closes them. They are never platform `| force`.
 
-use crate::eval::{Error, eval_export};
+use crate::eval::{eval_export, Error};
 
 /// Contract set id of the current release overlay. Bumps with the h3s minor
 /// (`k8s-1.34-h3s-0.10.0` once bound tokens / NodePort land). Lattice tags

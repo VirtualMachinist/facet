@@ -1,7 +1,9 @@
 //! G0b: the release overlay is versioned, and 0.9 gaps live there as priority
 //! values, not as platform `| force`.
 
-use hedron_ncl::{CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL, contract_set_id, eval_export_with_prelude};
+use hedron_ncl::{
+    contract_set_id, eval_export_with_prelude, CONTRACT_SET, OVERLAY_NCL, PLATFORM_NCL,
+};
 
 fn code_lines(src: &str) -> String {
     src.lines()
@@ -33,12 +35,23 @@ fn contract_set_id_is_versioned_and_matches_overlay() {
 fn release_gaps_are_in_overlay_not_platform_source() {
     let platform = code_lines(PLATFORM_NCL);
     let overlay = code_lines(OVERLAY_NCL);
-    for gap in ["automountServiceAccountToken", "enableServiceLinks", "ClusterIP", "NodePort"] {
-        assert!(!platform.contains(gap), "platform.ncl must not legislate `{gap}`");
+    for gap in [
+        "automountServiceAccountToken",
+        "enableServiceLinks",
+        "ClusterIP",
+        "NodePort",
+    ] {
+        assert!(
+            !platform.contains(gap),
+            "platform.ncl must not legislate `{gap}`"
+        );
     }
     assert!(overlay.contains("automountServiceAccountToken"));
     assert!(overlay.contains("enableServiceLinks"));
-    assert!(!overlay.contains("force"), "overlay must use priority, never `| force`");
+    assert!(
+        !overlay.contains("force"),
+        "overlay must use priority, never `| force`"
+    );
     assert!(platform.contains("| force"), "platform law is `| force`");
 }
 
@@ -64,7 +77,10 @@ fn overlay_priority_turns_automount_off() {
     .unwrap();
     assert_eq!(v["spec"]["automountServiceAccountToken"], false);
     assert_eq!(v["spec"]["enableServiceLinks"], false);
-    assert_eq!(v["spec"]["containers"][0]["securityContext"]["allowPrivilegeEscalation"], false);
+    assert_eq!(
+        v["spec"]["containers"][0]["securityContext"]["allowPrivilegeEscalation"],
+        false
+    );
 }
 
 #[test]
@@ -86,7 +102,11 @@ fn overlay_rejects_nodeport_with_release_blame() {
     let msg = err.to_string();
     assert!(msg.contains("k8s-1.34-h3s-0.9.1"), "{msg}");
     assert!(msg.contains("NodePort"), "{msg}");
-    let ok = eval_export_with_prelude("t", r#"({ spec = { type = "ClusterIP" } } | overlay.Service)"#).unwrap();
+    let ok = eval_export_with_prelude(
+        "t",
+        r#"({ spec = { type = "ClusterIP" } } | overlay.Service)"#,
+    )
+    .unwrap();
     assert_eq!(ok["spec"]["type"], "ClusterIP");
 }
 
@@ -108,8 +128,11 @@ fn overlay_rejects_unsupported_volume_kind() {
 
 #[test]
 fn platform_secret_slot_refuses_plaintext() {
-    let err = eval_export_with_prelude("t", r#"({ token = "hunter2" } | { token | platform.SecretSlot })"#)
-        .unwrap_err();
+    let err = eval_export_with_prelude(
+        "t",
+        r#"({ token = "hunter2" } | { token | platform.SecretSlot })"#,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("secret_ref"), "{err}");
     let ok = eval_export_with_prelude(
         "t",
@@ -121,10 +144,16 @@ fn platform_secret_slot_refuses_plaintext() {
 
 #[test]
 fn platform_no_secret_fields_in_extra() {
-    let err = eval_export_with_prelude("t", r#"({ api_key = "x", owner = "me" } | platform.NoSecretFields)"#)
-        .unwrap_err();
+    let err = eval_export_with_prelude(
+        "t",
+        r#"({ api_key = "x", owner = "me" } | platform.NoSecretFields)"#,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("api_key"), "{err}");
-    let ok = eval_export_with_prelude("t", r#"({ owner = "me", tier = "warm" } | platform.NoSecretFields)"#)
-        .unwrap();
+    let ok = eval_export_with_prelude(
+        "t",
+        r#"({ owner = "me", tier = "warm" } | platform.NoSecretFields)"#,
+    )
+    .unwrap();
     assert_eq!(ok["owner"], "me");
 }
