@@ -12,8 +12,8 @@
 //! - `env` sets and lists machine-store environment values (metadata only on read).
 //! - `request run --expect` / `--dry-run`: the assertion (exit 1) and the preview.
 //! - `mcp` serves the same functions as Model Context Protocol tools over stdio.
-//! - `ncl check` / `ncl export` evaluate Nickel in-process (`hedron-ncl`); Facet
-//!   is the only Nickel VM on the platform.
+//! - `ncl check` / `ncl export` / `ncl apply` evaluate Nickel in-process
+//!   (`hedron-ncl`); Facet is the only Nickel VM on the platform.
 //! - `tui` opens the terminal UI.
 //!
 //! Contract details for the Facet-only commands live in `docs/FACET.md`.
@@ -33,6 +33,7 @@ mod expect;
 mod history;
 mod mcp;
 pub mod ncl;
+mod ncl_apply;
 mod ncl_ledger;
 mod pin;
 mod presentation;

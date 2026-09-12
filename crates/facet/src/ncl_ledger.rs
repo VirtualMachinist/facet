@@ -1,4 +1,4 @@
-//! Lattice eval ledger for `facet ncl export` (SPEC-nickel G2).
+//! Lattice eval ledger for `facet ncl export` and `facet ncl apply` (G2/G5).
 //!
 //! On successful export, records tags `ncl:module:<hash>`, `ncl:export:<hash>`,
 //! `ncl:contracts:<contractSet>` plus content-addressed blobs for the source
@@ -11,25 +11,42 @@ use facet_record::{
     actor_from_env, open_store, recording_disabled, session_from_env, ConfigOverrides,
 };
 use lattice::{BodyInput, MachineStore, NewRun, RunRow, WorkspaceStore, now_ms};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::ncl::NclExport;
+use crate::ncl_apply::ApplyAction;
 use crate::FacetError;
 
 const METHOD: &str = "NCL";
-const REQUEST_SELECTOR: &str = "ncl:export";
+const EXPORT_SELECTOR: &str = "ncl:export";
+const APPLY_SELECTOR: &str = "ncl:apply";
 
 /// Best-effort Lattice row for a successful Nickel export. Never fails the export.
 pub(crate) fn record_export(path: &Path, export: &NclExport, vars: &[String]) {
     if recording_disabled() {
         return;
     }
-    if let Err(error) = try_record(path, export, vars) {
+    if let Err(error) = try_record_export(path, export, vars) {
         eprintln!("facet: ncl export ledger: {error:?}");
     }
 }
 
-fn try_record(path: &Path, export: &NclExport, vars: &[String]) -> Result<(), FacetError> {
+/// Best-effort Lattice row for a successful Nickel apply. Never fails the apply.
+pub(crate) fn record_apply(
+    path: &Path,
+    export: &NclExport,
+    action: &ApplyAction,
+    vars: &[String],
+) {
+    if recording_disabled() {
+        return;
+    }
+    if let Err(error) = try_record_apply(path, export, action, vars) {
+        eprintln!("facet: ncl apply ledger: {error:?}");
+    }
+}
+
+fn try_record_export(path: &Path, export: &NclExport, vars: &[String]) -> Result<(), FacetError> {
     let workspace_root = workspace_root(path)?;
     let store = open_store(
         &workspace_root,
@@ -52,7 +69,64 @@ fn try_record(path: &Path, export: &NclExport, vars: &[String]) -> Result<(), Fa
     let new_run = NewRun {
         started_at: now_ms(),
         duration_ms: Some(0),
-        request_path: REQUEST_SELECTOR,
+        request_path: EXPORT_SELECTOR,
+        request_hash: &export.module_hash,
+        environment: None,
+        method: METHOD,
+        url: &request_path,
+        status: Some(200),
+        error: None,
+        req_headers: None,
+        res_headers: Some(r#"{"content-type":"application/json"}"#),
+        req_body: BodyInput::Bytes(&source_blob),
+        res_body: BodyInput::Bytes(&freeze_blob),
+        res_content_type: Some("application/json"),
+        session_id: session.as_deref(),
+        actor: &actor,
+        tags: Some(&tags),
+        replayed_from: None,
+        var_names: Some(&var_names),
+    };
+
+    let run = store.record_run(&new_run).map_err(FacetError::lattice)?;
+    index_run(&store, &run);
+    Ok(())
+}
+
+fn try_record_apply(
+    path: &Path,
+    export: &NclExport,
+    action: &ApplyAction,
+    vars: &[String],
+) -> Result<(), FacetError> {
+    let workspace_root = workspace_root(path)?;
+    let store = open_store(
+        &workspace_root,
+        &ConfigOverrides {
+            inline_body_max: Some(0),
+            history_retention: None,
+        },
+    )
+    .map_err(FacetError::lattice)?;
+
+    let source_blob = source_snapshot(path)?;
+    let mut artifact = export.to_json();
+    if let Value::Object(map) = &mut artifact {
+        map.insert("action".to_owned(), action.to_json());
+    }
+    let freeze_blob = serde_json::to_vec(&artifact)
+        .map_err(|error| FacetError::invalid_arguments(error.to_string()))?;
+
+    let tags = tags_json(export);
+    let var_names = json!(var_name_list(vars)).to_string();
+    let request_path = module_path(&workspace_root, path);
+    let actor = actor_from_env();
+    let session = session_from_env();
+
+    let new_run = NewRun {
+        started_at: now_ms(),
+        duration_ms: Some(0),
+        request_path: APPLY_SELECTOR,
         request_hash: &export.module_hash,
         environment: None,
         method: METHOD,

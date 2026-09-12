@@ -401,6 +401,30 @@
       "name": "ncl_export"
     },
     {
+      "description": "Export a Nickel world module, POST frozen cluster JSON when FACET_KUBECONFIG is set, put intent rows through Hedron Store when FACET_HEDRON_DB is set, and record one ncl:apply Lattice row. Returns export fields plus action summary.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "description": "Path to a .ncl module",
+            "type": "string"
+          },
+          "var": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Nickel field overrides (path.to.field → expression). Never a secret value or secret field path.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "name": "ncl_apply"
+    },
+    {
       "description": "Read-only SQL over the workspace store (runs, blobs). Writes fail with sql_read_only. The machine store is never attached.",
       "inputSchema": {
         "additionalProperties": false,

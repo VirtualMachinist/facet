@@ -29,9 +29,13 @@
   "exportHash": "<sha256>",
   "intent": [
     {
-      "date": "2026-09-12",
-      "kind": "docs_eod",
-      "required_briefs": []
+      "importance": 0.5,
+      "name": "test-docs-eod",
+      "spec": {
+        "date": "2026-09-12",
+        "kind": "docs_eod",
+        "required_briefs": []
+      }
     }
   ],
   "moduleHash": "<sha256>",
