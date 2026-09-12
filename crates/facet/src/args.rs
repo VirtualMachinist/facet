@@ -137,11 +137,14 @@ mod tests {
     }
 }
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use facet_record::{open_store, ConfigOverrides};
+use lattice::{HistoryQuery, WorkspaceStore};
 use crate::{CommandOutput, ncl, versioned_json};
 
 const NCL_VALUE_FLAGS: &[&str] = &["--var"];
+const NCL_SWITCH_FLAGS: &[&str] = &["--frozen"];
 
 const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authorization", "secret"];
 
@@ -179,7 +182,12 @@ pub(crate) fn reject_secret_overrides(overrides: &[String]) -> Result<(), FacetE
 }
 
 fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
-    let (path, overrides) = parse_ncl_cli(args)?;
+    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    if frozen {
+        return Err(FacetError::invalid_arguments(
+            "ncl check does not support --frozen; use ncl export --frozen",
+        ));
+    }
     let result = ncl::check(&path, &overrides)?;
     let json = versioned_json(result.to_json());
     let human = format!(
@@ -192,7 +200,10 @@ fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
 }
 
 fn ncl_export(args: &[String]) -> Result<CommandOutput, FacetError> {
-    let (path, overrides) = parse_ncl_cli(args)?;
+    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    if frozen {
+        refuse_if_export_changed(&path, &overrides)?;
+    }
     let result = ncl::export(&path, &overrides)?;
     let json = versioned_json(result.to_json());
     let human = format!(
@@ -205,8 +216,8 @@ fn ncl_export(args: &[String]) -> Result<CommandOutput, FacetError> {
     Ok(CommandOutput::new(human, json))
 }
 
-fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>), FacetError> {
-    let parsed = parse(args, NCL_VALUE_FLAGS, &[])?;
+fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>, bool), FacetError> {
+    let parsed = parse(args, NCL_VALUE_FLAGS, NCL_SWITCH_FLAGS)?;
     let [path] = parsed.positionals() else {
         return Err(FacetError::invalid_arguments(
             "ncl requires <path> to a .ncl module",
@@ -225,5 +236,83 @@ fn parse_ncl_cli(args: &[String]) -> Result<(PathBuf, Vec<String>), FacetError> 
         })
         .collect::<Result<Vec<_>, _>>()?;
     reject_secret_overrides(&overrides)?;
-    Ok((PathBuf::from(path), overrides))
+    Ok((PathBuf::from(path), overrides, parsed.switch("--frozen")))
+}
+
+/// Re-evaluates without recording and refuses when the export hash drifted.
+fn refuse_if_export_changed(path: &Path, overrides: &[String]) -> Result<(), FacetError> {
+    let Some((run_id, recorded_hash)) = lookup_recorded_export(path)? else {
+        return Err(FacetError::invalid_arguments(
+            "--frozen requires a prior ncl export recorded in Lattice for this module",
+        ));
+    };
+
+    let current = ncl::evaluate(path, overrides)?;
+
+    if current.export_hash != recorded_hash {
+        return Err(FacetError::replay_changed(
+            &run_id,
+            &recorded_hash,
+            &current.export_hash,
+        ));
+    }
+    Ok(())
+}
+
+fn lookup_recorded_export(path: &Path) -> Result<Option<(String, String)>, FacetError> {
+    let workspace_root = workspace_root_for(path)?;
+    let store = match WorkspaceStore::discover(&workspace_root) {
+        Some(root) => open_store(&root, &ConfigOverrides::default()).map_err(FacetError::lattice)?,
+        None => return Ok(None),
+    };
+    let module_url = module_url(&workspace_root, path);
+    let rows = store
+        .history(&HistoryQuery {
+            limit: 50,
+            request_path: Some("ncl:export".to_owned()),
+            status: None,
+            actor: None,
+            since: None,
+            session_id: None,
+            environment: None,
+            tags: Vec::new(),
+            hash: None,
+        })
+        .map_err(FacetError::lattice)?;
+    for row in rows {
+        if row.url != module_url {
+            continue;
+        }
+        if let Some(hash) = export_hash_from_tags(row.tags.as_deref()) {
+            return Ok(Some((row.id.clone(), hash)));
+        }
+    }
+    Ok(None)
+}
+
+fn export_hash_from_tags(tags: Option<&str>) -> Option<String> {
+    let tags: Vec<String> = tags
+        .and_then(|text| serde_json::from_str(text).ok())
+        .unwrap_or_default();
+    tags.into_iter()
+        .find_map(|tag| tag.strip_prefix("ncl:export:").map(str::to_owned))
+}
+
+
+fn workspace_root_for(path: &Path) -> Result<PathBuf, FacetError> {
+    if let Some(root) = WorkspaceStore::discover(path) {
+        return Ok(root);
+    }
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(path);
+    Ok(parent.to_path_buf())
+}
+
+fn module_url(workspace_root: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace_root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
