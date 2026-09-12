@@ -176,10 +176,7 @@ fn apply_cluster(cluster: &Value) -> Result<ClusterAction, FacetError> {
             .map_err(|error| FacetError::http(error))?;
         results.push(ClusterPostResult {
             kind: object["kind"].as_str().unwrap_or("").to_owned(),
-            name: object["metadata"]["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_owned(),
+            name: object["metadata"]["name"].as_str().unwrap_or("").to_owned(),
             status,
         });
     }
@@ -216,21 +213,15 @@ fn apply_intent(intent: &Value) -> Result<IntentAction, FacetError> {
         let name = row["name"]
             .as_str()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                FacetError::invalid_arguments("intent rows require a non-empty name")
-            })?;
+            .ok_or_else(|| FacetError::invalid_arguments("intent rows require a non-empty name"))?;
         let importance = row["importance"].as_f64().unwrap_or(0.5);
         let spec = &row["spec"];
         check_shape(spec).map_err(|error| {
             FacetError::invalid_arguments(format!("intent spec shape: {error}"))
         })?;
-        let yaml_spec = serde_yaml::from_str(
-            &serde_json::to_string(spec).map_err(|error| {
-                FacetError::invalid_arguments(format!(
-                    "intent spec is not JSON-serializable: {error}"
-                ))
-            })?,
-        )
+        let yaml_spec = serde_yaml::from_str(&serde_json::to_string(spec).map_err(|error| {
+            FacetError::invalid_arguments(format!("intent spec is not JSON-serializable: {error}"))
+        })?)
         .map_err(|error| {
             FacetError::invalid_arguments(format!("intent spec is not YAML-serializable: {error}"))
         })?;
