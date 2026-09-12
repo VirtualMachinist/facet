@@ -28,7 +28,11 @@ fn contract_set_marker_round_trip() {
 #[test]
 fn contract_set_marker_rejects_wrong_id() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join(CONTRACT_SET_MARKER_FILE), b"k8s-1.34-h3s-0.10.0").unwrap();
+    std::fs::write(
+        dir.path().join(CONTRACT_SET_MARKER_FILE),
+        b"k8s-1.34-h3s-0.10.0",
+    )
+    .unwrap();
     let err = read_contract_set_marker(dir.path()).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     assert!(err.to_string().contains("0.10.0"), "{err}");
