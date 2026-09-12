@@ -33,6 +33,7 @@ mod expect;
 mod history;
 mod mcp;
 pub mod ncl;
+mod ncl_ledger;
 mod pin;
 mod presentation;
 mod replay;
