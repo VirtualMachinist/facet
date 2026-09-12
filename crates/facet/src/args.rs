@@ -151,14 +151,15 @@ const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authoriz
 pub(crate) fn ncl(args: &[String]) -> Result<CommandOutput, FacetError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(FacetError::invalid_arguments(
-            "ncl requires a subcommand: check or export",
+            "ncl requires a subcommand: check, export, or apply",
         ));
     };
     match verb.as_str() {
         "check" => ncl_check(rest),
         "export" => ncl_export(rest),
+        "apply" => ncl_apply(rest),
         other => Err(FacetError::invalid_arguments(format!(
-            "unknown ncl subcommand: {other} (expected check or export)"
+            "unknown ncl subcommand: {other} (expected check, export, or apply)"
         ))),
     }
 }
@@ -195,6 +196,27 @@ fn ncl_check(args: &[String]) -> Result<CommandOutput, FacetError> {
         result.path.display(),
         result.module_hash,
         result.contract_set,
+    );
+    Ok(CommandOutput::new(human, json))
+}
+
+fn ncl_apply(args: &[String]) -> Result<CommandOutput, FacetError> {
+    let (path, overrides, frozen) = parse_ncl_cli(args)?;
+    if frozen {
+        return Err(FacetError::invalid_arguments(
+            "ncl apply does not support --frozen; use ncl export --frozen",
+        ));
+    }
+    let result = ncl::apply(&path, &overrides)?;
+    let json = versioned_json(result.to_json());
+    let human = format!(
+        "ok {} (moduleHash={} exportHash={} contractSet={} cluster.posted={} intent.put={})\n",
+        result.path.display(),
+        result.module_hash,
+        result.export_hash,
+        result.contract_set,
+        result.action.cluster.posted,
+        result.action.intent.put,
     );
     Ok(CommandOutput::new(human, json))
 }

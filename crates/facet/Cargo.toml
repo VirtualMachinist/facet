@@ -18,6 +18,9 @@ facet-tui = { path = "../facet-tui" }
 facet-lattice = { path = "../lattice" }
 # The only Nickel VM on the platform: in-process, never a `nickel` subprocess.
 hedron-ncl = { path = "../hedron-ncl" }
+hedron-core = { path = "../../../hedrondb" }
+serde_yaml = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
 probe-cli = { path = "../cli" }
 probe-core = { path = "../core" }
 probe-http = { path = "../http" }

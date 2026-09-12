@@ -23,7 +23,13 @@ let lib = import "lib.ncl" in
 {
   replicas = 1,
   cluster = [ lib.pod { name = "web", n = replicas } ],
-  intent = [ { kind = "docs_eod", date = "2026-09-12", required_briefs = [] } ],
+  intent = [
+    {
+      name = "test-docs-eod",
+      importance = 0.5,
+      spec = { kind = "docs_eod", date = "2026-09-12", required_briefs = [] },
+    },
+  ],
   calls = {
     opencollection = "1.0.0",
     environments = [ { name = "dev", variables = [ { name = "TOKEN", secret_ref = "kr:me" } ] } ],
@@ -237,4 +243,61 @@ fn ncl_export_frozen_refuses_on_drift() {
         before,
         "no ledger row when --frozen refuses"
     );
+}
+
+#[test]
+fn ncl_apply_records_one_lattice_row_and_skips_cluster_without_kubeconfig() {
+    let sandbox = Sandbox::new();
+    let world = write_world(sandbox.root());
+    let path = world.to_str().unwrap();
+    let root = sandbox.root().to_str().unwrap();
+    let value = sandbox.run_json(&["ncl", "apply", path]);
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["contractSet"], "k8s-1.34-h3s-0.9.1");
+    assert_eq!(value["action"]["cluster"]["skipped"], true);
+    assert_eq!(value["action"]["intent"]["skipped"], true);
+
+    let history = sandbox.run_json(&["history", root, "--bodies"]);
+    let runs = history["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "expected one ncl:apply ledger row");
+    let row = &runs[0];
+    assert_eq!(row["requestPath"], "ncl:apply");
+    assert_eq!(row["method"], "NCL");
+
+    let tags: Vec<&str> = row["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tag| tag.as_str().unwrap())
+        .collect();
+    assert!(tags.iter().any(|tag| tag.starts_with("ncl:module:")));
+    assert!(tags.iter().any(|tag| tag.starts_with("ncl:export:")));
+    assert!(tags.iter().any(|tag| tag.starts_with("ncl:contracts:")));
+}
+
+#[test]
+fn ncl_apply_puts_intent_when_hedron_db_present() {
+    let sandbox = Sandbox::new();
+    let world = write_world(sandbox.root());
+    let path = world.to_str().unwrap();
+    let db_path = sandbox.root().join("hedron.db");
+    hedron_core::Store::open(&db_path).expect("create empty hedrondb schema");
+
+    let output = sandbox
+        .facet()
+        .env("FACET_HEDRON_DB", &db_path)
+        .args(["ncl", "apply", path, "--json"])
+        .output()
+        .expect("facet ncl apply");
+    assert!(
+        output.status.success(),
+        "exit {:?}\nstdout: {}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: Value = serde_json::from_slice(&output.stdout).expect("apply JSON");
+    assert_eq!(value["action"]["intent"]["skipped"], false);
+    assert_eq!(value["action"]["intent"]["put"], 1);
+    assert_eq!(value["action"]["intent"]["names"], json!(["test-docs-eod"]));
 }

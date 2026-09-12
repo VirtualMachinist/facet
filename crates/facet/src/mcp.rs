@@ -70,6 +70,7 @@ pub const TOOLS: &[&str] = &[
     "run_replay",
     "ncl_check",
     "ncl_export",
+    "ncl_apply",
     "sql_query",
 ];
 
@@ -344,6 +345,12 @@ fn dispatch(name: &str, arguments: &Map<String, Value>) -> Result<CommandOutput,
             let path = args.required("path")?;
             let overrides = ncl_overrides(&args)?;
             let result = crate::ncl::export(Path::new(&path), &overrides)?;
+            Ok(CommandOutput::new(Vec::new(), result.to_json()))
+        }
+        "ncl_apply" => {
+            let path = args.required("path")?;
+            let overrides = ncl_overrides(&args)?;
+            let result = crate::ncl::apply(Path::new(&path), &overrides)?;
             Ok(CommandOutput::new(Vec::new(), result.to_json()))
         }
         other => Err(FacetError::invalid_arguments(format!(
@@ -725,6 +732,17 @@ pub(crate) fn tool_descriptions() -> Vec<Value> {
         tool(
             "ncl_export",
             "eval_full_for_export on a Nickel world module. Returns { path, moduleHash, exportHash, contractSet, cluster, intent, calls }. Fields marked | not_exported are absent.",
+            schema(
+                json!({
+                    "path": string("Path to a .ncl module"),
+                    "var": ncl_var.clone(),
+                }),
+                &["path"],
+            ),
+        ),
+        tool(
+            "ncl_apply",
+            "Export a Nickel world module, POST frozen cluster JSON when FACET_KUBECONFIG is set, put intent rows through Hedron Store when FACET_HEDRON_DB is set, and record one ncl:apply Lattice row. Returns export fields plus action summary.",
             schema(
                 json!({
                     "path": string("Path to a .ncl module"),

@@ -11,6 +11,8 @@
 //!   dropped) projected to the `World` shape `{ cluster, intent, calls }`, plus
 //!   `moduleHash` (sha256 of the source bytes), `exportHash` (sha256 of the
 //!   canonical frozen JSON) and `contractSet` (the release overlay id).
+//! - [`apply`]: export without a separate ledger row, POST frozen `cluster`
+//!   JSON, optional Hedron `Store::put` for `intent`, then one `ncl:apply` row.
 //!
 //! `--var path.to.field=value` maps to a Nickel `FieldOverride` at the
 //! operator merge priority. Values are Nickel expressions; strings need quotes.
@@ -23,6 +25,7 @@ use hedron_ncl::eval::{self, Input};
 use lattice::sha256_hex;
 use serde_json::{Value, json};
 
+use crate::ncl_apply::{self, NclApply};
 use crate::{CONFIGURATION_EXIT_CODE, FacetError};
 
 /// Contract set id of the release overlay compiled into this binary.
@@ -107,6 +110,14 @@ pub fn export(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
     let export = evaluate(path, vars)?;
     crate::ncl_ledger::record_export(path, &export, vars);
     Ok(export)
+}
+
+/// Export, act on frozen projections, and record one `ncl:apply` Lattice row.
+pub fn apply(path: &Path, vars: &[String]) -> Result<NclApply, FacetError> {
+    let export = evaluate(path, vars)?;
+    let action = ncl_apply::execute(&export)?;
+    crate::ncl_ledger::record_apply(path, &export, &action, vars);
+    Ok(ncl_apply::from_export(export, action))
 }
 
 /// Evaluate for export without persisting to Lattice.
@@ -194,7 +205,7 @@ let lib = import "lib.ncl" in
 {
   replicas = 1,
   cluster = [ lib.pod { name = "web", n = replicas } ],
-  intent = [ { kind = "docs_eod", date = "2026-09-12", required_briefs = [] } ],
+  intent = [ { name = "test-docs-eod", importance = 0.5, spec = { kind = "docs_eod", date = "2026-09-12", required_briefs = [] } }, ],
   calls = {
     opencollection = "1.0.0",
     environments = [ { name = "dev", variables = [ { name = "TOKEN", secret_ref = "kr:me" } ] } ],
@@ -229,7 +240,7 @@ let lib = import "lib.ncl" in
         assert_eq!(out.contract_set, "k8s-1.34-h3s-0.9.1");
         assert_eq!(out.cluster[0]["kind"], "Pod");
         assert_eq!(out.cluster[0]["metadata"]["annotations"]["replicas"], "1");
-        assert_eq!(out.intent[0]["kind"], "docs_eod");
+        assert_eq!(out.intent[0]["spec"]["kind"], "docs_eod");
         assert_eq!(out.calls["environments"][0]["variables"][0]["secret_ref"], "kr:me");
         assert!(out.calls.get("plaintext_token").is_none(), "not_exported must not leak");
         assert!(!canonical(&out.to_json()).contains("hunter2"));
