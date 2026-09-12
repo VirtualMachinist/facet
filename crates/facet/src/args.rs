@@ -114,15 +114,16 @@ const NCL_SECRET_SEGMENTS: &[&str] = &["token", "password", "api_key", "authoriz
 pub(crate) fn ncl(args: &[String]) -> Result<CommandOutput, FacetError> {
     let Some((verb, rest)) = args.split_first() else {
         return Err(FacetError::invalid_arguments(
-            "ncl requires a subcommand: check, export, or apply",
+            "ncl requires a subcommand: check, export, apply, or pack",
         ));
     };
     match verb.as_str() {
         "check" => ncl_check(rest),
         "export" => ncl_export(rest),
         "apply" => ncl_apply(rest),
+        "pack" => crate::ncl_pack::pack(rest),
         other => Err(FacetError::invalid_arguments(format!(
-            "unknown ncl subcommand: {other} (expected check, export, or apply)"
+            "unknown ncl subcommand: {other} (expected check, export, apply, or pack)"
         ))),
     }
 }

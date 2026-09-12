@@ -21,7 +21,10 @@ pub fn contract_set_marker_bytes() -> &'static [u8] {
 /// Write `<out>/contract-set` with [`CONTRACT_SET`]. Creates `out` if absent.
 pub fn write_contract_set_marker(out: &Path) -> io::Result<()> {
     fs::create_dir_all(out)?;
-    fs::write(out.join(CONTRACT_SET_MARKER_FILE), contract_set_marker_bytes())
+    fs::write(
+        out.join(CONTRACT_SET_MARKER_FILE),
+        contract_set_marker_bytes(),
+    )
 }
 
 /// Read and validate `<pack>/contract-set`. Fails if missing or not exactly
@@ -34,9 +37,7 @@ pub fn read_contract_set_marker(pack: &Path) -> io::Result<String> {
     if id != CONTRACT_SET {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "pack contract-set marker is `{id}`; expected `{CONTRACT_SET}`"
-            ),
+            format!("pack contract-set marker is `{id}`; expected `{CONTRACT_SET}`"),
         ));
     }
     Ok(id.to_owned())

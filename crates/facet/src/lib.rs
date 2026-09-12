@@ -35,6 +35,7 @@ mod mcp;
 pub mod ncl;
 mod ncl_apply;
 mod ncl_ledger;
+mod ncl_pack;
 mod pin;
 mod presentation;
 mod replay;
