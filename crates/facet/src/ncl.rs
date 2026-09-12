@@ -94,9 +94,13 @@ impl NclExport {
 
 /// Parse, typecheck and evaluate the module at `path` with `vars` applied.
 /// Persists nothing.
-pub fn check(path: &Path, vars: &[String]) -> Result<NclCheck, FacetError> {
+pub fn check(
+    path: &Path,
+    vars: &[String],
+    import_paths: &[PathBuf],
+) -> Result<NclCheck, FacetError> {
     let module_hash = module_hash(path)?;
-    eval::check(Input::Path(path), vars).map_err(ncl_error)?;
+    eval::check(Input::Path(path), vars, import_paths).map_err(ncl_error)?;
     Ok(NclCheck {
         path: path.to_path_buf(),
         module_hash,
@@ -106,24 +110,36 @@ pub fn check(path: &Path, vars: &[String]) -> Result<NclCheck, FacetError> {
 
 /// Evaluate the module at `path` for export with `vars` applied and split the
 /// frozen value into the three `World` projections.
-pub fn export(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
-    let export = evaluate(path, vars)?;
+pub fn export(
+    path: &Path,
+    vars: &[String],
+    import_paths: &[PathBuf],
+) -> Result<NclExport, FacetError> {
+    let export = evaluate(path, vars, import_paths)?;
     crate::ncl_ledger::record_export(path, &export, vars);
     Ok(export)
 }
 
 /// Export, act on frozen projections, and record one `ncl:apply` Lattice row.
-pub fn apply(path: &Path, vars: &[String]) -> Result<NclApply, FacetError> {
-    let export = evaluate(path, vars)?;
+pub fn apply(
+    path: &Path,
+    vars: &[String],
+    import_paths: &[PathBuf],
+) -> Result<NclApply, FacetError> {
+    let export = evaluate(path, vars, import_paths)?;
     let action = ncl_apply::execute(&export)?;
     crate::ncl_ledger::record_apply(path, &export, &action, vars);
     Ok(ncl_apply::from_export(export, action))
 }
 
 /// Evaluate for export without persisting to Lattice.
-pub(crate) fn evaluate(path: &Path, vars: &[String]) -> Result<NclExport, FacetError> {
+pub(crate) fn evaluate(
+    path: &Path,
+    vars: &[String],
+    import_paths: &[PathBuf],
+) -> Result<NclExport, FacetError> {
     let module_hash = module_hash(path)?;
-    let world = eval::export(Input::Path(path), vars).map_err(ncl_error)?;
+    let world = eval::export(Input::Path(path), vars, import_paths).map_err(ncl_error)?;
     let export_hash = sha256_hex(canonical(&world).as_bytes());
     let mut world = match world {
         Value::Object(map) => map,
@@ -238,7 +254,7 @@ let lib = import "lib.ncl" in
     #[test]
     fn export_projects_world_and_drops_not_exported() {
         let (_dir, world) = fixture();
-        let out = export(&world, &[]).unwrap();
+        let out = export(&world, &[], &[]).unwrap();
         assert_eq!(out.contract_set, "k8s-1.34-h3s-0.9.1");
         assert_eq!(out.cluster[0]["kind"], "Pod");
         assert_eq!(out.cluster[0]["metadata"]["annotations"]["replicas"], "1");
@@ -271,10 +287,10 @@ let lib = import "lib.ncl" in
     #[test]
     fn export_hash_is_stable_and_var_sensitive() {
         let (_dir, world) = fixture();
-        let a = export(&world, &[]).unwrap();
-        let b = export(&world, &[]).unwrap();
+        let a = export(&world, &[], &[]).unwrap();
+        let b = export(&world, &[], &[]).unwrap();
         assert_eq!(a.export_hash, b.export_hash);
-        let c = export(&world, &["replicas=3".to_owned()]).unwrap();
+        let c = export(&world, &["replicas=3".to_owned()], &[]).unwrap();
         assert_eq!(c.cluster[0]["metadata"]["annotations"]["replicas"], "3");
         assert_ne!(a.export_hash, c.export_hash);
         assert_eq!(
@@ -286,7 +302,7 @@ let lib = import "lib.ncl" in
     #[test]
     fn check_passes_and_persists_nothing() {
         let (dir, world) = fixture();
-        let out = check(&world, &[]).unwrap();
+        let out = check(&world, &[], &[]).unwrap();
         assert_eq!(out.module_hash, sha256_hex(WORLD.as_bytes()));
         let names: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -300,11 +316,11 @@ let lib = import "lib.ncl" in
         let dir = tempfile::tempdir().unwrap();
         let bad = dir.path().join("bad.ncl");
         std::fs::write(&bad, r#"{ replicas | Number = "three" }"#).unwrap();
-        let err = check(&bad, &[]).unwrap_err();
+        let err = check(&bad, &[], &[]).unwrap_err();
         assert_eq!(err.category, NCL_INVALID);
         assert_eq!(err.exit_code, CONFIGURATION_EXIT_CODE);
         assert!(err.message.contains("contract broken"), "{}", err.message);
-        let err = export(&bad, &[]).unwrap_err();
+        let err = export(&bad, &[], &[]).unwrap_err();
         assert_eq!(err.category, NCL_INVALID);
     }
 
@@ -313,7 +329,7 @@ let lib = import "lib.ncl" in
         let dir = tempfile::tempdir().unwrap();
         let scalar = dir.path().join("scalar.ncl");
         std::fs::write(&scalar, "[1, 2, 3]").unwrap();
-        let err = export(&scalar, &[]).unwrap_err();
+        let err = export(&scalar, &[], &[]).unwrap_err();
         assert_eq!(err.category, NCL_INVALID);
         assert!(err.message.contains("an array"), "{}", err.message);
     }
@@ -321,10 +337,10 @@ let lib = import "lib.ncl" in
     #[test]
     fn bad_var_and_missing_file() {
         let (_dir, world) = fixture();
-        let err = export(&world, &["replicas".to_owned()]).unwrap_err();
+        let err = export(&world, &["replicas".to_owned()], &[]).unwrap_err();
         assert_eq!(err.category, "invalid_arguments");
         assert_eq!(err.exit_code, INVALID_ARGUMENTS_EXIT_CODE);
-        let err = check(Path::new("/nonexistent/world.ncl"), &[]).unwrap_err();
+        let err = check(Path::new("/nonexistent/world.ncl"), &[], &[]).unwrap_err();
         assert_eq!(err.category, "invalid_workspace");
     }
 

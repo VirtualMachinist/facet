@@ -10,7 +10,7 @@ fn fixture_root() -> PathBuf {
 
 fn export_fixture() -> Result<serde_json::Value, Error> {
     let path = fixture_root().join("world.ncl");
-    export(Input::Path(&path), &[])
+    export(Input::Path(&path), &[], &[])
 }
 
 #[test]
@@ -65,6 +65,6 @@ fn intent_projection_is_docs_eod_desired_state() {
 #[test]
 fn world_contract_rejects_cluster_only_shape() {
     let path = fixture_root().join("world_cluster_only.ncl");
-    let err = export(Input::Path(&path), &[]).unwrap_err();
+    let err = export(Input::Path(&path), &[], &[]).unwrap_err();
     assert!(err.to_string().contains("contract"), "{err}");
 }
