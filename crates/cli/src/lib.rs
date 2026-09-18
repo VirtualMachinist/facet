@@ -365,11 +365,13 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
         } => request::run(
             &input,
             &selector,
-            environment.as_deref(),
-            &variables,
-            output.as_ref(),
-            strict_variables,
-            dry_run,
+            &request::RunOptions {
+                environment: environment.as_deref(),
+                variables: &variables,
+                output: output.as_ref(),
+                strict_variables,
+                dry_run,
+            },
             stdin,
         ),
         Command::Set {

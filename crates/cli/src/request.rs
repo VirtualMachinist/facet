@@ -192,26 +192,36 @@ pub(crate) fn update(
     })
 }
 
+pub(crate) struct RunOptions<'a> {
+    pub(crate) environment: Option<&'a str>,
+    pub(crate) variables: &'a [(String, String)],
+    pub(crate) output: Option<&'a PathBuf>,
+    pub(crate) strict_variables: bool,
+    pub(crate) dry_run: bool,
+}
+
 pub(crate) fn run(
     input: &WorkspaceInput,
     selector: &str,
-    environment: Option<&str>,
-    variables: &[(String, String)],
-    output: Option<&PathBuf>,
-    strict_variables: bool,
-    dry_run: bool,
+    options: &RunOptions<'_>,
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(&loaded, selector, environment, variables, strict_variables)?;
+    let request = selected_request(
+        &loaded,
+        selector,
+        options.environment,
+        options.variables,
+        options.strict_variables,
+    )?;
     let prepared = request.prepare_http().map_err(CliError::graphql)?;
-    if dry_run {
+    if options.dry_run {
         return Ok(CommandOutput {
             human: dry_run_human(&request),
             json: dry_run_json(&request).map_err(CliError::graphql)?,
         });
     }
-    let options = ExecutionOptions {
+    let execution = ExecutionOptions {
         base_directory: input.base_directory(),
         ..ExecutionOptions::default()
     };
@@ -221,19 +231,19 @@ pub(crate) fn run(
         .map_err(|error| CliError::runtime(&error))?;
     let response = runtime.block_on(async {
         let engine = HttpEngine::new().map_err(CliError::http)?;
-        if let Some(output) = output {
+        if let Some(output) = options.output {
             engine
-                .execute_cancellable_to_file(&prepared, &options, output, tokio::signal::ctrl_c())
+                .execute_cancellable_to_file(&prepared, &execution, output, tokio::signal::ctrl_c())
                 .await
                 .map_err(CliError::http)
         } else {
             engine
-                .execute_cancellable(&prepared, &options, tokio::signal::ctrl_c())
+                .execute_cancellable(&prepared, &execution, tokio::signal::ctrl_c())
                 .await
                 .map_err(CliError::http)
         }
     })?;
-    response_output(&request, &response, output)
+    response_output(&request, &response, options.output)
 }
 
 fn selected_request<'a>(
