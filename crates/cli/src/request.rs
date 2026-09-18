@@ -1,14 +1,17 @@
 use std::{borrow::Cow, io::Read, path::PathBuf};
 
 use probe_core::{
-    HttpRequest, RequestUpdate, RequestVariableInfo, VariableUsage, discover_request_variables,
+    ExpectationOutcome, HttpRequest, RequestUpdate, RequestVariableInfo, StatusExpectation,
+    VariableUsage, discover_request_variables, evaluate_expectations,
     resolve_environment_with_overrides, resolve_request, resolve_request_strict,
 };
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use serde_json::json;
 
 use crate::{
-    CliError, CommandOutput, WorkspaceInput, load,
+    CliError, CommandOutput, WorkspaceInput,
+    error::expectation_json,
+    load,
     presentation::{
         dry_run_human, dry_run_json, request_human, request_json, response_human, response_json,
     },
@@ -198,6 +201,7 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) output: Option<&'a PathBuf>,
     pub(crate) strict_variables: bool,
     pub(crate) dry_run: bool,
+    pub(crate) expectations: &'a [StatusExpectation],
 }
 
 pub(crate) fn run(
@@ -243,7 +247,11 @@ pub(crate) fn run(
                 .map_err(CliError::http)
         }
     })?;
-    response_output(&request, &response, options.output)
+    let outcomes = evaluate_expectations(options.expectations, response.status);
+    if outcomes.iter().any(|outcome| !outcome.ok) {
+        return Err(CliError::expectation_failed(&outcomes));
+    }
+    response_output(&request, &response, options.output, &outcomes)
 }
 
 fn selected_request<'a>(
@@ -285,10 +293,20 @@ fn response_output(
     request: &HttpRequest,
     response: &HttpResponse,
     output: Option<&PathBuf>,
+    outcomes: &[ExpectationOutcome],
 ) -> Result<CommandOutput, CliError> {
     let output = output.map(PathBuf::as_path);
+    let mut json = response_json(request, response, output).map_err(CliError::graphql)?;
+    if !outcomes.is_empty() {
+        json.as_object_mut()
+            .expect("request run JSON output must be an object")
+            .insert(
+                "expectations".to_owned(),
+                json!(outcomes.iter().map(expectation_json).collect::<Vec<_>>()),
+            );
+    }
     Ok(CommandOutput {
         human: response_human(request, response, output),
-        json: response_json(request, response, output).map_err(CliError::graphql)?,
+        json,
     })
 }

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use probe_core::{GraphqlUpdate, RequestUpdate};
+use probe_core::{GraphqlUpdate, RequestUpdate, StatusExpectation};
 use probe_opencollection::{CreatedRequestProtocol, StructureOperation};
 use serde_json::{Map, Value};
 
@@ -25,6 +25,7 @@ const GRAPHQL_OPERATION_NAME: u32 = 1 << 15;
 const GRAPHQL_EXTENSIONS: u32 = 1 << 16;
 const TYPE: u32 = 1 << 17;
 const DRY_RUN: u32 = 1 << 18;
+const EXPECT: u32 = 1 << 19;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -74,6 +75,7 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
         strict_variables: bool,
         dry_run: bool,
+        expectations: Vec<StatusExpectation>,
     },
     Set {
         input: WorkspaceInput,
@@ -130,6 +132,7 @@ struct Options {
     graphql_extensions: Option<String>,
     request_type: Option<String>,
     dry_run: bool,
+    expectations: Vec<StatusExpectation>,
 }
 
 impl Options {
@@ -156,6 +159,7 @@ impl Options {
             | option_bit(self.graphql_extensions.is_some(), GRAPHQL_EXTENSIONS)
             | option_bit(self.request_type.is_some(), TYPE)
             | option_bit(self.dry_run, DRY_RUN)
+            | option_bit(!self.expectations.is_empty(), EXPECT)
     }
 
     fn allow(&self, allowed: u32) -> Result<(), CliError> {
@@ -242,10 +246,15 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             })
         }
         [group, action, path, selector] if group == "request" && action == "run" => {
-            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES | DRY_RUN)?;
+            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES | DRY_RUN | EXPECT)?;
             if options.dry_run && options.output.is_some() {
                 return Err(CliError::invalid_arguments(
                     "--dry-run cannot be combined with --output",
+                ));
+            }
+            if options.dry_run && !options.expectations.is_empty() {
+                return Err(CliError::invalid_arguments(
+                    "--expect cannot be combined with --dry-run",
                 ));
             }
             Ok(Command::Run {
@@ -256,6 +265,7 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
                 output: options.output,
                 strict_variables: options.strict_variables,
                 dry_run: options.dry_run,
+                expectations: options.expectations,
             })
         }
         [group, action, path, selector] if group == "request" && action == "set" => {
@@ -492,6 +502,7 @@ fn extract_options(args: &mut Vec<String>) -> Result<Options, CliError> {
         graphql_extensions: extract_string_option(args, "--graphql-extensions")?,
         request_type: extract_string_option(args, "--type")?,
         dry_run: extract_flag(args, "--dry-run")?,
+        expectations: extract_expectations(args)?,
     })
 }
 
@@ -571,6 +582,26 @@ fn parse_graphql_string(source: &str, field: &str) -> Result<Option<String>, Cli
             "GraphQL {field} must be a JSON string or null"
         ))),
     }
+}
+
+fn extract_expectations(args: &mut Vec<String>) -> Result<Vec<StatusExpectation>, CliError> {
+    let mut expectations = Vec::new();
+    while let Some(position) = args.iter().position(|argument| argument == "--expect") {
+        if position + 1 >= args.len() {
+            return Err(invalid_expectation());
+        }
+        let argument = args.remove(position + 1);
+        args.remove(position);
+        if argument.is_empty() || argument.starts_with('-') {
+            return Err(invalid_expectation());
+        }
+        expectations.push(StatusExpectation::parse(&argument).map_err(CliError::expectation)?);
+    }
+    Ok(expectations)
+}
+
+fn invalid_expectation() -> CliError {
+    CliError::invalid_arguments("--expect requires status=<code> or status=<code|code>")
 }
 
 fn extract_variables(args: &mut Vec<String>) -> Result<Vec<(String, String)>, CliError> {

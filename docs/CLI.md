@@ -13,7 +13,7 @@ probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--strict-variables] [--json]
 probe request variables <path> <selector> [--environment <name>] [--json]
-probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--dry-run] [--json]
+probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--dry-run] [--expect <expr>]... [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--type http|graphql] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request rename <path> <selector> --name <name> [--json]
@@ -88,7 +88,16 @@ opening a network connection. Text output is the resolved method and URL only; i
 not print headers, bodies, or secret values. `--json` returns the same resolved
 `request` object as a live run, plus `"dryRun": true`, and omits `response`.
 Unavailable secret variables still fail closed with `secret_variable_unavailable`.
-`--dry-run` cannot be combined with `--output`.
+`--dry-run` cannot be combined with `--output` or `--expect`.
+
+`--expect <expr>` asserts a completed live response. v1 accepts `status=<code>` or
+`status=<code|code>` (HTTP statuses 100–599; `|` is OR). The flag may be repeated;
+every expression must pass. Assertions run only after a successful transport, so
+timeouts, cancellation, and connection failures keep their existing execution
+categories and exit code 6. A missed status uses category `expectation_failed` and
+exit code 9. `--json` includes `expectations: [{expr, ok, actual}]` on success and
+the same array under `error.details.expectations` on failure. `--expect` cannot be
+combined with `--dry-run`.
 
 Probe supports OpenCollection-native GraphQL items (`info.type: graphql` with a `graphql` section).
 Their protocol identity and body stay native when saved. At execution time Probe resolves the same
@@ -359,6 +368,44 @@ output file is used, `outputPath` identifies it and `content` remains `null`.
 The `request` object matches a live `request run --json` document. There is no
 `response` field because no HTTP request is sent.
 
+When `--expect` is present and every assertion passes, `request run --json` also
+includes an `expectations` array:
+
+```json
+{
+  "schemaVersion": 1,
+  "request": {
+    "type": "http",
+    "graphql": null,
+    "method": "GET",
+    "url": "https://api.example.com/users"
+  },
+  "response": {
+    "body": {
+      "content": "{\"users\":[]}",
+      "encoding": "utf8",
+      "omissionReason": null,
+      "omitted": false,
+      "outputPath": null
+    },
+    "durationMs": 128,
+    "headers": [
+      { "name": "content-type", "value": "application/json" }
+    ],
+    "reason": "OK",
+    "sizeBytes": 12,
+    "status": 200,
+    "url": "https://api.example.com/users"
+  },
+  "expectations": [
+    { "expr": "status=200", "ok": true, "actual": 200 }
+  ]
+}
+```
+
+`expr` is the supplied argument. `actual` is the HTTP status from the completed
+exchange. Body, header, and JMESPath assertions are out of scope for this version.
+
 Structured errors use:
 
 ```json
@@ -411,6 +458,10 @@ exit code 3; a missing or ambiguous Yaak workspace selection, invalid provider-s
 arguments, and an existing destination use exit code 2. Other destination write
 failures use the existing persistence categories and exit code 7.
 
+A completed `request run` that misses `--expect` uses exit code 9 and category
+`expectation_failed`. Invalid `--expect` expressions and combining `--expect` with
+`--dry-run` use `invalid_arguments` and exit code 2.
+
 `collection validate` requires the OpenCollection `1.0.0` marker, explicit collection
 metadata, and a `bundled` flag matching whether the source is a bundled file/stdin document or
 an unbundled directory. Duplicate environments and invalid inheritance graphs are rejected.
@@ -426,3 +477,5 @@ an unbundled directory. Duplicate environments and invalid inheritance graphs ar
 | 5 | Configuration or environment error |
 | 6 | Network, cancellation, execution, or response-output error |
 | 7 | Persistence failure or external-modification conflict |
+| 8 | Import compatibility failure |
+| 9 | Expectation failure |

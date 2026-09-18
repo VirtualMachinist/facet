@@ -1,4 +1,7 @@
-use probe_core::{EnvironmentResolutionError, GraphqlRequestError, ImportDiagnostic};
+use probe_core::{
+    EnvironmentResolutionError, ExpectationOutcome, ExpectationParseError, GraphqlRequestError,
+    ImportDiagnostic,
+};
 use probe_http::HttpError;
 use probe_opencollection::{CreateError, SaveError, StructureError};
 use probe_postman::PostmanImportError;
@@ -6,8 +9,9 @@ use probe_yaak::YaakImportError;
 use serde_json::{Value, json};
 
 use crate::{
-    CONFIGURATION_EXIT_CODE, EXECUTION_EXIT_CODE, IMPORT_EXIT_CODE, INVALID_ARGUMENTS_EXIT_CODE,
-    INVALID_WORKSPACE_EXIT_CODE, PERSISTENCE_EXIT_CODE, REQUEST_NOT_FOUND_EXIT_CODE,
+    CONFIGURATION_EXIT_CODE, EXECUTION_EXIT_CODE, EXPECTATION_EXIT_CODE, IMPORT_EXIT_CODE,
+    INVALID_ARGUMENTS_EXIT_CODE, INVALID_WORKSPACE_EXIT_CODE, PERSISTENCE_EXIT_CODE,
+    REQUEST_NOT_FOUND_EXIT_CODE,
 };
 
 #[derive(Debug)]
@@ -25,6 +29,26 @@ impl CliError {
             message: message.into(),
             exit_code: INVALID_ARGUMENTS_EXIT_CODE,
             details: None,
+        }
+    }
+
+    pub(crate) fn expectation(error: ExpectationParseError) -> Self {
+        Self::invalid_arguments(error.to_string())
+    }
+
+    pub(crate) fn expectation_failed(outcomes: &[ExpectationOutcome]) -> Self {
+        let failed = outcomes
+            .iter()
+            .filter(|outcome| !outcome.ok)
+            .map(|outcome| format!("{} (actual {})", outcome.expr, outcome.actual))
+            .collect::<Vec<_>>();
+        Self {
+            category: "expectation_failed",
+            message: format!("expectation failed: {}", failed.join("; ")),
+            exit_code: EXPECTATION_EXIT_CODE,
+            details: Some(json!({
+                "expectations": outcomes.iter().map(expectation_json).collect::<Vec<_>>(),
+            })),
         }
     }
 
@@ -227,6 +251,14 @@ impl CliError {
             }
         }
     }
+}
+
+pub(crate) fn expectation_json(outcome: &ExpectationOutcome) -> Value {
+    json!({
+        "expr": outcome.expr,
+        "ok": outcome.ok,
+        "actual": outcome.actual,
+    })
 }
 
 fn invalid_import(message: String) -> CliError {

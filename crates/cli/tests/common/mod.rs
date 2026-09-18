@@ -43,9 +43,19 @@ pub(crate) fn serve_once(
     body: Vec<u8>,
     content_type: &str,
 ) -> (String, JoinHandle<CapturedRequest>) {
+    serve_once_with_status(body, content_type, 200, "OK")
+}
+
+pub(crate) fn serve_once_with_status(
+    body: Vec<u8>,
+    content_type: &str,
+    status: u16,
+    reason: &str,
+) -> (String, JoinHandle<CapturedRequest>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("mock server should bind");
     let address = listener.local_addr().unwrap();
     let content_type = content_type.to_owned();
+    let reason = reason.to_owned();
     let handle = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = Vec::new();
@@ -75,7 +85,7 @@ pub(crate) fn serve_once(
             body: request[header_end..header_end + content_length].to_vec(),
         };
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         );
         stream.write_all(response.as_bytes()).unwrap();

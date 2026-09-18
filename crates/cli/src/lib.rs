@@ -33,6 +33,8 @@ pub const EXECUTION_EXIT_CODE: u8 = 6;
 pub const PERSISTENCE_EXIT_CODE: u8 = 7;
 /// Exit code used when a source requires an explicitly lossy import.
 pub const IMPORT_EXIT_CODE: u8 = 8;
+/// Exit code used when a completed response misses a `--expect` assertion.
+pub const EXPECTATION_EXIT_CODE: u8 = 9;
 /// Version of the documented machine-readable JSON contracts.
 pub const JSON_SCHEMA_VERSION: u64 = 1;
 
@@ -137,6 +139,7 @@ pub const fn help() -> &'static str {
         "      --var <NAME=VALUE>     Override a variable for this request execution; may be repeated\n",
         "      --strict-variables      Reject request variables without an available value\n",
         "      --dry-run               Resolve a request without sending it\n",
+        "      --expect <expr>         Assert a completed response; may be repeated\n",
         "      --name <name>          Set a request, folder, collection, environment, or variable name\n",
         "      --method <method>      Set an HTTP method\n",
         "      --url <url>            Set a request URL\n",
@@ -187,7 +190,7 @@ const REQUEST_HELP: &str = concat!(
     "  list <path|->                 List requests and repository selectors\n",
     "  get <path|-> <selector> [--environment <name>] [--strict-variables]  Inspect one request\n",
     "  variables <path|-> <selector> [--environment <name>]  Discover referenced variables\n",
-    "  run <path|-> <selector> [--environment <name>] [--strict-variables] [--var <NAME=VALUE>]... [--output <file>] [--dry-run]\n",
+    "  run <path|-> <selector> [--environment <name>] [--strict-variables] [--var <NAME=VALUE>]... [--output <file>] [--dry-run] [--expect <expr>]...\n",
     "  set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--graphql-query <text>] [--graphql-variables <json-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-or-null>]\n",
     "  create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--type http|graphql] [--graphql-query <text>] [--graphql-variables <json-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-or-null>]\n",
     "  rename <path> <selector> --name <name>\n",
@@ -199,6 +202,7 @@ const REQUEST_HELP: &str = concat!(
     "      --var <NAME=VALUE>  Override a variable for this request execution. May be specified multiple times.\n",
     "      --strict-variables   Reject request variables without an available value.\n",
     "      --dry-run            Resolve the request without sending an HTTP request.\n",
+    "      --expect <expr>      After a live run, assert status=<code> or status=<code|code>.\n",
 );
 
 const FOLDER_HELP: &str = concat!(
@@ -362,6 +366,7 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             output,
             strict_variables,
             dry_run,
+            expectations,
         } => request::run(
             &input,
             &selector,
@@ -371,6 +376,7 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
                 output: output.as_ref(),
                 strict_variables,
                 dry_run,
+                expectations: &expectations,
             },
             stdin,
         ),
