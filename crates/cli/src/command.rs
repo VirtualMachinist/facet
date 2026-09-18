@@ -24,6 +24,7 @@ const GRAPHQL_VARIABLES: u32 = 1 << 14;
 const GRAPHQL_OPERATION_NAME: u32 = 1 << 15;
 const GRAPHQL_EXTENSIONS: u32 = 1 << 16;
 const TYPE: u32 = 1 << 17;
+const DRY_RUN: u32 = 1 << 18;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -72,6 +73,7 @@ pub(crate) enum Command {
         variables: Vec<(String, String)>,
         output: Option<PathBuf>,
         strict_variables: bool,
+        dry_run: bool,
     },
     Set {
         input: WorkspaceInput,
@@ -127,6 +129,7 @@ struct Options {
     graphql_operation_name: Option<String>,
     graphql_extensions: Option<String>,
     request_type: Option<String>,
+    dry_run: bool,
 }
 
 impl Options {
@@ -152,6 +155,7 @@ impl Options {
             )
             | option_bit(self.graphql_extensions.is_some(), GRAPHQL_EXTENSIONS)
             | option_bit(self.request_type.is_some(), TYPE)
+            | option_bit(self.dry_run, DRY_RUN)
     }
 
     fn allow(&self, allowed: u32) -> Result<(), CliError> {
@@ -238,7 +242,12 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             })
         }
         [group, action, path, selector] if group == "request" && action == "run" => {
-            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES)?;
+            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES | DRY_RUN)?;
+            if options.dry_run && options.output.is_some() {
+                return Err(CliError::invalid_arguments(
+                    "--dry-run cannot be combined with --output",
+                ));
+            }
             Ok(Command::Run {
                 input: input(path),
                 selector: selector.clone(),
@@ -246,6 +255,7 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
                 variables: options.variables,
                 output: options.output,
                 strict_variables: options.strict_variables,
+                dry_run: options.dry_run,
             })
         }
         [group, action, path, selector] if group == "request" && action == "set" => {
@@ -481,6 +491,7 @@ fn extract_options(args: &mut Vec<String>) -> Result<Options, CliError> {
         graphql_operation_name: extract_string_option(args, "--graphql-operation-name")?,
         graphql_extensions: extract_string_option(args, "--graphql-extensions")?,
         request_type: extract_string_option(args, "--type")?,
+        dry_run: extract_flag(args, "--dry-run")?,
     })
 }
 

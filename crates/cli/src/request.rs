@@ -9,7 +9,9 @@ use serde_json::json;
 
 use crate::{
     CliError, CommandOutput, WorkspaceInput, load,
-    presentation::{request_human, request_json, response_human, response_json},
+    presentation::{
+        dry_run_human, dry_run_json, request_human, request_json, response_human, response_json,
+    },
 };
 
 pub(crate) fn list(
@@ -197,11 +199,18 @@ pub(crate) fn run(
     variables: &[(String, String)],
     output: Option<&PathBuf>,
     strict_variables: bool,
+    dry_run: bool,
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
     let request = selected_request(&loaded, selector, environment, variables, strict_variables)?;
     let prepared = request.prepare_http().map_err(CliError::graphql)?;
+    if dry_run {
+        return Ok(CommandOutput {
+            human: dry_run_human(&request),
+            json: dry_run_json(&request).map_err(CliError::graphql)?,
+        });
+    }
     let options = ExecutionOptions {
         base_directory: input.base_directory(),
         ..ExecutionOptions::default()

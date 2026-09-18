@@ -1109,6 +1109,126 @@ fn run_sends_undefined_request_variables() {
 }
 
 #[test]
+fn dry_run_resolves_without_opening_a_network_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    listener
+        .set_nonblocking(true)
+        .expect("listener should be non-blocking");
+    let server_url = format!("http://{}", listener.local_addr().unwrap());
+    let workspace = runtime_fixture(&server_url);
+    let output = probe()
+        .args(["request", "run"])
+        .arg(&workspace)
+        .arg("items/0")
+        .args(["--environment", "local", "--dry-run", "--json"])
+        .output()
+        .expect("dry-run command should run");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["dryRun"], true);
+    assert_eq!(value["request"]["method"], "POST");
+    assert_eq!(value["request"]["url"], format!("{server_url}/echo"));
+    assert!(value["request"]["graphql"].is_null());
+    assert!(value.get("response").is_none());
+    assert!(
+        matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ),
+        "dry-run must not connect to the resolved URL"
+    );
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn dry_run_applies_environment_and_runtime_variables() {
+    let output = probe()
+        .args(["request", "run"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/0")
+        .args([
+            "--environment",
+            "development",
+            "--var",
+            "tenant=us",
+            "--dry-run",
+        ])
+        .output()
+        .expect("dry-run command should run");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "GET https://dev.example.com/us/users\n"
+    );
+
+    let json = probe()
+        .args(["request", "run"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/0")
+        .args([
+            "--environment",
+            "development",
+            "--var",
+            "tenant=us",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("dry-run JSON command should run");
+    let value: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["dryRun"], true);
+    assert_eq!(value["request"]["method"], "GET");
+    assert_eq!(value["request"]["url"], "https://dev.example.com/us/users");
+    assert!(value.get("response").is_none());
+}
+
+#[test]
+fn dry_run_fails_closed_when_a_secret_variable_is_unavailable() {
+    let output = probe()
+        .args(["request", "run"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/2")
+        .args(["--environment", "development", "--dry-run", "--json"])
+        .output()
+        .expect("dry-run command should fail closed for secrets");
+
+    assert_eq!(output.status.code(), Some(5));
+    assert!(output.stderr.is_empty());
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["error"]["category"], "secret_variable_unavailable");
+    assert_eq!(value["error"]["exitCode"], 5);
+    assert!(value.get("request").is_none());
+    assert!(value.get("dryRun").is_none());
+    let rendered = value.to_string();
+    assert!(!rendered.to_lowercase().contains("bearer"));
+}
+
+#[test]
+fn dry_run_rejects_an_output_file() {
+    let output = probe()
+        .args(["request", "run"])
+        .arg(fixture("phase4-environments.yml"))
+        .arg("items/0")
+        .args(["--dry-run", "--output", "body.bin", "--json"])
+        .output()
+        .expect("dry-run should reject --output");
+
+    assert_eq!(output.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["category"], "invalid_arguments");
+}
+
+#[test]
 fn distinguishes_invalid_workspace() {
     let output = probe()
         .args(["collection", "validate"])

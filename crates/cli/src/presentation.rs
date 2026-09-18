@@ -64,12 +64,7 @@ pub(super) fn response_json(
         (None, None, true, Some("binary"))
     };
     Ok(json!({
-        "request": {
-            "type": request.protocol.as_str(),
-            "graphql": request.selected_graphql()?.map(graphql_json),
-            "method": request.method,
-            "url": request.url,
-        },
+        "request": run_request_json(request)?,
         "response": {
             "body": {
                 "content": content,
@@ -88,6 +83,30 @@ pub(super) fn response_json(
             "status": response.status,
             "url": response.url,
         }
+    }))
+}
+
+pub(super) fn dry_run_human(request: &HttpRequest) -> String {
+    format!(
+        "{} {}\n",
+        request.method.as_deref().unwrap_or("<unset>"),
+        request.url.as_deref().unwrap_or("<unset>"),
+    )
+}
+
+pub(super) fn dry_run_json(request: &HttpRequest) -> Result<Value, GraphqlRequestError> {
+    Ok(json!({
+        "dryRun": true,
+        "request": run_request_json(request)?,
+    }))
+}
+
+fn run_request_json(request: &HttpRequest) -> Result<Value, GraphqlRequestError> {
+    Ok(json!({
+        "type": request.protocol.as_str(),
+        "graphql": request.selected_graphql()?.map(graphql_json),
+        "method": request.method,
+        "url": request.url,
     }))
 }
 

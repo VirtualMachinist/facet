@@ -13,7 +13,7 @@ probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--strict-variables] [--json]
 probe request variables <path> <selector> [--environment <name>] [--json]
-probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--json]
+probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--dry-run] [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--type http|graphql] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request rename <path> <selector> --name <name> [--json]
@@ -81,6 +81,14 @@ executes the request.
 engine. Pressing Ctrl-C cancels the active execution. `--output <file>` writes the raw
 response body to the specified path using bounded streaming; response metadata remains on
 stdout. The destination is replaced only after the complete response has been written.
+
+`--dry-run` uses the same selector, environment, `--var`, and `--strict-variables`
+resolution as a live run, including GraphQL-over-HTTP preparation, then exits without
+opening a network connection. Text output is the resolved method and URL only; it does
+not print headers, bodies, or secret values. `--json` returns the same resolved
+`request` object as a live run, plus `"dryRun": true`, and omits `response`.
+Unavailable secret variables still fail closed with `secret_variable_unavailable`.
+`--dry-run` cannot be combined with `--output`.
 
 Probe supports OpenCollection-native GraphQL items (`info.type: graphql` with a `graphql` section).
 Their protocol identity and body stay native when saved. At execution time Probe resolves the same
@@ -332,6 +340,24 @@ and `index` are `null` after deletion; `previousSelector` is `null` after creati
 UTF-8 bodies up to 16 MiB are included directly. Larger and binary bodies are omitted
 from stdout with `omitted: true`; rerun with `--output <file>` to retain them. When an
 output file is used, `outputPath` identifies it and `content` remains `null`.
+
+`request run --dry-run --json` returns the resolved request without executing it:
+
+```json
+{
+  "schemaVersion": 1,
+  "dryRun": true,
+  "request": {
+    "type": "http",
+    "graphql": null,
+    "method": "GET",
+    "url": "https://api.example.com/users"
+  }
+}
+```
+
+The `request` object matches a live `request run --json` document. There is no
+`response` field because no HTTP request is sent.
 
 Structured errors use:
 

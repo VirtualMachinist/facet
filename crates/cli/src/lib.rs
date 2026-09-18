@@ -136,6 +136,7 @@ pub const fn help() -> &'static str {
         "      --output <file>        Write the response body to a file\n",
         "      --var <NAME=VALUE>     Override a variable for this request execution; may be repeated\n",
         "      --strict-variables      Reject request variables without an available value\n",
+        "      --dry-run               Resolve a request without sending it\n",
         "      --name <name>          Set a request, folder, collection, environment, or variable name\n",
         "      --method <method>      Set an HTTP method\n",
         "      --url <url>            Set a request URL\n",
@@ -186,7 +187,7 @@ const REQUEST_HELP: &str = concat!(
     "  list <path|->                 List requests and repository selectors\n",
     "  get <path|-> <selector> [--environment <name>] [--strict-variables]  Inspect one request\n",
     "  variables <path|-> <selector> [--environment <name>]  Discover referenced variables\n",
-    "  run <path|-> <selector> [--environment <name>] [--strict-variables] [--var <NAME=VALUE>]... [--output <file>]\n",
+    "  run <path|-> <selector> [--environment <name>] [--strict-variables] [--var <NAME=VALUE>]... [--output <file>] [--dry-run]\n",
     "  set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--graphql-query <text>] [--graphql-variables <json-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-or-null>]\n",
     "  create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--type http|graphql] [--graphql-query <text>] [--graphql-variables <json-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-or-null>]\n",
     "  rename <path> <selector> --name <name>\n",
@@ -197,6 +198,7 @@ const REQUEST_HELP: &str = concat!(
     "Options:\n",
     "      --var <NAME=VALUE>  Override a variable for this request execution. May be specified multiple times.\n",
     "      --strict-variables   Reject request variables without an available value.\n",
+    "      --dry-run            Resolve the request without sending an HTTP request.\n",
 );
 
 const FOLDER_HELP: &str = concat!(
@@ -359,6 +361,7 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             variables,
             output,
             strict_variables,
+            dry_run,
         } => request::run(
             &input,
             &selector,
@@ -366,6 +369,7 @@ fn execute(command: Command, stdin: &mut impl Read) -> Result<CommandOutput, Cli
             &variables,
             output.as_ref(),
             strict_variables,
+            dry_run,
             stdin,
         ),
         Command::Set {
