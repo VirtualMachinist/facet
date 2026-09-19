@@ -14,6 +14,7 @@ mod expect;
 mod path_parameters;
 mod request;
 mod request_resolution;
+mod secret;
 mod workspace;
 
 pub use collection::{
@@ -23,7 +24,8 @@ pub use collection::{
 };
 pub use environment::{
     EffectiveEnvironmentVariable, EnvironmentResolutionError, ResolvedEnvironment,
-    resolve_environment, resolve_environment_with_overrides, validate_environments,
+    resolve_environment, resolve_environment_with_overrides,
+    resolve_environment_with_secret_provider, validate_environments,
 };
 pub use environment_edit::{
     create_environment, delete_environment, effective_environment_variables, replace_environment,
@@ -51,8 +53,9 @@ pub use request::{
 };
 pub use request_resolution::{
     RequestVariableInfo, VariableUsage, discover_request_variables, resolve_request,
-    resolve_request_strict,
+    resolve_request_redacted, resolve_request_redacted_strict, resolve_request_strict,
 };
+pub use secret::{EnvSecretProvider, MapSecretProvider, SecretProvider, SecretReference};
 pub use workspace::{
     FolderKey, RequestKey, Workspace, WorkspaceEditError, WorkspaceFolder, WorkspaceItemRef,
     WorkspaceParent,

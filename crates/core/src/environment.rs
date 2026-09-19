@@ -4,14 +4,33 @@ use std::{
     fmt,
 };
 
-use crate::{Environment, EnvironmentVariable, Variable, VariableValue, VariableValueSet};
+use crate::{
+    Environment, EnvironmentVariable, SecretProvider, SecretReference, Variable, VariableValue,
+    VariableValueSet,
+};
 
 /// An environment selected and resolved entirely in memory.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Secret values used for request execution are omitted from [`Debug`].
+#[derive(Clone, Eq, PartialEq)]
 pub struct ResolvedEnvironment {
     name: String,
     variables: BTreeMap<String, String>,
+    secret_values: BTreeMap<String, String>,
+    secret_names: BTreeSet<String>,
     secrets_without_values: BTreeSet<String>,
+}
+
+impl fmt::Debug for ResolvedEnvironment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResolvedEnvironment")
+            .field("name", &self.name)
+            .field("variables", &self.variables)
+            .field("secret_refs", &self.secret_names.iter().collect::<Vec<_>>())
+            .field("secrets_without_values", &self.secrets_without_values)
+            .finish()
+    }
 }
 
 impl ResolvedEnvironment {
@@ -44,34 +63,55 @@ impl ResolvedEnvironment {
     ///
     /// References with no usable plain-variable value are preserved literally so
     /// callers can intentionally send template syntax. Unavailable secrets still
-    /// produce an error rather than being sent in place of their value.
+    /// produce an error rather than being sent in place of their value. Resolved
+    /// secrets are substituted for execution only.
     pub fn interpolate(&self, input: &str) -> Result<String, EnvironmentResolutionError> {
-        interpolate(input, |name| {
-            if self.secrets_without_values.contains(name) {
-                Err(EnvironmentResolutionError::SecretVariableUnavailable(
-                    name.to_owned(),
-                ))
-            } else {
-                Ok(self.variables.get(name).cloned())
-            }
-        })
+        interpolate(input, |name| self.lookup(name, false, false))
     }
 
     /// Interpolates `{{variable}}` references and rejects any unavailable value.
     pub fn interpolate_strict(&self, input: &str) -> Result<String, EnvironmentResolutionError> {
-        interpolate(input, |name| {
+        interpolate(input, |name| self.lookup(name, true, false))
+    }
+
+    /// Interpolates like [`Self::interpolate`], replacing secrets with `{{name}}`.
+    ///
+    /// Use this for logs, `--json`, and `--dry-run`. Availability is still
+    /// checked; only the ref is emitted.
+    pub fn interpolate_redacted(&self, input: &str) -> Result<String, EnvironmentResolutionError> {
+        interpolate(input, |name| self.lookup(name, false, true))
+    }
+
+    /// Interpolates like [`Self::interpolate_strict`], replacing secrets with `{{name}}`.
+    pub fn interpolate_redacted_strict(
+        &self,
+        input: &str,
+    ) -> Result<String, EnvironmentResolutionError> {
+        interpolate(input, |name| self.lookup(name, true, true))
+    }
+
+    fn lookup(
+        &self,
+        name: &str,
+        strict: bool,
+        redact_secrets: bool,
+    ) -> Result<Option<String>, EnvironmentResolutionError> {
+        if self.secret_names.contains(name) {
             if self.secrets_without_values.contains(name) {
-                Err(EnvironmentResolutionError::SecretVariableUnavailable(
+                return Err(EnvironmentResolutionError::SecretVariableUnavailable(
                     name.to_owned(),
-                ))
-            } else {
-                self.variables
-                    .get(name)
-                    .cloned()
-                    .map(Some)
-                    .ok_or_else(|| EnvironmentResolutionError::MissingVariable(name.to_owned()))
+                ));
             }
-        })
+            if redact_secrets {
+                return Ok(Some(format!("{{{{{name}}}}}")));
+            }
+            return Ok(self.secret_values.get(name).cloned());
+        }
+        match self.variables.get(name).cloned() {
+            Some(value) => Ok(Some(value)),
+            None if strict => Err(EnvironmentResolutionError::MissingVariable(name.to_owned())),
+            None => Ok(None),
+        }
     }
 }
 
@@ -384,10 +424,27 @@ pub fn resolve_environment(
 /// Overrides are applied after inheritance and before variable interpolation. When a name
 /// occurs more than once, the last value wins. Passing `None` for `selected` resolves only
 /// the supplied runtime variables without selecting or modifying a persisted environment.
+/// Secret declarations stay unavailable until
+/// [`resolve_environment_with_secret_provider`] supplies a backend.
 pub fn resolve_environment_with_overrides(
     environments: &[Environment],
     selected: Option<&str>,
     overrides: &[(String, String)],
+) -> Result<ResolvedEnvironment, EnvironmentResolutionError> {
+    resolve_environment_with_secret_provider(environments, selected, overrides, None)
+}
+
+/// Resolves an environment, applying overrides and an optional secret provider.
+///
+/// Secret declarations never carry values in the collection. The provider looks
+/// them up by name or structured ref. A missing provider or key fails closed.
+/// Invocation `--var` values for declared secrets are treated as runtime secret
+/// material and stay out of the public variable map.
+pub fn resolve_environment_with_secret_provider(
+    environments: &[Environment],
+    selected: Option<&str>,
+    overrides: &[(String, String)],
+    secret_provider: Option<&dyn SecretProvider>,
 ) -> Result<ResolvedEnvironment, EnvironmentResolutionError> {
     let mut raw = if let Some(selected) = selected {
         raw_variables(environments, selected)?
@@ -395,11 +452,36 @@ pub fn resolve_environment_with_overrides(
         EnvironmentIndex::new(environments)?;
         BTreeMap::new()
     };
+    let secret_names = raw
+        .iter()
+        .filter_map(|(name, value)| matches!(value, RawVariable::Secret).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+    let mut secret_values = BTreeMap::new();
     for (name, value) in overrides {
         if name.is_empty() {
             return Err(EnvironmentResolutionError::InvalidVariableName);
         }
+        if secret_names.contains(name) {
+            if !value.is_empty() {
+                secret_values.insert(name.clone(), value.clone());
+            }
+            continue;
+        }
         raw.insert(name.clone(), RawVariable::Value(value.clone()));
+    }
+
+    if let Some(provider) = secret_provider {
+        for name in &secret_names {
+            if secret_values.contains_key(name) {
+                continue;
+            }
+            let reference = SecretReference::parse(name);
+            if let Some(value) = provider.resolve_secret(&reference)
+                && !value.is_empty()
+            {
+                secret_values.insert(name.clone(), value);
+            }
+        }
     }
 
     let mut variables = BTreeMap::new();
@@ -410,13 +492,16 @@ pub fn resolve_environment_with_overrides(
         }
     }
 
-    let secrets_without_values = raw
+    let secrets_without_values = secret_names
         .iter()
-        .filter_map(|(name, value)| matches!(value, RawVariable::Secret).then_some(name.clone()))
+        .filter(|name| !secret_values.contains_key(*name))
+        .cloned()
         .collect();
     Ok(ResolvedEnvironment {
         name: selected.unwrap_or_default().to_owned(),
         variables,
+        secret_values,
+        secret_names,
         secrets_without_values,
     })
 }

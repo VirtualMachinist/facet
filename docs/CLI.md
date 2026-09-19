@@ -13,7 +13,7 @@ probe collection validate <path> [--json]
 probe request list <path> [--json]
 probe request get <path> <selector> [--environment <name>] [--strict-variables] [--json]
 probe request variables <path> <selector> [--environment <name>] [--json]
-probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--dry-run] [--expect <expr>]... [--json]
+probe request run <path> <selector> [--environment <name>] [--strict-variables] [--var <name=value>]... [--output <file>] [--dry-run] [--expect <expr>]... [--secret-provider env] [--json]
 probe request set <path> <selector> [--name <name>] [--method <method>] [--url <url>] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request create <path> --name <name> [--parent <folder>] [--index <index>] [--method <method>] [--url <url>] [--type http|graphql] [--graphql-query <text>] [--graphql-variables <json-object-or-null>] [--graphql-operation-name <json-string-or-null>] [--graphql-extensions <json-object-or-null>] [--json]
 probe request rename <path> <selector> --name <name> [--json]
@@ -89,6 +89,22 @@ not print headers, bodies, or secret values. `--json` returns the same resolved
 `request` object as a live run, plus `"dryRun": true`, and omits `response`.
 Unavailable secret variables still fail closed with `secret_variable_unavailable`.
 `--dry-run` cannot be combined with `--output` or `--expect`.
+
+`--secret-provider env` is the v1 runtime hook for OpenCollection secret
+variables. Collection YAML stores refs only: the secret variable name (treated as
+a process environment name), `provider:key`, or `secret://provider/key`. Probe
+never writes live tokens into a recipe. The `env` backend reads process-injected
+environment variables for CI and other ephemeral runners; it accepts bare names
+and refs whose provider is `env`. Other provider ids fail closed. Probe does not
+load `.env` files next to a collection — a runner may source a gitignored file
+before invoking Probe, but that file is not a collection feature.
+
+Without `--secret-provider`, or when the selected backend has no value for a
+ref, resolution fails closed with `secret_variable_unavailable`. Invocation
+`--var` can supply a runtime value for a declared secret without persisting it;
+that value is used only for the outbound HTTP request. `--json`, `--dry-run`,
+human stdout, fixtures, and error messages emit the secret ref (`{{name}}` /
+`secret://…` / `provider:key`), never the resolved value.
 
 `--expect <expr>` asserts a completed live response. v1 accepts `status=<code>` or
 `status=<code|code>` (HTTP statuses 100–599; `|` is OR). The flag may be repeated;
@@ -429,8 +445,10 @@ Environment failures use exit code 5 and stable categories including
 `missing_variable`, `variable_not_found`,
 `secret_variable_unavailable`, and
 `environment_resolution`. Secret variables declared by OpenCollection do not contain
-their values; until a secure runtime provider is added, referencing one reports
-`secret_variable_unavailable` rather than silently substituting an empty value.
+their values. `request run --secret-provider env` resolves them at run time by
+ref or environment name. A missing provider, unknown provider id, or missing key
+reports `secret_variable_unavailable` rather than silently substituting an empty
+value. Structured and human output never include the resolved secret.
 
 HTTP request configuration errors use exit code 5 and category
 `request_configuration`. Timeout, cancellation, connection, protocol, and response

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use probe_core::{GraphqlUpdate, RequestUpdate, StatusExpectation};
+use probe_core::{EnvSecretProvider, GraphqlUpdate, RequestUpdate, StatusExpectation};
 use probe_opencollection::{CreatedRequestProtocol, StructureOperation};
 use serde_json::{Map, Value};
 
@@ -26,6 +26,7 @@ const GRAPHQL_EXTENSIONS: u32 = 1 << 16;
 const TYPE: u32 = 1 << 17;
 const DRY_RUN: u32 = 1 << 18;
 const EXPECT: u32 = 1 << 19;
+const SECRET_PROVIDER: u32 = 1 << 20;
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -76,6 +77,7 @@ pub(crate) enum Command {
         strict_variables: bool,
         dry_run: bool,
         expectations: Vec<StatusExpectation>,
+        secret_provider: Option<EnvSecretProvider>,
     },
     Set {
         input: WorkspaceInput,
@@ -133,6 +135,7 @@ struct Options {
     request_type: Option<String>,
     dry_run: bool,
     expectations: Vec<StatusExpectation>,
+    secret_provider: Option<EnvSecretProvider>,
 }
 
 impl Options {
@@ -160,6 +163,7 @@ impl Options {
             | option_bit(self.request_type.is_some(), TYPE)
             | option_bit(self.dry_run, DRY_RUN)
             | option_bit(!self.expectations.is_empty(), EXPECT)
+            | option_bit(self.secret_provider.is_some(), SECRET_PROVIDER)
     }
 
     fn allow(&self, allowed: u32) -> Result<(), CliError> {
@@ -246,7 +250,9 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
             })
         }
         [group, action, path, selector] if group == "request" && action == "run" => {
-            options.allow(ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES | DRY_RUN | EXPECT)?;
+            options.allow(
+                ENVIRONMENT | OUTPUT | VAR | STRICT_VARIABLES | DRY_RUN | EXPECT | SECRET_PROVIDER,
+            )?;
             if options.dry_run && options.output.is_some() {
                 return Err(CliError::invalid_arguments(
                     "--dry-run cannot be combined with --output",
@@ -266,6 +272,7 @@ pub(crate) fn parse(mut args: Vec<String>) -> Result<Command, CliError> {
                 strict_variables: options.strict_variables,
                 dry_run: options.dry_run,
                 expectations: options.expectations,
+                secret_provider: options.secret_provider,
             })
         }
         [group, action, path, selector] if group == "request" && action == "set" => {
@@ -503,7 +510,16 @@ fn extract_options(args: &mut Vec<String>) -> Result<Options, CliError> {
         request_type: extract_string_option(args, "--type")?,
         dry_run: extract_flag(args, "--dry-run")?,
         expectations: extract_expectations(args)?,
+        secret_provider: extract_secret_provider(args)?,
     })
+}
+
+fn extract_secret_provider(args: &mut Vec<String>) -> Result<Option<EnvSecretProvider>, CliError> {
+    match extract_string_option(args, "--secret-provider")?.as_deref() {
+        None => Ok(None),
+        Some("env") => Ok(Some(EnvSecretProvider)),
+        Some(_) => Err(CliError::invalid_arguments("--secret-provider must be env")),
+    }
 }
 
 fn graphql_requested(options: &Options) -> bool {

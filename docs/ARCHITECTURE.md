@@ -307,9 +307,12 @@ shadowing.
 The resolver returns a cloned, resolved request and leaves the canonical parsed model
 unchanged. It currently interpolates method, URL, headers, query and path parameters, supported
 body fields, file references, and authentication string/number values. OpenCollection
-secret declarations contain no value, so references fail until a separate secure
-runtime value provider is introduced. The resolver does not load `dotEnvFilePath`;
-the domain remains independent of filesystem APIs.
+secret declarations store refs only (`secret://…`, `provider:key`, or environment
+names). An optional `SecretProvider` hook resolves those refs at run time; the v1
+`env` backend reads process environment names. A missing provider or key fails
+closed. Resolved values are used only to construct the outbound HTTP request and
+are omitted from `Debug`, logs, and redacted interpolation. The resolver does not
+load `dotEnvFilePath`; the domain remains independent of filesystem APIs.
 
 ## HTTP Execution
 

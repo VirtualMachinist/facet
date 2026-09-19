@@ -1365,6 +1365,210 @@ fn dry_run_rejects_an_output_file() {
     assert_eq!(value["error"]["category"], "invalid_arguments");
 }
 
+fn secret_runtime_fixture(server_url: &str) -> PathBuf {
+    let source = "\
+opencollection: 1.0.0
+info:
+  name: Secret provider fixture
+bundled: true
+config:
+  environments:
+    - name: local
+      variables:
+        - name: baseUrl
+          value: __SERVER_URL__
+        - secret: true
+          name: secretToken
+items:
+  - info:
+      name: Secret ping
+      type: http
+      seq: 1
+    http:
+      method: GET
+      url: \"{{baseUrl}}/secret\"
+      headers:
+        - name: Authorization
+          value: \"Bearer {{secretToken}}\"
+";
+    let path = temporary_path("secret-provider.yml");
+    fs::write(&path, source.replace("__SERVER_URL__", server_url)).unwrap();
+    path
+}
+
+fn assert_no_secret_leak(output: &std::process::Output, secret: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains(secret),
+        "stdout must not contain the secret: {stdout}"
+    );
+    assert!(
+        !stderr.contains(secret),
+        "stderr must not contain the secret: {stderr}"
+    );
+}
+
+#[test]
+fn secret_provider_env_resolves_at_run_and_redacts_output() {
+    const SECRET: &str = "probe-test-secret-value-9f3c";
+    let (server_url, server) = serve_once(b"ok".to_vec(), "text/plain");
+    let workspace = secret_runtime_fixture(&server_url);
+    let output = probe()
+        .env("secretToken", SECRET)
+        .args(["request", "run"])
+        .arg(&workspace)
+        .args([
+            "items/0",
+            "--environment",
+            "local",
+            "--secret-provider",
+            "env",
+            "--json",
+        ])
+        .output()
+        .expect("secret provider run should execute");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(output.stderr.is_empty());
+    assert_no_secret_leak(&output, SECRET);
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["schemaVersion"], 1);
+    assert_eq!(value["request"]["url"], format!("{server_url}/secret"));
+    let captured = server.join().unwrap();
+    assert!(
+        captured
+            .head
+            .contains(&format!("authorization: Bearer {SECRET}\r\n"))
+    );
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn secret_provider_env_dry_run_prints_refs_and_never_values() {
+    const SECRET: &str = "probe-test-secret-value-dry-run";
+    let workspace = secret_runtime_fixture("https://api.example.com");
+    let output = probe()
+        .env("secretToken", SECRET)
+        .args(["request", "run"])
+        .arg(&workspace)
+        .args([
+            "items/0",
+            "--environment",
+            "local",
+            "--secret-provider",
+            "env",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("secret provider dry-run should resolve");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_no_secret_leak(&output, SECRET);
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["dryRun"], true);
+    assert_eq!(value["request"]["url"], "https://api.example.com/secret");
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn secret_provider_env_fails_closed_when_the_key_is_missing() {
+    let workspace = secret_runtime_fixture("https://api.example.com");
+    let output = probe()
+        .env_remove("secretToken")
+        .args(["request", "run"])
+        .arg(&workspace)
+        .args([
+            "items/0",
+            "--environment",
+            "local",
+            "--secret-provider",
+            "env",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("missing env secret should fail closed");
+
+    assert_eq!(output.status.code(), Some(5));
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["error"]["category"], "secret_variable_unavailable");
+    assert_eq!(value["error"]["exitCode"], 5);
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains("secretToken"));
+    assert!(!message.contains("Bearer"));
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn runtime_var_can_supply_a_secret_without_emitting_it() {
+    const SECRET: &str = "probe-test-secret-from-var";
+    let (server_url, server) = serve_once(b"ok".to_vec(), "text/plain");
+    let workspace = secret_runtime_fixture(&server_url);
+    let output = probe()
+        .args(["request", "run"])
+        .arg(&workspace)
+        .args([
+            "items/0",
+            "--environment",
+            "local",
+            "--var",
+            &format!("secretToken={SECRET}"),
+            "--json",
+        ])
+        .output()
+        .expect("runtime secret override should execute");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_no_secret_leak(&output, SECRET);
+    let captured = server.join().unwrap();
+    assert!(
+        captured
+            .head
+            .contains(&format!("authorization: Bearer {SECRET}\r\n"))
+    );
+    fs::remove_file(workspace).unwrap();
+}
+
+#[test]
+fn secret_provider_rejects_unknown_backends() {
+    let output = probe()
+        .args(["request", "run"])
+        .arg(fixture("phase4-environments.yml"))
+        .args([
+            "items/2",
+            "--environment",
+            "development",
+            "--secret-provider",
+            "vault",
+            "--dry-run",
+            "--json",
+        ])
+        .output()
+        .expect("unknown secret provider should be rejected");
+
+    assert_eq!(output.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(value["error"]["category"], "invalid_arguments");
+    assert!(
+        !value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("token")
+    );
+}
+
 #[test]
 fn distinguishes_invalid_workspace() {
     let output = probe()

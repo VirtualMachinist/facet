@@ -111,6 +111,24 @@ pub fn resolve_request_strict(
     resolve_request_with(request, |value| environment.interpolate_strict(value))
 }
 
+/// Interpolates a request for logs and structured output, keeping secret refs.
+pub fn resolve_request_redacted(
+    request: &HttpRequest,
+    environment: &ResolvedEnvironment,
+) -> Result<HttpRequest, EnvironmentResolutionError> {
+    resolve_request_with(request, |value| environment.interpolate_redacted(value))
+}
+
+/// Strict interpolation for display: missing plains fail, secrets stay as refs.
+pub fn resolve_request_redacted_strict(
+    request: &HttpRequest,
+    environment: &ResolvedEnvironment,
+) -> Result<HttpRequest, EnvironmentResolutionError> {
+    resolve_request_with(request, |value| {
+        environment.interpolate_redacted_strict(value)
+    })
+}
+
 fn resolve_request_with(
     request: &HttpRequest,
     interpolate: impl Fn(&str) -> Result<String, EnvironmentResolutionError>,

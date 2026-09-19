@@ -1,9 +1,11 @@
 use std::{borrow::Cow, io::Read, path::PathBuf};
 
 use probe_core::{
-    ExpectationOutcome, HttpRequest, RequestUpdate, RequestVariableInfo, StatusExpectation,
-    VariableUsage, discover_request_variables, evaluate_expectations,
-    resolve_environment_with_overrides, resolve_request, resolve_request_strict,
+    EnvSecretProvider, ExpectationOutcome, HttpRequest, RequestUpdate, RequestVariableInfo,
+    ResolvedEnvironment, SecretProvider, StatusExpectation, VariableUsage,
+    discover_request_variables, evaluate_expectations, resolve_environment_with_secret_provider,
+    resolve_request, resolve_request_redacted, resolve_request_redacted_strict,
+    resolve_request_strict,
 };
 use probe_http::{ExecutionOptions, HttpEngine, HttpResponse};
 use serde_json::json;
@@ -202,6 +204,7 @@ pub(crate) struct RunOptions<'a> {
     pub(crate) strict_variables: bool,
     pub(crate) dry_run: bool,
     pub(crate) expectations: &'a [StatusExpectation],
+    pub(crate) secret_provider: Option<EnvSecretProvider>,
 }
 
 pub(crate) fn run(
@@ -211,18 +214,36 @@ pub(crate) fn run(
     stdin: &mut impl Read,
 ) -> Result<CommandOutput, CliError> {
     let loaded = load(input, stdin)?;
-    let request = selected_request(
+    let secret_provider = options
+        .secret_provider
+        .as_ref()
+        .map(|provider| provider as &dyn SecretProvider);
+    let resolved_environment = resolve_selected_environment(
         &loaded,
-        selector,
         options.environment,
         options.variables,
         options.strict_variables,
+        secret_provider,
+    )?;
+    let request = interpolate_selected(
+        &loaded,
+        selector,
+        resolved_environment.as_ref(),
+        options.strict_variables,
+        false,
+    )?;
+    let display = interpolate_selected(
+        &loaded,
+        selector,
+        resolved_environment.as_ref(),
+        options.strict_variables,
+        true,
     )?;
     let prepared = request.prepare_http().map_err(CliError::graphql)?;
     if options.dry_run {
         return Ok(CommandOutput {
-            human: dry_run_human(&request),
-            json: dry_run_json(&request).map_err(CliError::graphql)?,
+            human: dry_run_human(&display),
+            json: dry_run_json(&display).map_err(CliError::graphql)?,
         });
     }
     let execution = ExecutionOptions {
@@ -251,7 +272,7 @@ pub(crate) fn run(
     if outcomes.iter().any(|outcome| !outcome.ok) {
         return Err(CliError::expectation_failed(&outcomes));
     }
-    response_output(&request, &response, options.output, &outcomes)
+    response_output(&display, &response, options.output, &outcomes)
 }
 
 fn selected_request<'a>(
@@ -261,32 +282,59 @@ fn selected_request<'a>(
     variables: &[(String, String)],
     strict_variables: bool,
 ) -> Result<Cow<'a, HttpRequest>, CliError> {
+    let resolved =
+        resolve_selected_environment(loaded, environment, variables, strict_variables, None)?;
+    interpolate_selected(loaded, selector, resolved.as_ref(), strict_variables, false)
+}
+
+fn resolve_selected_environment(
+    loaded: &probe_opencollection::LoadedWorkspace,
+    environment: Option<&str>,
+    variables: &[(String, String)],
+    strict_variables: bool,
+    secret_provider: Option<&dyn SecretProvider>,
+) -> Result<Option<ResolvedEnvironment>, CliError> {
+    if environment.is_none()
+        && variables.is_empty()
+        && !strict_variables
+        && secret_provider.is_none()
+    {
+        return Ok(None);
+    }
+    resolve_environment_with_secret_provider(
+        loaded.workspace().environments(),
+        environment,
+        variables,
+        secret_provider,
+    )
+    .map(Some)
+    .map_err(CliError::configuration)
+}
+
+fn interpolate_selected<'a>(
+    loaded: &'a probe_opencollection::LoadedWorkspace,
+    selector: &str,
+    environment: Option<&ResolvedEnvironment>,
+    strict_variables: bool,
+    redact_secrets: bool,
+) -> Result<Cow<'a, HttpRequest>, CliError> {
     let key = loaded
         .request_key(selector)
         .ok_or_else(|| CliError::request_not_found(selector))?;
-    if environment.is_some() || !variables.is_empty() || strict_variables {
-        let workspace = loaded.workspace();
-        let environment =
-            resolve_environment_with_overrides(workspace.environments(), environment, variables)
-                .map_err(CliError::configuration)?;
-        let request = workspace
-            .request(key)
-            .expect("repository request key must resolve");
-        if strict_variables {
-            resolve_request_strict(request, &environment)
-        } else {
-            resolve_request(request, &environment)
-        }
-        .map(Cow::Owned)
-        .map_err(CliError::configuration)
-    } else {
-        Ok(Cow::Borrowed(
-            loaded
-                .workspace()
-                .request(key)
-                .expect("repository request key must resolve"),
-        ))
-    }
+    let request = loaded
+        .workspace()
+        .request(key)
+        .expect("repository request key must resolve");
+    let Some(environment) = environment else {
+        return Ok(Cow::Borrowed(request));
+    };
+    let resolved = match (strict_variables, redact_secrets) {
+        (false, false) => resolve_request(request, environment),
+        (true, false) => resolve_request_strict(request, environment),
+        (false, true) => resolve_request_redacted(request, environment),
+        (true, true) => resolve_request_redacted_strict(request, environment),
+    };
+    resolved.map(Cow::Owned).map_err(CliError::configuration)
 }
 
 fn response_output(
