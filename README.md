@@ -88,6 +88,8 @@ facet tui
 
 Full install guide (wrong-name traps, PATH, versions): **[docs/install.md](docs/install.md)**.
 
+TypeSafe / Jev System One recipes (Choice + Noul, shadow, `$TYPESAFE_API_KEY` via `facet env set`): **[docs/jev-native.md](docs/jev-native.md)** and [`docs/examples/typesafe/`](docs/examples/typesafe/).
+
 ## What you get
 
 | | Probe | Facet |

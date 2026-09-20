@@ -777,6 +777,11 @@ The CLI remains the contract; the shell-out path in `docs/FACET.md` and the
 skill template need no MCP. Use `mcp` when a harness wants typed tools and
 `structuredContent` instead of parsing stdout.
 
+TypeSafe / Jev recipes use this same `request_run` path (1:1 with
+`facet request run`). Hydrate `typesafeApiKey` with `facet env set --secret`
+from `$TYPESAFE_API_KEY`; never Lattice bodies. `jevShadow` empty / `ask` /
+`hold` / `escalate` ≠ approve. See [Jev native transport](jev-native.md).
+
 ## Exit codes and error categories
 
 Facet extends the upstream table; it never renumbers it.

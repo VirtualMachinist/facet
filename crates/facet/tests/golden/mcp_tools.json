@@ -82,7 +82,7 @@
       "name": "request_get"
     },
     {
-      "description": "Execute a request through Facet and record it in Lattice. Result is Probe's request-run document plus lattice { runId, requestHash, secrets, … }. With dryRun the request is resolved and previewed, nothing sent or recorded.",
+      "description": "Execute a request through Facet and record it in Lattice. Result is Probe's request-run document plus lattice { runId, requestHash, secrets, … }. With dryRun the request is resolved and previewed, nothing sent or recorded. TypeSafe/Jev: hydrate typesafeApiKey via facet env set --secret (TYPESAFE_API_KEY), never Lattice; jevShadow empty/ask/escalate/hold ≠ approve.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
