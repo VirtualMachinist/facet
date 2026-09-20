@@ -159,7 +159,8 @@ fn initialize_result(params: &Value) -> Value {
             "Every tool result is the same schemaVersion 1 JSON as `facet <command> --json`; ",
             "errors carry error.{category, exitCode, message, details}. ",
             "Bodies are explicit pulls (blob_get). Never pass secret values as arguments; ",
-            "store them with `facet env set` and let hydration supply them."
+            "store them with `facet env set` and let hydration supply them. ",
+            "TypeSafe/Jev: hydrate typesafeApiKey via facet env set --secret (TYPESAFE_API_KEY), never Lattice; jevShadow empty/ask/escalate/hold ≠ approve."
         ),
     })
 }
@@ -635,7 +636,7 @@ pub(crate) fn tool_descriptions() -> Vec<Value> {
         ),
         tool(
             "request_run",
-            "Execute a request through Facet and record it in Lattice. Result is Probe's request-run document plus lattice { runId, requestHash, secrets, … }. With dryRun the request is resolved and previewed, nothing sent or recorded.",
+            "Execute a request through Facet and record it in Lattice. Result is Probe's request-run document plus lattice { runId, requestHash, secrets, … }. With dryRun the request is resolved and previewed, nothing sent or recorded. TypeSafe/Jev: hydrate typesafeApiKey via facet env set --secret (TYPESAFE_API_KEY), never Lattice; jevShadow empty/ask/escalate/hold ≠ approve.",
             schema(
                 json!({
                     "path": path_required.clone(),
