@@ -35,6 +35,9 @@
 
 ---
 
+> **Status:** In production use as daily-driver / dogfood local-first API client (CLI/TUI + facet-lattice). Hardening: 0.6.0 on main; WebSocket/GraphQL/gRPC on the roadmap. Not a toy reference.
+
+
 **Facet** is the terminal product: a `facet` CLI and Ratatui TUI on the same OpenCollection YAML as [Probe](https://github.com/crizant/probe). **[facet-lattice](https://crates.io/crates/facet-lattice)** is the run-history library underneath — SQLite for runs, bodies, timings, and sessions beside your YAML on disk.
 
 Collections stay YAML; Git stays the sync layer. No account or hosted control plane. The `facet` binary coexists with `probe` on `PATH`.
